@@ -10,14 +10,15 @@ Does not run on Windows VPS, other Linux distributions, or shared hosting withou
 
 The panel is installed **on the VPS**, not on your laptop.
 
-1. Your provider gives you an **IP** and a **root password**.
-2. On your computer:
+### 1. SSH in
+
+Your provider gives you an **IP** and a **root password**. On your computer:
 
 ```bash
 ssh root@YOUR_VPS_IP
 ```
 
-3. As root, paste and wait:
+### 2. Paste this one command
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/X5Coder/VPS-Manager/main/install.sh | bash
@@ -33,18 +34,23 @@ cd VPS-Manager
 bash install.sh
 ```
 
-4. When install **succeeds**, the script asks for:
-   - **Panel password** (at least 8 characters, then confirm)
-   - **Telegram user id** — open Telegram, search `@userinfobot`, tap Start, copy the numeric Id
-5. It then prints:
+### 3. Create a panel password (required)
+
+When Docker and the panel are up, the script **stops and waits**. You must create an admin password (at least 8 characters, then confirm). It is saved on this VPS.
+
+### 4. Enter your Telegram user id (required)
+
+Still in the installer: open Telegram, search `@userinfobot`, tap Start, copy the numeric **Id**, paste it. It is saved on this VPS.
+
+### 5. Open the panel URL
+
+Only after those two values are saved does the script print:
 
 ```text
 Panel URL:  http://YOUR_VPS_IP:9090
 ```
 
-6. Open that URL.
-7. Unlock with a **Telegram bot token** (a 30-second code is sent to your account).
-8. Sign in with the **panel password** you just typed.
+Open that URL. Unlock with a **Telegram bot token** (a 30-second code is sent to your account). Sign in with the **panel password** you just created.
 
 ## Deploy a project as one image
 
@@ -60,3 +66,5 @@ In the panel: **Deploy** → upload `myapp.tar` → set disk quota → Start.
 The panel creates the room, loads the image, and starts it. No room name is required.
 
 You can also pull a public image on the VPS (`docker pull nginx:alpine`) and set quota the same way.
+
+In a room **Terminal** you can ask the assistant to clone a GitHub repo, write a Dockerfile, and build an image for this VPS.

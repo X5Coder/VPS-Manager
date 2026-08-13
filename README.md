@@ -14,17 +14,16 @@ Supported: **Ubuntu 20.04, 22.04, or 24.04** with root. Not Windows. Not other d
 ssh root@YOUR_VPS_IP
 ```
 
-2. Run as root (downloads retry on failure):
+2. Paste this as root (downloads retry on failure):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/X5Coder/VPS-Manager/main/install.sh | bash
 ```
 
-3. When install succeeds, the script asks for:
-   - **Panel password** (min 8 characters)
-   - **Telegram user id** (numbers only — open Telegram, search `@userinfobot`, tap Start, copy the Id)
-4. It then prints the panel URL, for example `http://YOUR_VPS_IP:9090`
-5. In the browser: Telegram bot token → 30-second code → panel password
+3. When the panel is up, the script **requires** a panel password (min 8 characters) and saves it.
+4. Then it **requires** your Telegram user id (`@userinfobot` → Start → numeric Id) and saves it.
+5. Only then it prints the panel URL, for example `http://YOUR_VPS_IP:9090`
+6. In the browser: Telegram bot token → 30-second code → panel password
 
 Full guide: [docs/INSTALL.md](docs/INSTALL.md)
 

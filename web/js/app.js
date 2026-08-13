@@ -22,6 +22,7 @@
     restoreGateDone: localStorage.getItem("vr_restore_gate") === "1",
     showNetPanel: false,
     jobWasRunning: false,
+    aiByRoom: {},
     _gen: 0,
     cache: {},
   };
@@ -111,6 +112,42 @@
       room: `<svg ${p}><path d="M4 10.5L12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1z"/></svg>`,
     };
     return icons[k] || "";
+  }
+
+  function roomAIState(id) {
+    if (!state.aiByRoom[id]) state.aiByRoom[id] = { messages: [], bubbles: [], busy: false, run: 0 };
+    return state.aiByRoom[id];
+  }
+
+  function paintAIChat(box, pack) {
+    if (!box) return;
+    const bits = [];
+    (pack.bubbles || []).forEach((b) => {
+      bits.push(`<div class="ai-bubble ${esc(b.role)}">${esc(b.text)}</div>`);
+    });
+    if (pack.pendingAsk && pack.pendingAsk.length) {
+      bits.push(`<form class="ai-ask" id="ai-ask">${pack.pendingAsk.map((q, i) =>
+        `<label>${esc(q)}<input name="a${i}" required autocomplete="off" /></label>`).join("")}
+        <button class="btn sm primary" type="submit">Send answers</button></form>`);
+    }
+    if (pack.busy && !(pack.pendingAsk && pack.pendingAsk.length)) {
+      bits.push(`<div class="ai-bubble bot muted">Working…</div>`);
+    }
+    box.innerHTML = bits.join("") || `<div class="ai-empty">Ask to clone a repo, dockerize it, or run a task. Commands type in the terminal.</div>`;
+    box.scrollTop = box.scrollHeight;
+  }
+
+  async function typeCommand(tout, prompt, cmd) {
+    if (!tout) return;
+    tout.textContent += prompt;
+    const delay = cmd.length > 100 ? 3 : 12;
+    for (const ch of String(cmd)) {
+      tout.textContent += ch;
+      tout.scrollTop = tout.scrollHeight;
+      await new Promise((r) => setTimeout(r, delay));
+    }
+    tout.textContent += "\n";
+    tout.scrollTop = tout.scrollHeight;
   }
 
   async function api(path, opts = {}) {
@@ -1257,7 +1294,7 @@ docker save -o myapp.tar myapp:latest`;
         <h2>Docs</h2>
         <div class="sub">Install on a new Ubuntu VPS</div>
       </div></div>
-      <p class="docs-lead">Install on the VPS itself. After the script finishes it asks for the panel password and your Telegram user id, then prints the URL.</p>
+      <p class="docs-lead">Paste one command on the VPS. When Docker is ready the script stops and requires a panel password and your Telegram user id. Only after those are saved does it print the panel URL.</p>
       <div class="docs-os">
         <div class="panel">
           <h3>Supported</h3>
@@ -1269,9 +1306,11 @@ docker save -o myapp.tar myapp:latest`;
         </div>
       </div>
       ${step("1", "SSH into the VPS", "On your computer, replace YOUR_VPS_IP with the address from your provider.", "", ssh)}
-      ${step("2", "Run the installer", "As root. Downloads retry on failure. When it succeeds you will be asked for a panel password and your Telegram account id, then the panel URL is shown.", "", install)}
-      ${step("3", "Open the URL", "Telegram bot token → 30-second code → panel password.", "<p class=\"muted\">Full guide: <a href=\"https://github.com/X5Coder/VPS-Manager/blob/main/docs/INSTALL.md\" target=\"_blank\" rel=\"noopener\">docs/INSTALL.md</a></p>", "")}
-      ${step("4", "Ship a project as one image", "Build on your machine, save one .tar file, upload it in Deploy, set disk quota. The panel creates the room and starts it.", "", saveImg)}
+      ${step("2", "Paste the installer", "As root. One command installs Docker and the panel. Downloads retry on failure.", "", install)}
+      ${step("3", "Create the panel password", "Required on first install. At least 8 characters, then confirm. Saved on the VPS.", "", "")}
+      ${step("4", "Enter your Telegram user id", "Required. Open Telegram, search @userinfobot, tap Start, paste the numeric Id. Saved on the VPS.", "", "")}
+      ${step("5", "Open the printed URL", "The script prints Panel URL last. Telegram bot token → 30-second code → the password you created.", "<p class=\"muted\">Full guide: <a href=\"https://github.com/X5Coder/VPS-Manager/blob/main/docs/INSTALL.md\" target=\"_blank\" rel=\"noopener\">docs/INSTALL.md</a></p>", "")}
+      ${step("6", "Ship a project as one image", "Build on your machine, save one .tar file, upload it in Deploy, set disk quota. Or ask the room terminal assistant to clone a repo and dockerize it.", "", saveImg)}
       ${cmdCard("If curl is blocked", alt)}`, "docs");
     bindCmdCopies();
   }
@@ -2018,14 +2057,25 @@ docker save -o myapp.tar myapp:latest`;
       </div>`;
     } else if (tab === "terminal") {
       const lines = (state.termLines || []).join("") || "Linux shell for this room. Commands run in room files or project container.\n";
-      body = `<div class="panel"><h3>Terminal</h3>
-        <div class="term">
-          <div class="term-out" id="tout">${esc(lines)}</div>
-          <form class="term-in" id="tform"><span class="prompt">root@${esc(room.name)}:~#</span>
-          <input id="tcmd" autocomplete="off" spellcheck="false" /></form>
+      body = `<div class="term-split">
+        <div class="panel term-panel">
+          <h3>Terminal</h3>
+          <div class="term">
+            <div class="term-out" id="tout">${esc(lines)}</div>
+            <form class="term-in" id="tform"><span class="prompt">root@${esc(room.name)}:~#</span>
+            <input id="tcmd" autocomplete="off" spellcheck="false" /></form>
+          </div>
+          <div class="cmd-hints">
+            ${TERM_HINTS.map((h) => `<button type="button" class="hint" data-hint="${esc(h.cmd)}" title="${esc(h.tip)}">${esc(h.cmd)}</button>`).join("")}
+          </div>
         </div>
-        <div class="cmd-hints">
-          ${TERM_HINTS.map((h) => `<button type="button" class="hint" data-hint="${esc(h.cmd)}" title="${esc(h.tip)}">${esc(h.cmd)}</button>`).join("")}
+        <div class="ai-chat" id="ai-chat">
+          <div class="ai-chat-head">Assistant</div>
+          <div class="ai-chat-log" id="ai-log"></div>
+          <form class="ai-chat-in" id="ai-form">
+            <input id="ai-q" autocomplete="off" maxlength="2000" placeholder="Clone, dockerize, build…" />
+            <button class="btn sm primary" type="submit">Send</button>
+          </form>
         </div>
       </div>`;
     }
@@ -2268,32 +2318,124 @@ docker save -o myapp.tar myapp:latest`;
     }
     if (tab === "terminal") {
       const tout = document.querySelector("#tout");
+      const aiLog = document.querySelector("#ai-log");
+      const pack = roomAIState(id);
+      paintAIChat(aiLog, pack);
       document.querySelectorAll("[data-hint]").forEach((b) => b.onclick = () => {
         document.querySelector("#tcmd").value = b.dataset.hint;
         document.querySelector("#tcmd").focus();
       });
+      const runExec = async (cmd, typed, host) => {
+        state.termLines = state.termLines || [];
+        if (!typed) {
+          state.termLines.push(`root@${room.name}:~# ${cmd}\n`);
+          tout.textContent += `root@${room.name}:~# ${cmd}\n`;
+        }
+        try {
+          const res = await api(`/api/rooms/${id}/exec`, {
+            method: "POST",
+            body: JSON.stringify({
+              command: cmd,
+              project_id: mainProj?.id || "",
+              timeout_sec: 120,
+              host: !!host,
+            }),
+          });
+          const where = res.where ? `[${res.where}] ` : "";
+          const out = where + (res.output || "") + (res.error ? `\n${res.error}` : "");
+          const line = out + (out.endsWith("\n") ? "" : "\n");
+          state.termLines.push(line);
+          tout.textContent += line;
+          tout.scrollTop = tout.scrollHeight;
+          return { exit: res.exit ?? (res.error ? 1 : 0), output: out };
+        } catch (ex) {
+          state.termLines.push(ex.message + "\n");
+          tout.textContent += ex.message + "\n";
+          return { exit: 1, output: ex.message };
+        }
+      };
+      const runAILoop = async () => {
+        if (pack.busy) return;
+        pack.busy = true;
+        pack.pendingAsk = null;
+        const run = ++pack.run;
+        paintAIChat(aiLog, pack);
+        try {
+          for (let i = 0; i < 25; i++) {
+            if (pack.run !== run || state.view !== "room" || state.roomId !== id || (state.roomTab || "") !== "terminal") return;
+            if (pack.messages.length > 40) pack.messages = pack.messages.slice(-40);
+            const res = await api(`/api/rooms/${id}/ai`, {
+              method: "POST",
+              body: JSON.stringify({ messages: pack.messages }),
+            });
+            if (pack.run !== run) return;
+            const say = String(res.say || "").trim();
+            const cmd = String(res.command || "").trim();
+            const ask = Array.isArray(res.ask) ? res.ask.map((x) => String(x || "").trim()).filter(Boolean) : [];
+            pack.messages.push({
+              role: "assistant",
+              text: JSON.stringify({ say, command: cmd, ask, done: !!res.done }),
+            });
+            if (say) pack.bubbles.push({ role: "bot", text: say });
+            paintAIChat(aiLog, pack);
+            if (ask.length) {
+              pack.pendingAsk = ask;
+              break;
+            }
+            if (cmd) {
+              const prompt = `root@${room.name}:~# `;
+              await typeCommand(tout, prompt, cmd);
+              state.termLines = state.termLines || [];
+              state.termLines.push(prompt + cmd + "\n");
+              const execRes = await runExec(cmd, true, true);
+              pack.messages.push({
+                role: "terminal",
+                text: `exit ${execRes.exit}\n${execRes.output}`.slice(0, 12000),
+              });
+              continue;
+            }
+            break;
+          }
+        } catch (ex) {
+          pack.bubbles.push({ role: "bot", text: ex.message || "Assistant failed" });
+        } finally {
+          if (pack.run === run) pack.busy = false;
+          paintAIChat(aiLog, pack);
+          document.querySelector("#ai-ask")?.addEventListener("submit", async (e) => {
+            e.preventDefault();
+            if (pack.busy) return;
+            const questions = pack.pendingAsk || [];
+            const fd = new FormData(e.target);
+            const lines = questions.map((q, idx) => `${q}: ${String(fd.get("a" + idx) || "").trim()}`);
+            pack.pendingAsk = null;
+            pack.bubbles.push({ role: "user", text: lines.join("\n") });
+            pack.messages.push({ role: "answers", text: lines.join("\n") });
+            paintAIChat(aiLog, pack);
+            await runAILoop();
+          });
+        }
+      };
       document.querySelector("#tform").onsubmit = async (e) => {
         e.preventDefault();
         const cmd = document.querySelector("#tcmd").value;
         document.querySelector("#tcmd").value = "";
-        state.termLines = state.termLines || [];
-        state.termLines.push(`root@${room.name}:~# ${cmd}\n`);
-        tout.textContent += `root@${room.name}:~# ${cmd}\n`;
-        try {
-          const res = await api(`/api/rooms/${id}/exec`, {
-            method: "POST",
-            body: JSON.stringify({ command: cmd, project_id: mainProj?.id || "" }),
-          });
-          const where = res.where ? `[${res.where}] ` : "";
-          const out = where + (res.output || "") + (res.error ? `\n${res.error}` : "");
-          state.termLines.push(out + (out.endsWith("\n") ? "" : "\n"));
-          tout.textContent += out + (out.endsWith("\n") ? "" : "\n");
-          tout.scrollTop = tout.scrollHeight;
-        } catch (ex) {
-          state.termLines.push(ex.message + "\n");
-          tout.textContent += ex.message + "\n";
-        }
+        if (!String(cmd || "").trim()) return;
+        const execRes = await runExec(cmd, false);
+        pack.messages.push({ role: "user", text: "I ran this in the terminal: " + cmd });
+        pack.messages.push({ role: "terminal", text: `exit ${execRes.exit}\n${execRes.output}`.slice(0, 12000) });
       };
+      document.querySelector("#ai-form")?.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const inp = document.querySelector("#ai-q");
+        const text = String(inp?.value || "").trim();
+        if (!text || pack.busy) return;
+        inp.value = "";
+        pack.pendingAsk = null;
+        pack.bubbles.push({ role: "user", text });
+        pack.messages.push({ role: "user", text });
+        paintAIChat(aiLog, pack);
+        await runAILoop();
+      });
       document.querySelector("#tcmd")?.focus();
     }
   }

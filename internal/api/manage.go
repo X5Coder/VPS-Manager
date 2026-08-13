@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -688,8 +689,10 @@ func (s *Server) handleRoomExec(w http.ResponseWriter, r *http.Request, roomID s
 		return
 	}
 	var body struct {
-		Command   string `json:"command"`
-		ProjectID string `json:"project_id"`
+		Command    string `json:"command"`
+		ProjectID  string `json:"project_id"`
+		TimeoutSec int    `json:"timeout_sec"`
+		Host       bool   `json:"host"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Command) == "" {
 		writeErr(w, 400, "command required")
@@ -698,14 +701,24 @@ func (s *Server) handleRoomExec(w http.ResponseWriter, r *http.Request, roomID s
 	cmdLine := body.Command
 	_ = s.Rooms.EnsureUnlocked(roomID)
 
+	timeout := 60 * time.Second
+	if body.TimeoutSec > 0 {
+		timeout = time.Duration(body.TimeoutSec) * time.Second
+	}
+	if timeout > 3*time.Minute {
+		timeout = 3 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+
 	var cmd *exec.Cmd
 	where := "room-fs"
-	if body.ProjectID != "" && s.Docker != nil {
+	if !body.Host && body.ProjectID != "" && s.Docker != nil {
 		p, _ := s.Store.GetProject(body.ProjectID)
 		if p != nil && p.RoomID == roomID && p.ContainerID != "" {
 			st, _ := s.Docker.InspectStatus(p.ContainerID)
 			if st == "running" {
-				cmd = exec.Command("docker", "exec", p.ContainerID, "sh", "-lc", cmdLine)
+				cmd = exec.CommandContext(ctx, "docker", "exec", p.ContainerID, "sh", "-lc", cmdLine)
 				where = "container"
 			}
 		}
@@ -719,7 +732,7 @@ func (s *Server) handleRoomExec(w http.ResponseWriter, r *http.Request, roomID s
 			}
 		}
 		_ = os.MkdirAll(dir, 0o750)
-		cmd = exec.Command("sh", "-lc", cmdLine)
+		cmd = exec.CommandContext(ctx, "sh", "-lc", cmdLine)
 		cmd.Dir = dir
 		where = "room-fs"
 	}

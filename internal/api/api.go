@@ -760,6 +760,9 @@ func (s *Server) handleRoomByID(w http.ResponseWriter, r *http.Request) {
 		case "exec":
 			s.handleRoomExec(w, r, id)
 			return
+		case "ai":
+			s.handleRoomAI(w, r, id)
+			return
 		case "logs":
 			s.handleRoomLogs(w, r, id)
 			return

@@ -662,6 +662,93 @@ button, input, textarea, select { font: inherit; color: inherit; }
   font-family: var(--mono);
   font-size: 0.82rem;
 }
+.term-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(240px, 0.7fr);
+  gap: 12px;
+  align-items: stretch;
+  margin-top: 4px;
+}
+.term-panel { margin-top: 0; }
+.ai-chat {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #121212;
+  display: flex;
+  flex-direction: column;
+  min-height: 320px;
+  max-height: 480px;
+}
+.ai-chat-head {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.ai-chat-log {
+  flex: 1;
+  overflow: auto;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+.ai-empty { color: var(--muted); font-size: 0.8rem; line-height: 1.45; }
+.ai-bubble {
+  max-width: 95%;
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 0.82rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.ai-bubble.user {
+  align-self: flex-end;
+  background: #f2f2f2;
+  color: #111;
+}
+.ai-bubble.bot {
+  align-self: flex-start;
+  background: #1a1a1a;
+  border: 1px solid var(--line);
+}
+.ai-ask {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 0 0;
+}
+.ai-ask label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+.ai-ask input {
+  background: #0c0c0c;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.ai-chat-in {
+  display: flex;
+  gap: 8px;
+  padding: 10px;
+  border-top: 1px solid var(--line);
+}
+.ai-chat-in input {
+  flex: 1;
+  background: #0c0c0c;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 0.84rem;
+}
 
 .room-card {
   border: 1px solid var(--line);
@@ -1301,6 +1388,8 @@ body.nav-open .mobile-toggle span:nth-child(3) {
   .env-row { grid-template-columns: 1fr; }
   .topbar h2 { font-size: 1.28rem; }
   .rooms-grid { grid-template-columns: 1fr; }
+  .term-split { grid-template-columns: 1fr; }
+  .ai-chat { max-height: 280px; min-height: 220px; }
   .panel { overflow-x: auto; }
   .logs-layout { grid-template-columns: 1fr; }
   .deploy-layout { grid-template-columns: 1fr; }
