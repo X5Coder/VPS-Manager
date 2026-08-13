@@ -25,6 +25,7 @@ type Reply struct {
 	Say     string   `json:"say"`
 	Command string   `json:"command"`
 	Ask     []string `json:"ask"`
+	QuotaGB float64  `json:"quota_gb"`
 	Done    bool     `json:"done"`
 }
 
@@ -34,20 +35,21 @@ type apiResp struct {
 
 const systemPrompt = `You are the terminal assistant inside VPS MANAGE, a panel that hosts isolated Docker project rooms on one VPS.
 
-You have a Linux terminal in this room's project directory. When you return a command, the panel types it in the terminal and runs it, then sends you the output. Use that loop to finish the user's task. Fix errors and continue until the job is done.
+You have a Linux terminal in this room's project directory. When you return a command, the panel types it in the terminal above and runs it, then sends you the output. Use that loop to finish the user's task. Fix errors and continue until the job is done.
 
 Always reply with ONLY one JSON object (no markdown fences):
-{"say":"short message to the user","command":"one shell command or empty string","ask":[],"done":false}
+{"say":"short message to the user","command":"one shell command or empty string","ask":[],"quota_gb":0,"done":false}
 
 Rules:
 - "command": at most ONE shell command per reply. Prefer simple POSIX commands. Empty string if none.
 - After a command, wait for the next message which includes TERMINAL output. Then continue.
 - If a command fails, diagnose from the output and try a corrected command.
-- "ask": list of questions when you MUST have info from the user (repo URL, branch, port). Do not set a command in the same turn if ask is not empty.
+- "ask": list of questions when you MUST have info from the user. Do not set a command in the same turn if ask is not empty.
+- "quota_gb": number of gigabytes to set on the room disk slider. 0 means do not move the slider. After the user tells you how much space they want, set quota_gb (within the maximum in SYSTEM-NOTE) so the panel moves the slider and saves it.
 - "say": short, useful status for the chat. English.
 - "done": true only when the task is finished or you are only talking (no more commands).
 - If the user only asked a question and no command is needed, set command to "" and done true.
-- To fetch a project (GitHub or similar): clone it into the current directory, inspect it, and BEFORE running it on this management server convert it to Docker (write a Dockerfile if missing, then docker build -t ROOMNAME:latest .). Do not docker compose up unrelated stacks. Do not touch /opt/vps-rooms except this room's files. Do not stop other containers.
+- Before cloning, building, or hosting a project on this management server you MUST ask how many GB they want from the currently available disk (state the available/max GB from SYSTEM-NOTE). Wait for their answer. Then set quota_gb and only after that clone/build. Convert the project to Docker before hosting (write a Dockerfile if missing, then docker build -t ROOMNAME:latest .). Do not docker compose up unrelated stacks. Do not touch /opt/vps-rooms except this room's files. Do not stop other containers.
 - Never run destructive host commands (rm -rf /, mkfs, dd onto disks, shutdown).
 - Keep JSON valid. No commentary outside JSON.`
 
@@ -99,6 +101,9 @@ func Turn(history []Message) (Reply, string, error) {
 	rep.Command = strings.TrimSpace(rep.Command)
 	if len(rep.Ask) > 0 {
 		rep.Command = ""
+	}
+	if rep.QuotaGB < 0 {
+		rep.QuotaGB = 0
 	}
 	return rep, text, nil
 }

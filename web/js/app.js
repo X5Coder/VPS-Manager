@@ -75,6 +75,38 @@
     });
   }
 
+  async function animateQuotaSlider(root, gbVal) {
+    const wrap = (root || document).querySelector("[data-quota-wrap]");
+    if (!wrap) return 0;
+    const range = wrap.querySelector("[data-quota-range]");
+    const input = wrap.querySelector("[data-quota-input]");
+    const label = wrap.querySelector("[data-quota-label]");
+    if (!range) return 0;
+    const max = Number(range.max) || 0.1;
+    const min = Number(range.min) || 0.1;
+    let target = Number(gbVal);
+    if (!(target > 0)) return Number(range.value) || 0;
+    if (target > max) target = max;
+    if (target < min) target = min;
+    const start = Number(range.value) || min;
+    const steps = 20;
+    for (let i = 1; i <= steps; i++) {
+      const cur = start + (target - start) * (i / steps);
+      const shown = Math.round(cur * 10) / 10;
+      range.value = String(shown);
+      if (input) input.value = String(shown);
+      if (label) label.textContent = `${shown.toFixed(1)} GB`;
+      await new Promise((r) => setTimeout(r, 22));
+    }
+    const final = Math.round(target * 10) / 10;
+    range.value = String(final);
+    if (input) input.value = String(final);
+    if (label) label.textContent = `${final.toFixed(1)} GB`;
+    wrap.classList.add("quota-moved");
+    setTimeout(() => wrap.classList.remove("quota-moved"), 800);
+    return final;
+  }
+
   const fmtBytes = (n) => {
     if (n == null || Number.isNaN(Number(n))) return "—";
     const u = ["B", "KB", "MB", "GB", "TB"];
@@ -2057,7 +2089,9 @@ docker save -o myapp.tar myapp:latest`;
       </div>`;
     } else if (tab === "terminal") {
       const lines = (state.termLines || []).join("") || "Linux shell for this room. Commands run in room files or project container.\n";
-      body = `<div class="term-split">
+      const curQ = room.quota_bytes ? gb(room.quota_bytes) : 0.1;
+      const maxQ = Math.max(curQ, Number(room.quota_max_gb || st?.quota_available_gb || curQ));
+      body = `<div class="term-stack">
         <div class="panel term-panel">
           <h3>Terminal</h3>
           <div class="term">
@@ -2069,14 +2103,23 @@ docker save -o myapp.tar myapp:latest`;
             ${TERM_HINTS.map((h) => `<button type="button" class="hint" data-hint="${esc(h.cmd)}" title="${esc(h.tip)}">${esc(h.cmd)}</button>`).join("")}
           </div>
         </div>
-        <div class="ai-chat" id="ai-chat">
-          <div class="ai-chat-head">Assistant</div>
+        <section class="ai-sheet" id="ai-chat">
+          <header class="ai-sheet-head">
+            <div>
+              <h3>Assistant</h3>
+              <p class="muted">Chat below. It asks for disk space, moves the slider, then types commands in the terminal.</p>
+            </div>
+          </header>
+          <div class="ai-quota" id="ai-quota">
+            ${quotaSliderHTML({ name: "quota_gb", id: "ai-quota-gb", maxGB: maxQ, valueGB: curQ, required: true })}
+            <p class="muted ai-quota-hint">Available up to <strong>${maxQ.toFixed(1)} GB</strong> on this VPS.</p>
+          </div>
           <div class="ai-chat-log" id="ai-log"></div>
           <form class="ai-chat-in" id="ai-form">
-            <input id="ai-q" autocomplete="off" maxlength="2000" placeholder="Clone, dockerize, build…" />
+            <input id="ai-q" autocomplete="off" maxlength="2000" placeholder="Ask to clone, dockerize, or host a project…" />
             <button class="btn sm primary" type="submit">Send</button>
           </form>
-        </div>
+        </section>
       </div>`;
     }
 
@@ -2320,6 +2363,7 @@ docker save -o myapp.tar myapp:latest`;
       const tout = document.querySelector("#tout");
       const aiLog = document.querySelector("#ai-log");
       const pack = roomAIState(id);
+      bindQuotaSliders(document.querySelector("#ai-quota"));
       paintAIChat(aiLog, pack);
       document.querySelectorAll("[data-hint]").forEach((b) => b.onclick = () => {
         document.querySelector("#tcmd").value = b.dataset.hint;
@@ -2374,10 +2418,22 @@ docker save -o myapp.tar myapp:latest`;
             const ask = Array.isArray(res.ask) ? res.ask.map((x) => String(x || "").trim()).filter(Boolean) : [];
             pack.messages.push({
               role: "assistant",
-              text: JSON.stringify({ say, command: cmd, ask, done: !!res.done }),
+              text: JSON.stringify({ say, command: cmd, ask, quota_gb: Number(res.quota_gb || 0), done: !!res.done }),
             });
             if (say) pack.bubbles.push({ role: "bot", text: say });
             paintAIChat(aiLog, pack);
+            const wantQ = Number(res.quota_gb || 0);
+            if (wantQ > 0) {
+              const saved = await animateQuotaSlider(document.querySelector("#ai-quota"), wantQ);
+              try {
+                await api(`/api/rooms/${id}/quota`, { method: "POST", body: JSON.stringify({ quota_gb: saved }) });
+                pack.messages.push({ role: "terminal", text: `QUOTA slider set and saved: ${saved.toFixed(1)} GB` });
+              } catch (ex) {
+                pack.messages.push({ role: "terminal", text: `QUOTA save failed: ${ex.message}` });
+                pack.bubbles.push({ role: "bot", text: "Could not save disk quota: " + (ex.message || "") });
+                paintAIChat(aiLog, pack);
+              }
+            }
             if (ask.length) {
               pack.pendingAsk = ask;
               break;

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -28,9 +29,20 @@ func (s *Server) handleRoomAI(w http.ResponseWriter, r *http.Request, roomID str
 		writeErr(w, 400, "messages required")
 		return
 	}
+	st := s.storageInfo()
+	avail := asInt64(st["quota_available"]) + room.QuotaBytes
+	if avail < room.QuotaBytes {
+		avail = room.QuotaBytes
+	}
+	maxGB := float64(avail) / (1024 * 1024 * 1024)
+	curGB := float64(room.QuotaBytes) / (1024 * 1024 * 1024)
+	freeGB := float64(asInt64(st["quota_available"])) / (1024 * 1024 * 1024)
 	hist := append([]ai.Message{{
 		Role: "system-note",
-		Text: "This room is named " + room.Name + ". Tag docker images as " + slugTag(room.Name) + ":latest when you build.",
+		Text: fmt.Sprintf(
+			"Room name: %s. Docker image tag: %s:latest. Current room quota: %.1f GB. Free disk still available on the VPS: %.1f GB. Maximum the quota slider may be set to: %.1f GB. Ask the user how many GB they want (from that available amount) before clone/build/host, then set quota_gb.",
+			room.Name, slugTag(room.Name), curGB, freeGB, maxGB,
+		),
 	}}, body.Messages...)
 	rep, raw, err := ai.Turn(hist)
 	if err != nil {
@@ -42,12 +54,22 @@ func (s *Server) handleRoomAI(w http.ResponseWriter, r *http.Request, roomID str
 		rep.Command = ""
 		rep.Done = true
 	}
+	if rep.QuotaGB > 0 {
+		if rep.QuotaGB > maxGB {
+			rep.QuotaGB = maxGB
+		}
+		if rep.QuotaGB < 0.1 {
+			rep.QuotaGB = 0.1
+		}
+		rep.QuotaGB = float64(int(rep.QuotaGB*10+0.5)) / 10
+	}
 	writeJSON(w, 200, map[string]any{
-		"say":     rep.Say,
-		"command": rep.Command,
-		"ask":     rep.Ask,
-		"done":    rep.Done,
-		"raw":     raw,
+		"say":      rep.Say,
+		"command":  rep.Command,
+		"ask":      rep.Ask,
+		"quota_gb": rep.QuotaGB,
+		"done":     rep.Done,
+		"raw":      raw,
 	})
 }
 

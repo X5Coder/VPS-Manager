@@ -662,43 +662,50 @@ button, input, textarea, select { font: inherit; color: inherit; }
   font-family: var(--mono);
   font-size: 0.82rem;
 }
-.term-split {
-  display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(240px, 0.7fr);
-  gap: 12px;
-  align-items: stretch;
+.term-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
   margin-top: 4px;
 }
 .term-panel { margin-top: 0; }
-.ai-chat {
+.ai-sheet {
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 14px;
   background: #121212;
   display: flex;
   flex-direction: column;
-  min-height: 320px;
-  max-height: 480px;
+  overflow: hidden;
 }
-.ai-chat-head {
-  padding: 10px 12px;
+.ai-sheet-head {
+  padding: 14px 16px 10px;
   border-bottom: 1px solid var(--line);
-  font-size: 0.72rem;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--muted);
+}
+.ai-sheet-head h3 { margin: 0; font-size: 0.92rem; font-weight: 600; }
+.ai-sheet-head .muted { margin: 4px 0 0; font-size: 0.8rem; }
+.ai-quota {
+  padding: 12px 16px 8px;
+  border-bottom: 1px solid var(--line);
+  background: #101010;
+}
+.ai-quota-hint { margin: 8px 0 0; font-size: 0.78rem; }
+.quota-slider.quota-moved {
+  outline: 1px solid rgba(109,255,176,.45);
+  border-radius: 10px;
 }
 .ai-chat-log {
   flex: 1;
   overflow: auto;
-  padding: 10px 12px;
+  padding: 12px 16px;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  min-height: 0;
+  min-height: 160px;
+  max-height: 280px;
 }
 .ai-empty { color: var(--muted); font-size: 0.8rem; line-height: 1.45; }
 .ai-bubble {
-  max-width: 95%;
+  max-width: 85%;
   padding: 8px 10px;
   border-radius: 10px;
   font-size: 0.82rem;
@@ -721,6 +728,7 @@ button, input, textarea, select { font: inherit; color: inherit; }
   flex-direction: column;
   gap: 8px;
   padding: 8px 0 0;
+  max-width: 100%;
 }
 .ai-ask label {
   display: flex;
@@ -738,7 +746,7 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .ai-chat-in {
   display: flex;
   gap: 8px;
-  padding: 10px;
+  padding: 12px 16px 14px;
   border-top: 1px solid var(--line);
 }
 .ai-chat-in input {
@@ -746,7 +754,7 @@ button, input, textarea, select { font: inherit; color: inherit; }
   background: #0c0c0c;
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 8px 10px;
+  padding: 10px 12px;
   font-size: 0.84rem;
 }
 
@@ -1388,8 +1396,7 @@ body.nav-open .mobile-toggle span:nth-child(3) {
   .env-row { grid-template-columns: 1fr; }
   .topbar h2 { font-size: 1.28rem; }
   .rooms-grid { grid-template-columns: 1fr; }
-  .term-split { grid-template-columns: 1fr; }
-  .ai-chat { max-height: 280px; min-height: 220px; }
+  .ai-chat-log { max-height: 220px; }
   .panel { overflow-x: auto; }
   .logs-layout { grid-template-columns: 1fr; }
   .deploy-layout { grid-template-columns: 1fr; }
