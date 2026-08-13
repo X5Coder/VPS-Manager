@@ -1,0 +1,27 @@
+name: vps-manager
+
+services:
+  vps-manager:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: vps-manager:latest
+    container_name: vps-manager
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    privileged: true
+    environment:
+      VPS_ROOMS_ADDR: ":9090"
+      VPS_ROOMS_DATA: /opt/vps-rooms/data
+      VPS_ROOMS_ROOMS: /opt/vps-rooms/rooms
+      VPS_ROOMS_RUNTIME: /opt/vps-rooms/runtime
+      VPS_ROOMS_AGENT_SOCK: /opt/vps-rooms/data/agent.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /opt/vps-rooms/data:/opt/vps-rooms/data
+      - /opt/vps-rooms/rooms:/opt/vps-rooms/rooms
+      - /opt/vps-rooms/runtime:/opt/vps-rooms/runtime
+      - /opt/vps-rooms/volumes:/opt/vps-rooms/volumes
+      - /opt/vps-rooms/proxy:/opt/vps-rooms/proxy
+    # Panel only — does not stop or remove other containers.

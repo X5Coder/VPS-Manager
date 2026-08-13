@@ -1,0 +1,13 @@
+.git
+/data
+/rooms
+/runtime
+/volumes
+/proxy
+*.db
+*.sqlite
+.env
+*.env
+tmp
+bin
+dist

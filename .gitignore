@@ -1,0 +1,17 @@
+/data/
+/rooms/
+/runtime/
+/volumes/
+/proxy/
+*.db
+*.sqlite
+.env
+*.env
+!*.env.example
+/bin/
+/dist/
+/tmp/
+.DS_Store
+/vps-rooms
+/vps-rooms-linux
+*.log

@@ -1,0 +1,212 @@
+package backup
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+type GitHub struct {
+	Token  string
+	User   string
+	Client *http.Client
+}
+
+type GHUser struct {
+	Login string `json:"login"`
+}
+
+func NewGitHub(token string) *GitHub {
+	return &GitHub{Token: strings.TrimSpace(token), Client: &http.Client{Timeout: 60 * time.Second}}
+}
+
+func (g *GitHub) Validate() (*GHUser, error) {
+	if g.Token == "" {
+		return nil, fmt.Errorf("GitHub Personal Access Token (classic) is required")
+	}
+	req, _ := http.NewRequest("GET", "https://api.github.com/user", nil)
+	g.auth(req)
+	res, err := g.Client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	if res.StatusCode != 200 {
+		return nil, fmt.Errorf("invalid GitHub token (%d): %s", res.StatusCode, truncate(string(body), 200))
+	}
+	var u GHUser
+	if err := json.Unmarshal(body, &u); err != nil {
+		return nil, err
+	}
+	if u.Login == "" {
+		return nil, fmt.Errorf("could not read GitHub user")
+	}
+	// check scopes hint
+	scopes := res.Header.Get("X-OAuth-Scopes")
+	if scopes != "" && !strings.Contains(scopes, "repo") {
+		return nil, fmt.Errorf("token missing 'repo' scope — create a classic PAT with repo access")
+	}
+	g.User = u.Login
+	return &u, nil
+}
+
+func (g *GitHub) auth(req *http.Request) {
+	req.Header.Set("Authorization", "Bearer "+g.Token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	req.Header.Set("User-Agent", "vps-manage-backup")
+}
+
+func (g *GitHub) EnsureRepo(name, description string) error {
+	// try get
+	req, _ := http.NewRequest("GET", "https://api.github.com/repos/"+g.User+"/"+name, nil)
+	g.auth(req)
+	res, err := g.Client.Do(req)
+	if err != nil {
+		return err
+	}
+	res.Body.Close()
+	if res.StatusCode == 200 {
+		return nil
+	}
+	payload := map[string]any{
+		"name": name, "private": true, "description": description,
+		"auto_init": true,
+	}
+	b, _ := json.Marshal(payload)
+	req, _ = http.NewRequest("POST", "https://api.github.com/user/repos", bytes.NewReader(b))
+	g.auth(req)
+	req.Header.Set("Content-Type", "application/json")
+	res, err = g.Client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	if res.StatusCode >= 300 {
+		return fmt.Errorf("create repo %s: %s", name, truncate(string(body), 300))
+	}
+	return nil
+}
+
+func (g *GitHub) CloneOrPull(repo, dir string) error {
+	url := fmt.Sprintf("https://x-access-token:%s@github.com/%s/%s.git", g.Token, g.User, repo)
+	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+		if _, err := gitRun(10*time.Minute, env, "git", "-C", dir, "pull", "--rebase", "origin", "HEAD"); err != nil {
+			_, _ = gitRun(5*time.Minute, env, "git", "-C", dir, "fetch", "origin")
+			_, _ = gitRun(2*time.Minute, env, "git", "-C", dir, "reset", "--hard", "origin/HEAD")
+		}
+		return nil
+	}
+	_ = os.RemoveAll(dir)
+	if err := os.MkdirAll(filepath.Dir(dir), 0o750); err != nil {
+		return err
+	}
+	out, err := gitRun(10*time.Minute, env, "git", "clone", "--depth", "1", url, dir)
+	if err != nil {
+		return fmt.Errorf("git clone %s: %s", repo, truncate(string(out)+" "+err.Error(), 300))
+	}
+	return nil
+}
+
+func (g *GitHub) CommitPush(dir, message string) error {
+	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	if _, err := gitRun(30*time.Second, env, "git", "-C", dir, "config", "user.email", "backup@vps-manage.local"); err != nil {
+		return err
+	}
+	if _, err := gitRun(30*time.Second, env, "git", "-C", dir, "config", "user.name", "VPS MANAGE Backup"); err != nil {
+		return err
+	}
+	if out, err := gitRun(15*time.Minute, env, "git", "-C", dir, "add", "-A"); err != nil {
+		return fmt.Errorf("git add: %s", truncate(string(out)+" "+err.Error(), 200))
+	}
+	st, _ := gitRun(30*time.Second, env, "git", "-C", dir, "status", "--porcelain")
+	if len(bytes.TrimSpace(st)) == 0 {
+		return nil
+	}
+	if out, err := gitRun(2*time.Minute, env, "git", "-C", dir, "commit", "-m", message); err != nil {
+		return fmt.Errorf("commit: %s", truncate(string(out)+" "+err.Error(), 200))
+	}
+	out, err := gitRun(20*time.Minute, env, "git", "-C", dir, "push", "origin", "HEAD")
+	if err != nil {
+		return fmt.Errorf("push: %s", truncate(string(out)+" "+err.Error(), 300))
+	}
+	return nil
+}
+
+func (g *GitHub) DownloadFile(repo, path, dest string) error {
+	url := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/HEAD/%s", g.User, repo, path)
+	req, _ := http.NewRequest("GET", url, nil)
+	g.auth(req)
+	res, err := g.Client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		body, _ := io.ReadAll(res.Body)
+		return fmt.Errorf("download %s/%s: %s", repo, path, truncate(string(body), 200))
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o750); err != nil {
+		return err
+	}
+	f, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = io.Copy(f, res.Body)
+	return err
+}
+
+func (g *GitHub) GetJSON(repo, path string, v any) error {
+	tmp, err := os.CreateTemp("", "gh-json-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	tmp.Close()
+	defer os.Remove(name)
+	if err := g.DownloadFile(repo, path, name); err != nil {
+		return err
+	}
+	b, err := os.ReadFile(name)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(b, v)
+}
+
+func gitRun(timeout time.Duration, env []string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	if env != nil {
+		cmd.Env = env
+	} else {
+		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	}
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return out, fmt.Errorf("git timed out after %s", timeout)
+	}
+	return out, err
+}
+
+func truncate(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
