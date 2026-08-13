@@ -573,7 +573,9 @@ func (s *Service) chunkRoots(gh *GitHub, work, slug string, roots []rootSpec) ([
 		return nil, nil, err
 	}
 	dataDir := filepath.Join(work, backupRepo)
-	_ = gh.CloneOrPull(backupRepo, dataDir)
+	if err := gh.CloneOrPull(backupRepo, dataDir); err != nil {
+		s.report(-1, "Could not pull last backup %s: %v", backupRepo, err)
+	}
 	if _, err := os.Stat(filepath.Join(dataDir, ".git")); err != nil {
 		_ = initGitRepo(dataDir, gh, backupRepo)
 	}
@@ -587,6 +589,11 @@ func (s *Service) chunkRoots(gh *GitHub, work, slug string, roots []rootSpec) ([
 		for _, fe := range prevList {
 			prevFiles[fe.Path] = fe
 		}
+	}
+	if len(prevFiles) > 0 {
+		s.report(-1, "Found last backup map (%d files) — skipping unchanged", len(prevFiles))
+	} else {
+		s.report(-1, "No previous file map in %s — packing new files", backupRepo)
 	}
 	newHashes := map[string]string{}
 	var files []FileEntry
@@ -1226,9 +1233,14 @@ func skipBackupRel(rel string) bool {
 	parts := strings.Split(n, "/")
 	for _, p := range parts {
 		if p == ".git" || p == "lost+found" || p == "pg_wal" || p == "pg_stat_tmp" ||
-			p == "node_modules" || p == "__pycache__" || p == ".cache" || p == ".npm" {
+			p == "node_modules" || p == "__pycache__" || p == ".cache" || p == ".npm" ||
+			p == "venv" || p == ".venv" || p == "site-packages" || p == "dist" || p == "build" {
 			return true
 		}
+	}
+	base := parts[len(parts)-1]
+	if base == "__container_image.tar" || base == "__container_export.tar" {
+		return true
 	}
 	// Live Postgres cluster files — dumped via pg_dumpall instead.
 	if strings.Contains(n, "/volumes/db/data") || strings.HasPrefix(n, "volumes/db/data") {

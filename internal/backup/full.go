@@ -3,7 +3,6 @@ package backup
 import (
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -124,17 +123,12 @@ func (s *Service) captureProjectData(roomID string, p store.Project) {
 	if p.ContainerID != "" {
 		st, _ := s.Docker.InspectStatus(p.ContainerID)
 		if st != "missing" && !isCompose {
-			kind := projects.DetectDeployKind(p, pdir)
-			if kind == "image" {
-				s.report(-1, "Saving container image for %s", p.Name)
-				tarPath := filepath.Join(pdir, "__container_image.tar")
-				tag := fmt.Sprintf("vpsrooms-bak/%s:latest", p.ID[:8])
-				_ = os.Remove(tarPath)
-				if err := s.Docker.SaveCommittedImage(p.ContainerID, tag, tarPath); err != nil {
-					s.report(-1, "commit/save %s: %v", p.Name, err)
-					_ = s.Docker.ExportFilesystem(p.ContainerID, filepath.Join(pdir, "__container_export.tar"))
-				}
+			if p.Image != "" {
+				s.report(-1, "Keeping image name %s (pull on restore — skip docker save)", p.Image)
+				_ = os.WriteFile(filepath.Join(pdir, "__image_ref.txt"), []byte(strings.TrimSpace(p.Image)+"\n"), 0o644)
 			}
+			_ = os.Remove(filepath.Join(pdir, "__container_image.tar"))
+			_ = os.Remove(filepath.Join(pdir, "__container_export.tar"))
 			mounts, err := s.Docker.ListMounts(p.ContainerID)
 			if err == nil {
 				volRoot := filepath.Join(pdir, "__volumes")

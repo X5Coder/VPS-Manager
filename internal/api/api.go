@@ -142,8 +142,9 @@ func (s *Server) Handler(webFS http.FileSystem) http.Handler {
 			return
 		}
 		path := r.URL.Path
-		if strings.HasSuffix(path, ".js") || strings.HasSuffix(path, ".css") {
-			w.Header().Set("Cache-Control", "no-store, max-age=0")
+		if strings.HasSuffix(path, ".js") || strings.HasSuffix(path, ".css") || path == "/" || isAppRoute(path) {
+			w.Header().Set("Cache-Control", "no-store, max-age=0, must-revalidate")
+			w.Header().Set("Pragma", "no-cache")
 		}
 		if isAppRoute(path) {
 			f, err := webFS.Open("/index.html")
