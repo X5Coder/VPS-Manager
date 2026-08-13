@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
-FROM golang:1.24-bookworm AS build
+FROM golang:1.25-bookworm AS build
 WORKDIR /src
-ENV GOTOOLCHAIN=auto
+ENV GOTOOLCHAIN=local
 COPY go.mod go.sum ./
 RUN i=1; until go mod download; do i=$((i+1)); [ "$i" -le 8 ] || exit 1; echo "go mod download retry $i"; sleep $((i*3)); done
 COPY . .
