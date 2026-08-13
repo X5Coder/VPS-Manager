@@ -1,24 +1,44 @@
 # VPS MANAGE
 
-Open-source VPS control panel. One command installs Docker, builds the panel, and starts it on port **9090**.
+Open-source panel to manage a Linux VPS: live metrics, isolated project rooms, deploy, backup.
 
-[https://github.com/X5Coder/VPS-Manager](https://github.com/X5Coder/VPS-Manager)
+**Repo:** [https://github.com/X5Coder/VPS-Manager](https://github.com/X5Coder/VPS-Manager)
 
-## Install on a new VPS
+## After you buy a VPS
 
-As **root**:
+You only need **Linux + root**. Best: **Ubuntu 22.04 or 24.04**.
+
+1. SSH from your computer:
+
+```bash
+ssh root@YOUR_VPS_IP
+```
+
+2. Paste this as root and wait (retries if a download fails):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/X5Coder/VPS-Manager/main/install.sh | bash
 ```
 
-Then open `http://YOUR_VPS_IP:9090`.
+3. Open `http://YOUR_VPS_IP:9090`
+   - Telegram bot token → 30-second code
+   - Admin password printed in the terminal (also in `/opt/vps-rooms/data/secrets/owner.env`)
+   - Change that password in Settings
 
-1. Unlock with a Telegram bot token (a 30-second code is sent to your chat).
-2. Sign in with the admin password printed by the installer (also stored in `/opt/vps-rooms/data/secrets/owner.env`).
-3. Change that password in Settings.
+Full guide (English + Arabic): [docs/INSTALL.md](docs/INSTALL.md)
 
 The installer does not stop other containers.
+
+## Supported systems
+
+| Works | Does not work |
+| --- | --- |
+| Ubuntu 20.04 / 22.04 / 24.04 | Windows VPS |
+| Debian 11 / 12 | macOS as the server |
+| Fedora, Rocky Linux, AlmaLinux | Shared hosting without root |
+| x86_64 (amd64) and ARM64 |  |
+
+Needs: root, ~1 GB RAM, Docker (installed for you).
 
 ## What you get
 

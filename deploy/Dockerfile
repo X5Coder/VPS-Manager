@@ -3,17 +3,17 @@ FROM golang:1.24-bookworm AS build
 WORKDIR /src
 ENV GOTOOLCHAIN=auto
 COPY go.mod go.sum ./
-RUN go mod download
+RUN i=1; until go mod download; do i=$((i+1)); [ "$i" -le 8 ] || exit 1; echo "go mod download retry $i"; sleep $((i*3)); done
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /out/vps-rooms .
 
 FROM python:3.12-slim-bookworm
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl git gnupg \
+RUN i=1; until apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl git gnupg; do i=$((i+1)); [ "$i" -le 8 ] || exit 1; sleep $((i*3)); done \
   && install -m 0755 -d /etc/apt/keyrings \
   && curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
   && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list \
-  && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli \
+  && i=1; until apt-get update && apt-get install -y --no-install-recommends docker-ce-cli; do i=$((i+1)); [ "$i" -le 8 ] || exit 1; sleep $((i*3)); done \
   && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /out/vps-rooms /usr/local/bin/vps-rooms

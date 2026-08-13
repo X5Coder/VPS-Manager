@@ -1183,33 +1183,46 @@ Type: docker pull nginx:alpine
   }
 
   async function renderDocs() {
+    const ssh = `ssh root@YOUR_VPS_IP`;
     const install = `curl -fsSL https://raw.githubusercontent.com/X5Coder/VPS-Manager/main/install.sh | bash`;
-    const after = `# Open the panel
-# http://YOUR_VPS_IP:9090
-#
-# 1. Unlock with your Telegram bot token (OTP is sent to your chat)
-# 2. Sign in with the admin password printed by install.sh
-#    (also saved in /opt/vps-rooms/data/secrets/owner.env)
-# 3. Change that password in Settings immediately`;
+    const alt = `git clone https://github.com/X5Coder/VPS-Manager.git
+cd VPS-Manager
+bash install.sh`;
+    const step = (n, title, sub, extra, code) => `<div class="docs-step">
+      <div class="docs-n">${n}</div>
+      <div class="docs-step-body">
+        <h3>${title}</h3>
+        <p class="muted">${sub}</p>
+        ${extra || ""}
+        ${code ? cmdCard("Command", code) : ""}
+      </div>
+    </div>`;
 
     shell(`
       <div class="topbar"><div>
         <h2>Docs</h2>
-        <div class="sub">Install on a new VPS · one command</div>
+        <div class="sub">بعد شراء VPS · ماذا تكتب في التيرمينال</div>
       </div></div>
-      <p class="docs-lead">Run as <strong>root</strong> on a fresh Linux VPS (Ubuntu/Debian). The script installs Docker, clones <span class="mono">X5Coder/VPS-Manager</span>, builds the panel image, and starts it on port <span class="mono">9090</span>. It does not stop other containers.</p>
-      ${cmdCard("1. Install", install)}
-      ${cmdCard("2. After install", after)}
+      <p class="docs-lead">اللوحة تُثبَّت على السيرفر نفسه. بعد الشراء تدخل عليه بـ SSH، تلصق أمر واحد، وبعدين تفتح الرابط من المتصفح. الأمر يعيد المحاولة لو التحميل فشل.</p>
+      <div class="docs-os">
+        <div class="panel">
+          <h3>يعمل على</h3>
+          <p><strong>Linux فقط</strong> — Ubuntu 20.04 / 22.04 / 24.04 (الأفضل)، Debian 11/12، Fedora، Rocky، AlmaLinux.<br>معمارية x86_64 أو ARM64 · صلاحية root.</p>
+        </div>
+        <div class="panel">
+          <h3>لا يعمل على</h3>
+          <p>Windows VPS · macOS · استضافة مشتركة بدون root · لوحة cPanel الجاهزة بدون Docker.</p>
+        </div>
+      </div>
+      ${step("1", "ادخل على الـ VPS", "من تيرمينال جهازك (موبايل أو كمبيوتر). بدّل YOUR_VPS_IP بعنوان الـ IP اللي وصلك بعد الشراء.", "<p class=\"muted\">لو طلب كلمة مرور، استخدم root password من شركة الـ VPS.</p>", ssh)}
+      ${step("2", "الصق أمر التثبيت وانتظر", "مرة واحدة كـ root. يثبت Docker، ينزّل المشروع، ويبني اللوحة على المنفذ 9090. لو الشبكة قطعت يعيد المحاولة ويكمل.", "", install)}
+      ${step("3", "افتح اللوحة من المتصفح", "بعد ما يطبع Panel: http://IP:9090 — افتح الرابط. التوكن من بوت تيليجرام، وبعدين كلمة الأدمن اللي ظهر في التيرمينال.", "<p class=\"muted\">غيّر كلمة الأدمن من Settings فوراً. المنفذ 9090 فقط — لا يوقف حاويات تانية.</p>", "")}
+      ${cmdCard("If curl is blocked — clone then install", alt)}
       <div class="panel" style="margin-top:12px">
-        <h3>What the installer does</h3>
-        <ol class="docs-steps">
-          <li>Installs Docker Engine + Compose if missing</li>
-          <li>Clones the public repo into <span class="mono">/opt/vps-rooms/src</span></li>
-          <li>Creates data folders and a random admin password</li>
-          <li>Builds and starts the panel container</li>
-          <li>Opens ports 22, 80, 443, 9090 when UFW is active</li>
-        </ol>
-        <p class="muted" style="margin-top:12px">Source: <span class="mono">https://github.com/X5Coder/VPS-Manager</span></p>
+        <h3>Full guide</h3>
+        <p class="muted">نفس الخطوات بالتفصيل على GitHub:</p>
+        <p style="margin-top:8px"><a href="https://github.com/X5Coder/VPS-Manager" target="_blank" rel="noopener">github.com/X5Coder/VPS-Manager</a></p>
+        <p class="muted" style="margin-top:6px"><span class="mono">docs/INSTALL.md</span> · English & Arabic</p>
       </div>`, "docs");
     bindCmdCopies();
   }

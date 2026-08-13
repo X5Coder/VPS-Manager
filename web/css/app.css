@@ -868,7 +868,40 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .cmd-pre::-webkit-scrollbar { height: 8px; width: 8px; }
 .cmd-pre::-webkit-scrollbar-track { background: #000; }
 .cmd-pre::-webkit-scrollbar-thumb { background: #111; border-radius: 8px; }
-.docs-lead { color: var(--muted); margin: 0 0 8px; font-size: 0.9rem; }
+.docs-lead { color: var(--muted); margin: 0 0 14px; font-size: 0.9rem; line-height: 1.55; }
+.docs-os {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 0 0 16px;
+}
+.docs-os .panel { margin: 0; padding: 16px 18px; }
+.docs-os h3 { margin: 0 0 8px; font-size: 0.82rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.docs-os p { margin: 0; color: var(--soft); font-size: 0.9rem; line-height: 1.55; }
+.docs-step {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 14px;
+  padding: 16px 16px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #101010;
+}
+.docs-n {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  background: #1a1a1a;
+  border: 1px solid var(--line);
+  font-weight: 700;
+  font-size: 1rem;
+}
+.docs-step-body h3 { margin: 4px 0 4px; font-size: 1.05rem; }
+.docs-step-body .muted { margin: 0 0 8px; }
+.docs-step .cmd-card { margin-top: 8px; }
 .docs-steps {
   margin: 0;
   padding-left: 1.2rem;
@@ -877,6 +910,9 @@ button, input, textarea, select { font: inherit; color: inherit; }
   font-size: 0.9rem;
 }
 .docs-steps li { margin: 4px 0; }
+@media (max-width: 900px) {
+  .docs-os { grid-template-columns: 1fr; }
+}
 
 .env-form { display: flex; flex-direction: column; gap: 8px; }
 .env-row {
