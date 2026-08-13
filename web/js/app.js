@@ -373,11 +373,16 @@
     app.innerHTML = "";
     if (state.gateStep === "code") {
       const card = el(`<div class="auth-wrap"><div class="auth-card">
-        <h1>VPS MANAGE</h1>
-        <p class="lead">Enter Telegram code · ${state.expiresIn}s</p>
-        <form id="f"><div class="field"><label>Code</label><input name="code" required autofocus inputmode="numeric" /></div>
-        <p class="error" id="err"></p><button class="btn primary" style="width:100%" type="submit">Confirm</button>
-        <button class="btn ghost" style="width:100%;margin-top:8px" type="button" id="back">Back</button></form></div></div>`);
+        <p class="auth-kicker">VPS MANAGE</p>
+        <h1>Enter the code</h1>
+        <p class="lead">Sent to your Telegram · valid ${state.expiresIn} seconds</p>
+        <form id="f">
+          <div class="field"><label>Login code</label>
+            <input name="code" required autofocus inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code" /></div>
+          <p class="error" id="err"></p>
+          <button class="btn primary" style="width:100%" type="submit">Continue</button>
+          <button class="btn ghost" style="width:100%;margin-top:8px" type="button" id="back">Use another bot</button>
+        </form></div></div>`);
       app.appendChild(card);
       card.querySelector("#back").onclick = () => { state.gateStep = "token"; renderGate(); };
       card.querySelector("#f").onsubmit = async (e) => {
@@ -390,12 +395,15 @@
       return;
     }
     const card = el(`<div class="auth-wrap"><div class="auth-card">
-      <h1>VPS MANAGE</h1>
-      <p class="lead">Telegram bot token + 30s code</p>
-      <form id="f"><div class="field"><label>Bot token</label>
-      <input name="bot_token" type="password" required value="${esc(saved)}" autocomplete="off" /></div>
-      <p class="error" id="err"></p>
-      <button class="btn primary" style="width:100%" type="submit">Send code</button></form></div></div>`);
+      <p class="auth-kicker">VPS MANAGE</p>
+      <h1>Unlock the panel</h1>
+      <p class="lead">Paste your Telegram bot token. A one-time code is sent to the owner chat set at install.</p>
+      <form id="f">
+        <div class="field"><label>Telegram bot token</label>
+          <input name="bot_token" type="password" required value="${esc(saved)}" autocomplete="off" placeholder="123456:ABC…" /></div>
+        <p class="error" id="err"></p>
+        <button class="btn primary" style="width:100%" type="submit">Send code</button>
+      </form></div></div>`);
     app.appendChild(card);
     card.querySelector("#f").onsubmit = async (e) => {
       e.preventDefault();
@@ -428,25 +436,33 @@
     })();
   }
 
-  function paintUnlockForm() {
-    const card = el(`<div class="auth-wrap"><div class="auth-card">
-      <h1>VPS MANAGE</h1>
-      <p class="lead">Admin vault or unlock one project room</p>
-      <form id="own">
-        <div class="field"><label>Admin password</label>
-          <input name="password" type="password" required autocomplete="current-password" /></div>
-        <p class="error" id="oerr"></p>
-        <button class="btn primary" style="width:100%" type="submit">Unlock admin</button>
-      </form>
-      <p class="muted" style="margin:12px 0 0;font-size:0.8rem">Admin sees every project and its password. Open uses the room password to unlock files.</p>
-      <hr style="border:none;border-top:1px solid var(--line);margin:18px 0" />
+  async function paintUnlockForm() {
+    let hasRooms = false;
+    try {
+      const opt = await api("/api/auth/options");
+      hasRooms = !!opt.has_rooms;
+    } catch {}
+    const roomBlock = hasRooms ? `
+      <div class="auth-split">or</div>
       <form id="room">
-        <div class="field"><label>Room name</label><input name="name" required autocomplete="username" /></div>
+        <p class="auth-sec">Open a project</p>
         <div class="field"><label>Room password</label>
-          <input name="password" type="password" required autocomplete="current-password" /></div>
+          <input name="password" type="password" required autocomplete="current-password" placeholder="Password of any room" /></div>
         <p class="error" id="rerr"></p>
-        <button class="btn" style="width:100%" type="submit">Enter room</button>
+        <button class="btn" style="width:100%" type="submit">Open</button>
+      </form>` : "";
+    const card = el(`<div class="auth-wrap"><div class="auth-card">
+      <p class="auth-kicker">VPS MANAGE</p>
+      <h1>Sign in</h1>
+      <p class="lead">Use the panel password you set during install.</p>
+      <form id="own">
+        <p class="auth-sec">Admin</p>
+        <div class="field"><label>Panel password</label>
+          <input name="password" type="password" required autocomplete="current-password" autofocus /></div>
+        <p class="error" id="oerr"></p>
+        <button class="btn primary" style="width:100%" type="submit">Sign in</button>
       </form>
+      ${roomBlock}
     </div></div>`);
     app.innerHTML = "";
     app.appendChild(card);
@@ -464,24 +480,23 @@
         connectWS();
         render();
       } catch (ex) {
-        card.querySelector("#oerr").textContent = ex.message || "Invalid credentials";
+        card.querySelector("#oerr").textContent = ex.message || "Wrong password";
       }
     };
-    card.querySelector("#room").onsubmit = async (e) => {
+    card.querySelector("#room")?.addEventListener("submit", async (e) => {
       e.preventDefault();
-      const fd = new FormData(e.target);
       try {
         await api("/api/auth/room/login", {
           method: "POST",
-          body: JSON.stringify({ name: fd.get("name"), password: fd.get("password") }),
+          body: JSON.stringify({ password: new FormData(e.target).get("password") }),
         });
         await loadMe();
         state.view = "room";
         render();
       } catch (ex) {
-        card.querySelector("#rerr").textContent = ex.message || "Invalid credentials";
+        card.querySelector("#rerr").textContent = ex.message || "Wrong password";
       }
-    };
+    });
   }
 
   function ensureShell(active) {
@@ -867,7 +882,7 @@
     shell(`
       <div class="topbar"><div>
         <h2>Deploy</h2>
-        <div class="sub">Pull an image or drop a Dockerfile · quota first · room is created after setup</div>
+        <div class="sub">Upload one Docker image, set disk quota, start</div>
       </div></div>
       <div class="deploy-layout">
         <div class="panel deploy-card">
@@ -890,33 +905,31 @@ Type: docker pull nginx:alpine
             <p class="ok-text" id="pull-ready">Image ready</p>
             <form id="pull-finish" class="form-grid">
               <input type="hidden" id="pull-image" />
-              <div class="field full"><label>Project name</label><input id="pull-name" placeholder="nginx-app" required /></div>
               <div class="field"><label>Host port</label><input id="pull-port" type="number" min="1" max="65535" placeholder="auto" /></div>
               <div class="field"><label>Container port</label><input id="pull-cport" type="number" value="80" /></div>
               <div class="full">${portsList(ports.used_ports)}</div>
-              <div class="full"><button class="btn primary action" type="submit">Create room & start</button></div>
+              <div class="full"><button class="btn primary action" type="submit">Start</button></div>
             </form>
           </div>
           <div id="pull-done" class="deploy-result hidden"></div>
         </div>
         <div class="panel deploy-card">
-          <h3>Build from Dockerfile</h3>
+          <h3>Upload image</h3>
           <form id="up">
             <label class="dropzone" id="dz">
               <input name="file" id="dz-input" type="file" required />
-              <div class="dz-icon">Dockerfile</div>
-              <div class="dz-title">Image file (Dockerfile)</div>
-              <div class="dz-sub">Drop a file here or click to browse</div>
+              <div class="dz-icon">Image</div>
+              <div class="dz-title">Docker image (.tar) or Dockerfile</div>
+              <div class="dz-sub">One file · drop or click · then set quota</div>
               <div class="dz-file hidden" id="dz-name"></div>
             </label>
             <div class="field full" style="margin-top:12px">${quotaSliderHTML({ name: "quota_gb", maxGB, valueGB: Math.min(1, maxGB), required: true })}</div>
             <div id="up-setup" class="deploy-setup hidden">
               <div class="form-grid">
-                <div class="field full"><label>Project name</label><input name="name" placeholder="my-app" /></div>
                 <div class="field"><label>Host port</label><input name="host_port" type="number" min="1" max="65535" placeholder="auto" /></div>
                 <div class="field"><label>Container port</label><input name="container_port" type="number" value="80" /></div>
                 <div class="full">${portsList(ports.used_ports)}</div>
-                <div class="full"><button class="btn primary action" type="submit">Build & create room</button></div>
+                <div class="full"><button class="btn primary action" type="submit">Start</button></div>
               </div>
             </div>
             <p class="error" id="uperr"></p>
@@ -991,10 +1004,8 @@ Type: docker pull nginx:alpine
         const ok = /OK image=(\S+)/.exec(text);
         if (ok) {
           document.querySelector("#pull-image").value = ok[1];
-          document.querySelector("#pull-name").value = suggestName(ok[1]);
           document.querySelector("#pull-ready").textContent = `Image ready · ${ok[1]}`;
           document.querySelector("#pull-setup").classList.remove("hidden");
-          document.querySelector("#pull-name").focus();
         }
       } catch (ex) {
         appendTerm(termOut, `\n${ex.message || ex}\n`);
@@ -1007,11 +1018,11 @@ Type: docker pull nginx:alpine
     document.querySelector("#pull-finish").onsubmit = async (e) => {
       e.preventDefault();
       const image = document.querySelector("#pull-image").value.trim();
-      const name = document.querySelector("#pull-name").value.trim();
+      const name = suggestName(image);
       const quota = Number(document.querySelector("#pull-quota").value || 0);
       const btn = e.target.querySelector("button[type=submit]");
       if (btn) { btn.classList.add("busy"); btn.disabled = true; }
-      appendTerm(termOut, `\nCreating room ${name}...\n`);
+      appendTerm(termOut, `\nStarting ${name}...\n`);
       try {
         const text = await streamFetch("/api/deploy", {
           method: "POST",
@@ -1041,7 +1052,9 @@ Type: docker pull nginx:alpine
       err.textContent = "";
       if (!(q > 0)) { err.textContent = "Set disk quota (GB) before deploy."; return; }
       if (q > maxGB + 0.001) { err.textContent = `Quota exceeds available ${maxGB.toFixed(2)} GB.`; return; }
-      if (!fd.get("name")) { err.textContent = "Choose a project name."; return; }
+      const file = fd.get("file");
+      if (!file || !file.name) { err.textContent = "Upload a Docker image (.tar) or a Dockerfile."; return; }
+      if (!fd.get("name")) fd.set("name", suggestName(file.name.replace(/\.(tar|gz|tgz)$/i, "")));
       term.classList.remove("hidden");
       log.textContent = "Uploading…\n";
       const btn = e.target.querySelector("button[type=submit]");
@@ -1188,6 +1201,8 @@ Type: docker pull nginx:alpine
     const alt = `git clone https://github.com/X5Coder/VPS-Manager.git
 cd VPS-Manager
 bash install.sh`;
+    const saveImg = `docker build -t myapp:latest .
+docker save -o myapp.tar myapp:latest`;
     const step = (n, title, sub, extra, code) => `<div class="docs-step">
       <div class="docs-n">${n}</div>
       <div class="docs-step-body">
@@ -1201,29 +1216,24 @@ bash install.sh`;
     shell(`
       <div class="topbar"><div>
         <h2>Docs</h2>
-        <div class="sub">بعد شراء VPS · ماذا تكتب في التيرمينال</div>
+        <div class="sub">Install on a new Ubuntu VPS</div>
       </div></div>
-      <p class="docs-lead">اللوحة تُثبَّت على السيرفر نفسه. بعد الشراء تدخل عليه بـ SSH، تلصق أمر واحد، وبعدين تفتح الرابط من المتصفح. الأمر يعيد المحاولة لو التحميل فشل.</p>
+      <p class="docs-lead">Install on the VPS itself. After the script finishes it asks for the panel password and your Telegram user id, then prints the URL.</p>
       <div class="docs-os">
         <div class="panel">
-          <h3>يعمل على</h3>
-          <p><strong>Linux فقط</strong> — Ubuntu 20.04 / 22.04 / 24.04 (الأفضل)، Debian 11/12، Fedora، Rocky، AlmaLinux.<br>معمارية x86_64 أو ARM64 · صلاحية root.</p>
+          <h3>Supported</h3>
+          <p><strong>Ubuntu 20.04, 22.04, or 24.04</strong> · root access · x86_64 or ARM64.</p>
         </div>
         <div class="panel">
-          <h3>لا يعمل على</h3>
-          <p>Windows VPS · macOS · استضافة مشتركة بدون root · لوحة cPanel الجاهزة بدون Docker.</p>
+          <h3>Not supported</h3>
+          <p>Windows VPS · other Linux distros · shared hosting without root.</p>
         </div>
       </div>
-      ${step("1", "ادخل على الـ VPS", "من تيرمينال جهازك (موبايل أو كمبيوتر). بدّل YOUR_VPS_IP بعنوان الـ IP اللي وصلك بعد الشراء.", "<p class=\"muted\">لو طلب كلمة مرور، استخدم root password من شركة الـ VPS.</p>", ssh)}
-      ${step("2", "الصق أمر التثبيت وانتظر", "مرة واحدة كـ root. يثبت Docker، ينزّل المشروع، ويبني اللوحة على المنفذ 9090. لو الشبكة قطعت يعيد المحاولة ويكمل.", "", install)}
-      ${step("3", "افتح اللوحة من المتصفح", "بعد ما يطبع Panel: http://IP:9090 — افتح الرابط. التوكن من بوت تيليجرام، وبعدين كلمة الأدمن اللي ظهر في التيرمينال.", "<p class=\"muted\">غيّر كلمة الأدمن من Settings فوراً. المنفذ 9090 فقط — لا يوقف حاويات تانية.</p>", "")}
-      ${cmdCard("If curl is blocked — clone then install", alt)}
-      <div class="panel" style="margin-top:12px">
-        <h3>Full guide</h3>
-        <p class="muted">نفس الخطوات بالتفصيل على GitHub:</p>
-        <p style="margin-top:8px"><a href="https://github.com/X5Coder/VPS-Manager" target="_blank" rel="noopener">github.com/X5Coder/VPS-Manager</a></p>
-        <p class="muted" style="margin-top:6px"><span class="mono">docs/INSTALL.md</span> · English & Arabic</p>
-      </div>`, "docs");
+      ${step("1", "SSH into the VPS", "On your computer, replace YOUR_VPS_IP with the address from your provider.", "", ssh)}
+      ${step("2", "Run the installer", "As root. Downloads retry on failure. When it succeeds you will be asked for a panel password and your Telegram account id, then the panel URL is shown.", "", install)}
+      ${step("3", "Open the URL", "Telegram bot token → 30-second code → panel password.", "<p class=\"muted\">Full guide: <a href=\"https://github.com/X5Coder/VPS-Manager/blob/main/docs/INSTALL.md\" target=\"_blank\" rel=\"noopener\">docs/INSTALL.md</a></p>", "")}
+      ${step("4", "Ship a project as one image", "Build on your machine, save one .tar file, upload it in Deploy, set disk quota. The panel creates the room and starts it.", "", saveImg)}
+      ${cmdCard("If curl is blocked", alt)}`, "docs");
     bindCmdCopies();
   }
 

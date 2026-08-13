@@ -31,6 +31,16 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
+if [[ -f /etc/os-release ]]; then
+  # shellcheck disable=SC1091
+  . /etc/os-release
+fi
+if [[ "${ID:-}" != "ubuntu" ]]; then
+  echo "This installer supports Ubuntu 20.04, 22.04, and 24.04 only."
+  exit 1
+fi
+echo "==> Ubuntu ${VERSION_ID:-?} detected"
+
 export DEBIAN_FRONTEND=noninteractive
 
 echo "==> VPS MANAGE install"
@@ -40,13 +50,8 @@ echo "    repo: ${REPO_URL} (${BRANCH})"
 if command -v apt-get >/dev/null 2>&1; then
   retry 8 apt-get update -y
   retry 8 apt-get install -y ca-certificates curl git openssl tar
-elif command -v dnf >/dev/null 2>&1; then
-  retry 8 dnf install -y ca-certificates curl git openssl tar
-elif command -v yum >/dev/null 2>&1; then
-  retry 8 yum install -y ca-certificates curl git openssl tar
 else
-  echo "This installer needs a Linux VPS with apt, dnf, or yum."
-  echo "Use Ubuntu, Debian, Fedora, Rocky Linux, or AlmaLinux. Not Windows."
+  echo "Need apt (Ubuntu 20.04 / 22.04 / 24.04)."
   exit 1
 fi
 
@@ -141,13 +146,7 @@ fi
 test -f "${SRC_DIR}/deploy/docker-compose.yml"
 
 OWNER_ENV="${PANEL_DIR}/data/secrets/owner.env"
-CREATED_PASS=""
-if [[ ! -f "${OWNER_ENV}" ]] || ! grep -q '^VPS_ROOMS_OWNER_PASS=.' "${OWNER_ENV}" 2>/dev/null; then
-  CREATED_PASS="$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 20)"
-  umask 077
-  printf 'VPS_ROOMS_OWNER_PASS=%s\n' "${CREATED_PASS}" > "${OWNER_ENV}"
-  chmod 600 "${OWNER_ENV}"
-fi
+# Password and Telegram id are collected after a successful start.
 
 if command -v ufw >/dev/null 2>&1; then
   ufw allow 22/tcp comment "ssh" || true
@@ -162,6 +161,68 @@ compose_up() {
 }
 retry 5 compose_up
 
+read_tty() {
+  local silent="${1:-0}" prompt="$2" value=""
+  if [[ ! -r /dev/tty ]]; then
+    echo "No terminal for input. Download the script and run: bash install.sh"
+    exit 1
+  fi
+  if [[ "$silent" == "1" ]]; then
+    IFS= read -r -s -p "$prompt" value </dev/tty || true
+    echo >/dev/tty
+  else
+    IFS= read -r -p "$prompt" value </dev/tty || true
+  fi
+  printf '%s' "$value"
+}
+
+ask_admin_setup() {
+  local pass pass2 chat
+  echo
+  echo "==> Panel access"
+  echo "    Set the admin password and your Telegram user id."
+  echo "    Telegram id: open Telegram → search @userinfobot → Start → copy the Id number."
+  echo
+  while true; do
+    pass="$(read_tty 1 "Panel password (min 8 characters): ")"
+    if [[ ${#pass} -lt 8 ]]; then
+      echo "Password must be at least 8 characters."
+      continue
+    fi
+    pass2="$(read_tty 1 "Confirm password: ")"
+    if [[ "$pass" != "$pass2" ]]; then
+      echo "Passwords do not match."
+      continue
+    fi
+    break
+  done
+  while true; do
+    chat="$(read_tty 0 "Telegram user id (numbers only): ")"
+    chat="${chat//[[:space:]]/}"
+    if [[ "$chat" =~ ^-?[0-9]+$ ]]; then
+      break
+    fi
+    echo "Use the numeric id from @userinfobot."
+  done
+  umask 077
+  printf 'VPS_ROOMS_OWNER_PASS=%s\n' "$pass" > "${OWNER_ENV}"
+  chmod 600 "${OWNER_ENV}"
+  local tok=""
+  if [[ -f "${PANEL_DIR}/data/secrets/telegram.env" ]]; then
+    tok="$(grep '^TELEGRAM_BOT_TOKEN=' "${PANEL_DIR}/data/secrets/telegram.env" | head -1 | cut -d= -f2- || true)"
+  fi
+  cat > "${PANEL_DIR}/data/secrets/telegram.env" <<EOF
+# Locked at install. Do not edit.
+TELEGRAM_CHAT_ID=${chat}
+TELEGRAM_CHAT_LOCKED=1
+TELEGRAM_BOT_TOKEN=${tok}
+EOF
+  chmod 600 "${PANEL_DIR}/data/secrets/telegram.env"
+  chmod 700 "${PANEL_DIR}/data/secrets"
+  docker restart vps-manager >/dev/null 2>&1 || true
+  sleep 2
+}
+
 ok=0
 for i in $(seq 1 40); do
   if curl -fsS --max-time 3 http://127.0.0.1:9090/api/health >/dev/null 2>&1; then
@@ -171,20 +232,38 @@ for i in $(seq 1 40); do
   sleep 2
 done
 
+if [[ "${ok}" -ne 1 ]]; then
+  echo "Container started; health check still warming up."
+  echo "Logs: docker logs vps-manager"
+  echo "Re-run the same install command when Docker is ready."
+  exit 1
+fi
+
+echo "Install complete."
+NEED_SETUP=0
+if [[ ! -f "${OWNER_ENV}" ]] || ! grep -q '^VPS_ROOMS_OWNER_PASS=.' "${OWNER_ENV}" 2>/dev/null; then
+  NEED_SETUP=1
+fi
+if [[ ! -f "${PANEL_DIR}/data/secrets/telegram.env" ]] || ! grep -q '^TELEGRAM_CHAT_ID=.\+' "${PANEL_DIR}/data/secrets/telegram.env" 2>/dev/null; then
+  NEED_SETUP=1
+fi
+if [[ "${NEED_SETUP}" -eq 1 ]]; then
+  ask_admin_setup
+else
+  echo "Panel password and Telegram id are already set — keeping them."
+fi
+
+ok=0
+for i in $(seq 1 20); do
+  if curl -fsS --max-time 3 http://127.0.0.1:9090/api/health >/dev/null 2>&1; then
+    ok=1
+    break
+  fi
+  sleep 1
+done
+
 IP="$(curl -fsS --max-time 4 https://api.ipify.org 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || echo YOUR_VPS_IP)"
 
 echo
-if [[ "${ok}" -eq 1 ]]; then
-  echo "Install complete."
-else
-  echo "Container started; health check still warming up."
-  echo "Logs: docker logs vps-manager"
-  echo "Re-run the same install command if it is not up yet — it will continue."
-fi
-echo "Panel:  http://${IP}:9090"
-if [[ -n "${CREATED_PASS}" ]]; then
-  echo "Admin password (save this): ${CREATED_PASS}"
-else
-  echo "Admin password: already set in ${OWNER_ENV}"
-fi
-echo "In the browser: Telegram bot token → 30s code → admin password → change it in Settings."
+echo "Panel URL:  http://${IP}:9090"
+echo "Open that link, unlock with a Telegram bot token, then sign in with the panel password you just set."

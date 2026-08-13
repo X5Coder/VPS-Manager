@@ -1,62 +1,52 @@
 # VPS MANAGE
 
-Open-source panel to manage a Linux VPS: live metrics, isolated project rooms, deploy, backup.
+Open-source panel for an **Ubuntu** VPS: live metrics, isolated project rooms, deploy from one Docker image, backup.
 
 **Repo:** [https://github.com/X5Coder/VPS-Manager](https://github.com/X5Coder/VPS-Manager)
 
-## After you buy a VPS
+## Install
 
-You only need **Linux + root**. Best: **Ubuntu 22.04 or 24.04**.
+Supported: **Ubuntu 20.04, 22.04, or 24.04** with root. Not Windows. Not other distros.
 
-1. SSH from your computer:
+1. SSH in:
 
 ```bash
 ssh root@YOUR_VPS_IP
 ```
 
-2. Paste this as root and wait (retries if a download fails):
+2. Run as root (downloads retry on failure):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/X5Coder/VPS-Manager/main/install.sh | bash
 ```
 
-3. Open `http://YOUR_VPS_IP:9090`
-   - Telegram bot token → 30-second code
-   - Admin password printed in the terminal (also in `/opt/vps-rooms/data/secrets/owner.env`)
-   - Change that password in Settings
+3. When install succeeds, the script asks for:
+   - **Panel password** (min 8 characters)
+   - **Telegram user id** (numbers only — open Telegram, search `@userinfobot`, tap Start, copy the Id)
+4. It then prints the panel URL, for example `http://YOUR_VPS_IP:9090`
+5. In the browser: Telegram bot token → 30-second code → panel password
 
-Full guide (English + Arabic): [docs/INSTALL.md](docs/INSTALL.md)
+Full guide: [docs/INSTALL.md](docs/INSTALL.md)
 
 The installer does not stop other containers.
 
-## Supported systems
+## Deploy a project
 
-| Works | Does not work |
-| --- | --- |
-| Ubuntu 20.04 / 22.04 / 24.04 | Windows VPS |
-| Debian 11 / 12 | macOS as the server |
-| Fedora, Rocky Linux, AlmaLinux | Shared hosting without root |
-| x86_64 (amd64) and ARM64 |  |
+On your computer, build **one image file**:
 
-Needs: root, ~1 GB RAM, Docker (installed for you).
+```bash
+docker build -t myapp:latest .
+docker save -o myapp.tar myapp:latest
+```
+
+In the panel: **Deploy** → upload `myapp.tar` → set disk quota → Start. The panel creates the room and runs it. You can also `docker pull` an image on the VPS the same way.
 
 ## What you get
 
 - Live host metrics (CPU, RAM, disk, load)
-- Isolated project rooms with passwords
-- Deploy from Git / Docker image / Dockerfile
+- Isolated project rooms
+- Deploy from a `.tar` image, a registry pull, or a Dockerfile
 - GitHub full backup and restore
-- Optional domain proxy
-
-## Local development
-
-```bash
-export VPS_ROOMS_DATA=./data
-export VPS_ROOMS_ROOMS=./rooms
-export VPS_ROOMS_ADDR=':9090'
-export VPS_ROOMS_OWNER_PASS=devpass
-go run .
-```
 
 ## License
 

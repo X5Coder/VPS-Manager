@@ -72,6 +72,7 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("/api/auth/admin", s.withGate(s.handleAdminRestore))
 	s.Mux.HandleFunc("/api/auth/logout", s.withGate(s.handleLogout))
 	s.Mux.HandleFunc("/api/auth/me", s.withGate(s.handleMe))
+	s.Mux.HandleFunc("/api/auth/options", s.withGate(s.handleAuthOptions))
 
 	s.Mux.HandleFunc("/api/rooms", s.withGate(s.handleRooms))
 	s.Mux.HandleFunc("/api/rooms/", s.withGate(s.handleRoomByID))
@@ -518,6 +519,15 @@ func (s *Server) handleAdminRestore(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"ok": "1", "kind": "owner"})
 }
 
+func (s *Server) handleAuthOptions(w http.ResponseWriter, r *http.Request) {
+	rooms, err := s.Store.ListRooms()
+	if err != nil {
+		writeJSON(w, 200, map[string]any{"has_rooms": false})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"has_rooms": len(rooms) > 0})
+}
+
 func (s *Server) handleRoomLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeErr(w, 405, "method")
@@ -528,17 +538,40 @@ func (s *Server) handleRoomLogin(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeErr(w, 400, "طلب غير صالح")
+		writeErr(w, 400, "Invalid request")
 		return
 	}
-	room, err := s.Store.GetRoomByName(strings.TrimSpace(body.Name))
-	if err != nil || room == nil {
-		writeErr(w, 401, "اسم الغرفة أو كلمة المرور خاطئة")
+	pass := strings.TrimSpace(body.Password)
+	if pass == "" {
+		writeErr(w, 401, "Wrong password")
 		return
 	}
-	if !auth.CheckPassword(room.PassHash, body.Password) {
-		writeErr(w, 401, "اسم الغرفة أو كلمة المرور خاطئة")
-		return
+	var room *store.Room
+	var err error
+	name := strings.TrimSpace(body.Name)
+	if name != "" {
+		room, err = s.Store.GetRoomByName(name)
+		if err != nil || room == nil || !auth.CheckPassword(room.PassHash, pass) {
+			writeErr(w, 401, "Wrong password")
+			return
+		}
+	} else {
+		rooms, listErr := s.Store.ListRooms()
+		if listErr != nil {
+			writeErr(w, 500, listErr.Error())
+			return
+		}
+		for i := range rooms {
+			if auth.CheckPassword(rooms[i].PassHash, pass) {
+				r := rooms[i]
+				room = &r
+				break
+			}
+		}
+		if room == nil {
+			writeErr(w, 401, "Wrong password")
+			return
+		}
 	}
 	tok, err := auth.CreateSession(s.Store, auth.KindRoom, room.ID, s.Cfg.SessionHours)
 	if err != nil {

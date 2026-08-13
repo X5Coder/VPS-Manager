@@ -311,14 +311,29 @@ func (c *Client) SaveCommittedImage(id, imageTag, destTar string) error {
 	return nil
 }
 
-// LoadImage loads a docker save tar and returns the first repo tag if present.
 func (c *Client) LoadImage(srcTar string) error {
+	_, err := c.LoadImageTag(srcTar)
+	return err
+}
+
+// LoadImageTag loads a docker save tar and returns a repo:tag when docker prints one.
+func (c *Client) LoadImageTag(srcTar string) (string, error) {
 	cmd := exec.Command(c.bin, "load", "-i", srcTar)
 	b, err := cmd.CombinedOutput()
+	out := strings.TrimSpace(string(b))
 	if err != nil {
-		return fmt.Errorf("docker load: %s: %w", strings.TrimSpace(string(b)), err)
+		return "", fmt.Errorf("docker load: %s: %w", out, err)
 	}
-	return nil
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if tag, ok := strings.CutPrefix(line, "Loaded image: "); ok {
+			tag = strings.TrimSpace(tag)
+			if tag != "" {
+				return tag, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("image loaded but has no name — save it as: docker save -o app.tar myapp:latest")
 }
 
 // ImportFilesystem creates an image from a docker-export tar.

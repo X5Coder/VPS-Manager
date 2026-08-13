@@ -921,9 +921,6 @@ func (s *Server) autoDeploy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		projName = r.FormValue("name")
-		if projName == "" {
-			projName = "app"
-		}
 		roomHint = projName
 		hostPort = projects.ParsePort(r.FormValue("host_port"))
 		cPort = projects.ParsePort(r.FormValue("container_port"))
@@ -1010,6 +1007,9 @@ func (s *Server) autoDeploy(w http.ResponseWriter, r *http.Request) {
 	if cPort == 0 {
 		cPort = 80
 	}
+	if strings.TrimSpace(roomHint) == "" {
+		roomHint = "app"
+	}
 	pass := randomPass(10)
 	rm, err := s.Rooms.Create(rooms.CreateInput{
 		Name: s.uniqueRoomName(roomHint), Password: pass, QuotaBytes: quota,
@@ -1022,21 +1022,56 @@ func (s *Server) autoDeploy(w http.ResponseWriter, r *http.Request) {
 
 	file, hdr, err := r.FormFile("file")
 	if err != nil {
-		fmt.Fprintf(logw, "error: image/Dockerfile file required\n")
+		fmt.Fprintf(logw, "error: upload a Docker image (.tar) or a Dockerfile\n")
 		return
 	}
 	defer file.Close()
 	tmp, _ := os.MkdirTemp("", "vm-up-*")
 	defer os.RemoveAll(tmp)
-	dest := filepath.Join(tmp, "Dockerfile")
-	if strings.EqualFold(filepath.Base(hdr.Filename), "dockerfile") || strings.Contains(strings.ToLower(hdr.Filename), "docker") {
-		dest = filepath.Join(tmp, "Dockerfile")
+	fname := ""
+	if hdr != nil {
+		fname = hdr.Filename
 	}
+	low := strings.ToLower(fname)
+	isTar := strings.HasSuffix(low, ".tar") || strings.HasSuffix(low, ".tar.gz") || strings.HasSuffix(low, ".tgz")
+	if isTar {
+		dest := filepath.Join(tmp, "image.tar")
+		out, _ := os.Create(dest)
+		_, _ = io.Copy(out, file)
+		out.Close()
+		fmt.Fprintf(logw, "Loading image %s...\n", fname)
+		if s.Docker == nil || !s.Docker.Available() {
+			fmt.Fprintf(logw, "error: Docker unavailable\n")
+			return
+		}
+		image, err := s.Docker.LoadImageTag(dest)
+		if err != nil {
+			fmt.Fprintf(logw, "error: %v\n", err)
+			return
+		}
+		fmt.Fprintf(logw, "Loaded %s\n", image)
+		if projName == "" {
+			projName = sanitizeName(image)
+		}
+		p, err := s.Projects.DeployImage(projects.DeployImageInput{
+			RoomID: rm.ID, Name: sanitizeName(projName), Image: image, HostPort: hostPort, ContainerPort: cPort, Log: logw,
+		})
+		if err != nil {
+			fmt.Fprintf(logw, "error: %v\n", err)
+			return
+		}
+		fmt.Fprintf(logw, "OK room=%s room_id=%s project=%s password=%s\n", rm.Name, rm.ID, p.ID, pass)
+		return
+	}
+	dest := filepath.Join(tmp, "Dockerfile")
 	out, _ := os.Create(dest)
 	_, _ = io.Copy(out, file)
 	out.Close()
-	if filepath.Base(dest) != "Dockerfile" {
-		_ = os.Rename(dest, filepath.Join(tmp, "Dockerfile"))
+	if projName == "" {
+		projName = sanitizeName(strings.TrimSuffix(fname, filepath.Ext(fname)))
+		if projName == "" || projName == "dockerfile" {
+			projName = "app"
+		}
 	}
 	p, err := s.Projects.DeployBuild(projects.DeployBuildInput{
 		RoomID: rm.ID, Name: sanitizeName(projName), HostPort: hostPort, ContainerPort: cPort, SourceDir: tmp, Log: logw,
