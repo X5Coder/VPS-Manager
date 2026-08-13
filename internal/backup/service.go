@@ -106,21 +106,37 @@ func (s *Service) Status() map[string]any {
 	next, _, _ := s.Store.GetMeta("backup_next_at")
 	lastErr, _, _ := s.Store.GetMeta("backup_last_error")
 	snaps, _ := s.ListSnapshotsLocal()
+	cp := s.loadCheckpoint()
+	resumeKind := ""
+	resumeSnap := ""
+	resumeRooms := 0
+	resumeSystem := false
+	if cp != nil {
+		resumeKind = cp.Kind
+		resumeSnap = cp.SnapshotID
+		resumeRooms = len(cp.RoomsDone)
+		resumeSystem = cp.SystemDone
+	}
 	return map[string]any{
-		"configured":     token != "",
-		"enabled":        enabled == "1" && token != "",
-		"github_user":    user,
-		"token_saved":    token != "",
-		"token_hint":     maskToken(token),
-		"last_backup_at": last,
-		"next_backup_at": next,
-		"last_error":     lastErr,
-		"running":        s.running,
-		"last_log":       s.lastLog,
-		"interval_hours": IntervalHours,
-		"snapshots":      snaps,
-		"job":            s.CurrentJob(),
-		"full_backup":    true,
+		"configured":      token != "",
+		"enabled":         enabled == "1" && token != "",
+		"github_user":     user,
+		"token_saved":     token != "",
+		"token_hint":      maskToken(token),
+		"last_backup_at":  last,
+		"next_backup_at":  next,
+		"last_error":      lastErr,
+		"running":         s.running,
+		"last_log":        s.lastLog,
+		"interval_hours":  IntervalHours,
+		"snapshots":       snaps,
+		"job":             s.CurrentJob(),
+		"can_resume":      cp != nil && (cp.Kind == "backup" || cp.Kind == "restore"),
+		"resume_kind":     resumeKind,
+		"resume_snapshot": resumeSnap,
+		"resume_rooms":    resumeRooms,
+		"resume_system":   resumeSystem,
+		"full_backup":     true,
 		"includes": []string{
 			"panel.db (rooms, projects, API tokens, settings)",
 			"telegram & github secrets",
@@ -190,11 +206,11 @@ func (s *Service) recoverStaleJob() {
 		var j Job
 		if err := json.Unmarshal([]byte(raw), &j); err == nil && (j.Status == "running" || j.Status == "queued") {
 			j.Status = "error"
-			j.Error = "Interrupted — panel restarted"
-			j.Message = "Backup interrupted"
-			j.Progress = "Interrupted"
+			j.Error = "Interrupted — click Backup / Restore to resume from the last point"
+			j.Message = "Interrupted"
+			j.Progress = "Interrupted — resume from last point"
 			j.EndedAt = time.Now().UTC().Format(time.RFC3339)
-			j.Logs = append(j.Logs, time.Now().UTC().Format("15:04:05")+"  Interrupted — panel restarted")
+			j.Logs = append(j.Logs, time.Now().UTC().Format("15:04:05")+"  Interrupted — resume from last point")
 			s.flushJob(j)
 			s.mu.Lock()
 			s.liveJob = &j
@@ -270,6 +286,15 @@ func (s *Service) executeBackup(label, description string) (*SnapshotRecord, err
 		description = "Full VPS MANAGE backup: panel DB, secrets, API tokens, rooms, vaults, runtime, container data & volumes"
 	}
 
+	s.report(1, "Inspecting last backup point")
+	cp := s.loadCheckpoint()
+	if cp != nil && cp.Kind == "backup" {
+		s.report(2, "Resuming backup from last point (%d rooms already uploaded)", len(cp.RoomsDone))
+	} else {
+		cp = &Checkpoint{Kind: "backup", RoomsDone: []string{}, UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
+		s.saveCheckpoint(cp)
+	}
+
 	id := uuid.NewString()
 	manifest := NewManifest(id, label, description, user)
 	work := filepath.Join(s.WorkDir, "run-"+id[:8])
@@ -292,30 +317,71 @@ func (s *Service) executeBackup(label, description string) (*SnapshotRecord, err
 	}
 	_ = os.WriteFile(filepath.Join(indexDir, "FORMAT"), []byte(FormatMagic+"\n"), 0o644)
 
-	// Full system state (panel.db, secrets, tokens, proxy, logs)
-	s.report(10, "Backing up panel database & secrets")
-	sysLocal := filepath.Join(work, "system-tree")
-	if err := s.prepareSystemTree(sysLocal); err != nil {
-		return nil, fmt.Errorf("system snapshot: %w", err)
+	if cp.SystemDone {
+		s.report(12, "Panel database already uploaded — skipping")
+	} else {
+		s.report(10, "Backing up panel database & secrets")
+		sysLocal := filepath.Join(work, "system-tree")
+		if err := s.prepareSystemTree(sysLocal); err != nil {
+			return nil, fmt.Errorf("system snapshot: %w", err)
+		}
+		sysFiles, err := s.uploadTree(gh, work, SystemRepo, "VPS MANAGE full system state", sysLocal, "system")
+		if err != nil {
+			return nil, fmt.Errorf("system upload: %w", err)
+		}
+		manifest.SystemFiles = sysFiles
+		manifest.SystemRepo = SystemRepo
+		cp.SystemDone = true
+		cp.SystemFiles = sysFiles
+		cp.SystemRepo = SystemRepo
+		s.saveCheckpoint(cp)
+		s.report(18, "Uploaded panel system state")
 	}
-	sysFiles, err := s.uploadTree(gh, work, SystemRepo, "VPS MANAGE full system state", sysLocal, "system")
-	if err != nil {
-		return nil, fmt.Errorf("system upload: %w", err)
-	}
-	manifest.SystemFiles = sysFiles
-	manifest.SystemRepo = SystemRepo
-
-	s.report(18, "Uploaded panel system state")
 
 	roomsList, err := s.Store.ListRooms()
 	if err != nil {
 		return nil, err
+	}
+	var prevMan Manifest
+	_ = readJSON(filepath.Join(indexDir, "latest.json"), &prevMan)
+	prevByRoom := map[string]ProjectMap{}
+	for _, p := range prevMan.Projects {
+		prevByRoom[p.RoomID] = p
+	}
+	if cp.SystemDone && len(manifest.SystemFiles) == 0 {
+		if len(cp.SystemFiles) > 0 {
+			manifest.SystemFiles = cp.SystemFiles
+			manifest.SystemRepo = cp.SystemRepo
+		} else {
+			manifest.SystemFiles = prevMan.SystemFiles
+			manifest.SystemRepo = prevMan.SystemRepo
+		}
+		if manifest.SystemRepo == "" {
+			manifest.SystemRepo = SystemRepo
+		}
 	}
 	for i, room := range roomsList {
 		base := 18
 		span := 70
 		if n := len(roomsList); n > 0 {
 			base = 18 + (span * i / n)
+		}
+		if checkpointHasRoom(cp, room.ID) {
+			found := false
+			for _, pm := range cp.Projects {
+				if pm.RoomID == room.ID {
+					manifest.Projects = append(manifest.Projects, pm)
+					found = true
+					break
+				}
+			}
+			if !found {
+				if pm, ok := prevByRoom[room.ID]; ok {
+					manifest.Projects = append(manifest.Projects, pm)
+				}
+			}
+			s.report(base, "Room %s already uploaded — skipping", room.Name)
+			continue
 		}
 		s.report(base, "Room %s (%d/%d)", room.Name, i+1, len(roomsList))
 		_ = s.Rooms.EnsureUnlocked(room.ID)
@@ -332,6 +398,9 @@ func (s *Service) executeBackup(label, description string) (*SnapshotRecord, err
 			continue
 		}
 		manifest.Projects = append(manifest.Projects, *pm)
+		cp.RoomsDone = append(cp.RoomsDone, room.ID)
+		cp.Projects = append(cp.Projects, *pm)
+		s.saveCheckpoint(cp)
 		s.report(base+span/max(len(roomsList), 1), "Uploaded room %s", room.Name)
 	}
 
@@ -373,6 +442,7 @@ func (s *Service) executeBackup(label, description string) (*SnapshotRecord, err
 	_ = s.Store.SetMeta("backup_last_at", now.Format(time.RFC3339))
 	_ = s.Store.SetMeta("backup_next_at", now.Add(IntervalHours*time.Hour).Format(time.RFC3339))
 	_ = s.Store.SetMeta("backup_last_error", "")
+	s.clearCheckpoint()
 	s.logf("backup ok %s", id)
 	return &rec, nil
 }
@@ -563,6 +633,15 @@ func (s *Service) chunkRoots(gh *GitHub, work, slug string, roots []rootSpec) ([
 				return nil
 			}
 			key := rs.prefix + "/" + filepath.ToSlash(rel)
+			if old, ok := prevFiles[key]; ok && old.Size == info.Size() && old.SHA256 != "" && len(old.Chunks) > 0 {
+				fileN++
+				newHashes[key] = old.SHA256
+				files = append(files, old)
+				if fileN%80 == 0 {
+					s.report(-1, "Unchanged %d files in %s", fileN, rs.prefix)
+				}
+				return nil
+			}
 			if info.Size() >= 1024*1024 {
 				s.report(-1, "Hashing %s (%s)", key, formatBytes(info.Size()))
 			}
@@ -719,7 +798,15 @@ func (s *Service) chunkNamed(gh *GitHub, work, baseRepo, desc string, roots []ro
 			if err != nil {
 				return nil
 			}
+			if !info.Mode().IsRegular() {
+				return nil
+			}
 			key := rs.prefix + "/" + filepath.ToSlash(rel)
+			if old, ok := prevFiles[key]; ok && old.Size == info.Size() && old.SHA256 != "" && len(old.Chunks) > 0 {
+				newHashes[key] = old.SHA256
+				files = append(files, old)
+				return nil
+			}
 			sum, size, err := HashFile(path)
 			if err != nil {
 				return nil
@@ -840,6 +927,15 @@ func (s *Service) executeRestore(token, snapshotID string) error {
 		return err
 	}
 
+	s.report(4, "Inspecting last restore point")
+	cp := s.loadCheckpoint()
+	if cp == nil || cp.Kind != "restore" || cp.SnapshotID != man.SnapshotID {
+		cp = &Checkpoint{Kind: "restore", SnapshotID: man.SnapshotID, RoomsDone: []string{}, UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
+		s.saveCheckpoint(cp)
+	} else {
+		s.report(5, "Resuming restore from last point (%d rooms done)", len(cp.RoomsDone))
+	}
+
 	work := filepath.Join(s.WorkDir, "restore-"+man.SnapshotID[:8])
 	_ = os.RemoveAll(work)
 	_ = os.MkdirAll(work, 0o750)
@@ -847,23 +943,39 @@ func (s *Service) executeRestore(token, snapshotID string) error {
 
 	// 1) Full system state first
 	if len(man.SystemFiles) > 0 || man.FullBackup {
-		s.report(8, "Restoring panel database, secrets & tokens")
-		sysDir := filepath.Join(work, "system-out")
-		_ = os.MkdirAll(sysDir, 0o750)
-		if err := s.downloadEntries(gh, work, man.SystemFiles, sysDir, "system/"); err != nil {
-			s.logf("system files: %v", err)
-		}
-		if err := s.applyRestoredSystem(sysDir); err != nil {
-			return fmt.Errorf("apply system: %w", err)
+		if cp.SystemDone {
+			s.report(10, "Panel database already restored — skipping")
+		} else {
+			s.report(8, "Restoring panel database, secrets & tokens")
+			sysDir := filepath.Join(work, "system-out")
+			_ = os.MkdirAll(sysDir, 0o750)
+			if err := s.downloadEntries(gh, work, man.SystemFiles, sysDir, "system/"); err != nil {
+				s.logf("system files: %v", err)
+			}
+			if err := s.applyRestoredSystem(sysDir); err != nil {
+				return fmt.Errorf("apply system: %w", err)
+			}
+			cp.SystemDone = true
+			s.saveCheckpoint(cp)
 		}
 	}
 
 	for i, pm := range man.Projects {
 		pct := 20 + (60 * i / max(len(man.Projects), 1))
+		rid := pm.RoomID
+		if rid == "" {
+			rid = pm.RoomName
+		}
+		if checkpointHasRoom(cp, rid) {
+			s.report(pct, "Room %s already restored — skipping", pm.RoomName)
+			continue
+		}
 		s.report(pct, "Restoring %s (%d/%d)", pm.RoomName, i+1, len(man.Projects))
 		if err := s.restoreProject(gh, work, pm); err != nil {
 			return fmt.Errorf("%s: %w", pm.RoomName, err)
 		}
+		cp.RoomsDone = append(cp.RoomsDone, rid)
+		s.saveCheckpoint(cp)
 	}
 
 	// Redeploy managed containers (skip live compose stacks — restore dumps instead)
@@ -889,6 +1001,7 @@ func (s *Service) executeRestore(token, snapshotID string) error {
 		_ = s.OnAfterRestore()
 	}
 	_ = s.SaveToken(token)
+	s.clearCheckpoint()
 	return nil
 }
 
@@ -903,9 +1016,16 @@ func (s *Service) downloadEntries(gh *GitHub, work string, entries []FileEntry, 
 		if len(fe.Chunks) == 0 {
 			continue
 		}
+		rel := strings.TrimPrefix(fe.Path, stripPrefix)
+		target := filepath.Join(destRoot, rel)
+		if fe.SHA256 != "" {
+			if sum, _, err := HashFile(target); err == nil && sum == fe.SHA256 {
+				continue
+			}
+		}
 		var locals []string
 		for _, ref := range fe.Chunks {
-			repo, rel, ok := splitRef(ref)
+			repo, relChunk, ok := splitRef(ref)
 			if !ok {
 				continue
 			}
@@ -913,15 +1033,13 @@ func (s *Service) downloadEntries(gh *GitHub, work string, entries []FileEntry, 
 				locals = append(locals, loc)
 				continue
 			}
-			dest := filepath.Join(work, "chunks", repo, filepath.Base(rel))
-			if err := gh.DownloadFile(repo, rel, dest); err != nil {
+			dest := filepath.Join(work, "chunks", repo, filepath.Base(relChunk))
+			if err := gh.DownloadFile(repo, relChunk, dest); err != nil {
 				return err
 			}
 			chunkCache[ref] = dest
 			locals = append(locals, dest)
 		}
-		rel := strings.TrimPrefix(fe.Path, stripPrefix)
-		target := filepath.Join(destRoot, rel)
 		if err := JoinChunks(locals, target); err != nil {
 			return err
 		}
@@ -1188,6 +1306,46 @@ func (s *Service) findPostgresContainer(p store.Project, composeProject string) 
 		return p.ContainerID
 	}
 	return ""
+}
+
+func (s *Service) loadCheckpoint() *Checkpoint {
+	raw, ok, _ := s.Store.GetMeta("backup_checkpoint")
+	if !ok || strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var cp Checkpoint
+	if err := json.Unmarshal([]byte(raw), &cp); err != nil || cp.Kind == "" {
+		return nil
+	}
+	return &cp
+}
+
+func (s *Service) saveCheckpoint(cp *Checkpoint) {
+	if cp == nil {
+		return
+	}
+	cp.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	b, err := json.Marshal(cp)
+	if err != nil {
+		return
+	}
+	_ = s.Store.SetMeta("backup_checkpoint", string(b))
+}
+
+func (s *Service) clearCheckpoint() {
+	_ = s.Store.SetMeta("backup_checkpoint", "")
+}
+
+func checkpointHasRoom(cp *Checkpoint, id string) bool {
+	if cp == nil || id == "" {
+		return false
+	}
+	for _, x := range cp.RoomsDone {
+		if x == id {
+			return true
+		}
+	}
+	return false
 }
 
 func splitRef(ref string) (repo, path string, ok bool) {

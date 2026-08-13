@@ -21,6 +21,17 @@ const (
 	IntervalHours = 24
 )
 
+type Checkpoint struct {
+	Kind        string       `json:"kind"`
+	SnapshotID  string       `json:"snapshot_id,omitempty"`
+	SystemDone  bool         `json:"system_done"`
+	RoomsDone   []string     `json:"rooms_done,omitempty"`
+	SystemRepo  string       `json:"system_repo,omitempty"`
+	SystemFiles []FileEntry  `json:"system_files,omitempty"`
+	Projects    []ProjectMap `json:"projects,omitempty"`
+	UpdatedAt   string       `json:"updated_at"`
+}
+
 type FileEntry struct {
 	Path    string   `json:"path"`
 	Size    int64    `json:"size"`

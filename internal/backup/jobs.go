@@ -107,14 +107,14 @@ func (s *Service) StartBackupAsync(label, description string) (*Job, error) {
 	j := Job{
 		ID: uuid.NewString(), Kind: "backup", Status: "running",
 		Label: label, Message: "Backup started — this can take several minutes",
-		Progress: "Starting…", Percent: 1, Logs: []string{},
+		Progress: "Inspecting last point…", Percent: 1, Logs: []string{},
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	if j.Label == "" {
 		j.Label = "Backup now"
 	}
 	s.setJob(j)
-	s.report(1, "Backup started")
+	s.report(1, "Inspecting last point")
 
 	go func() {
 		defer func() {
@@ -167,12 +167,12 @@ func (s *Service) StartRestoreAsync(token, snapshotID string) (*Job, error) {
 	j := Job{
 		ID: uuid.NewString(), Kind: "restore", Status: "running",
 		Label: "Restore", Message: "Restore started — this can take several minutes",
-		Progress: "Downloading…", Percent: 1, Logs: []string{},
-		StartedAt: time.Now().UTC().Format(time.RFC3339),
+		Progress: "Inspecting last restore point…", Percent: 1, Logs: []string{},
+		StartedAt:  time.Now().UTC().Format(time.RFC3339),
 		SnapshotID: snapshotID,
 	}
 	s.setJob(j)
-	s.report(1, "Restore started")
+	s.report(1, "Inspecting last restore point")
 
 	go func() {
 		defer func() {

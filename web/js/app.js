@@ -92,6 +92,27 @@
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const gb = (bytes) => (Number(bytes) || 0) / (1024 * 1024 * 1024);
 
+  function brandMarkHTML() {
+    return `<span class="brand-mark" aria-hidden="true"><span>V</span></span>`;
+  }
+  function brandWordmarkHTML(roleId, roleText) {
+    return `${brandMarkHTML()}<div class="brand-text"><strong class="brand-name">VPS MANAGE</strong><span class="brand-role" id="${roleId}">${esc(roleText)}</span></div>`;
+  }
+  function navIco(k) {
+    const p = 'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"';
+    const icons = {
+      server: `<svg ${p}><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7h.01M7 17h.01"/></svg>`,
+      rooms: `<svg ${p}><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>`,
+      deploy: `<svg ${p}><path d="M12 3v12"/><path d="M8 11l4 4 4-4"/><path d="M5 19h14"/></svg>`,
+      restore: `<svg ${p}><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>`,
+      logs: `<svg ${p}><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></svg>`,
+      docs: `<svg ${p}><path d="M7 3h8l5 5v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M15 3v5h5M9 13h6M9 17h4"/></svg>`,
+      settings: `<svg ${p}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9c.3.7.9 1.2 1.6 1.4H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>`,
+      room: `<svg ${p}><path d="M4 10.5L12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1z"/></svg>`,
+    };
+    return icons[k] || "";
+  }
+
   async function api(path, opts = {}) {
     const res = await fetch(path, {
       credentials: "same-origin",
@@ -373,7 +394,7 @@
     app.innerHTML = "";
     if (state.gateStep === "code") {
       const card = el(`<div class="auth-wrap"><div class="auth-card">
-        <p class="auth-kicker">VPS MANAGE</p>
+        <p class="auth-kicker">${brandMarkHTML()}VPS MANAGE</p>
         <h1>Enter the code</h1>
         <p class="lead">Sent to your Telegram · valid ${state.expiresIn} seconds</p>
         <form id="f">
@@ -395,7 +416,7 @@
       return;
     }
     const card = el(`<div class="auth-wrap"><div class="auth-card">
-      <p class="auth-kicker">VPS MANAGE</p>
+      <p class="auth-kicker">${brandMarkHTML()}VPS MANAGE</p>
       <h1>Unlock the panel</h1>
       <p class="lead">Paste your Telegram bot token. A one-time code is sent to the owner chat set at install.</p>
       <form id="f">
@@ -452,7 +473,7 @@
         <button class="btn" style="width:100%" type="submit">Open</button>
       </form>` : "";
     const card = el(`<div class="auth-wrap"><div class="auth-card">
-      <p class="auth-kicker">VPS MANAGE</p>
+      <p class="auth-kicker">${brandMarkHTML()}VPS MANAGE</p>
       <h1>Sign in</h1>
       <p class="lead">Use the panel password you set during install.</p>
       <form id="own">
@@ -508,19 +529,14 @@
         <header class="mobile-bar">
           <button class="mobile-toggle" id="menu" title="Menu" aria-label="Menu"><span></span><span></span><span></span></button>
           <div class="mobile-bar-brand">
-            <strong>VPS MANAGE</strong>
-            <span id="mobile-role">${isOwner ? "Admin" : `Room · ${esc(state.me?.room?.name || "")}`}</span>
+            ${brandWordmarkHTML("mobile-role", isOwner ? "Admin" : `Room · ${state.me?.room?.name || ""}`)}
           </div>
         </header>
         <div class="backdrop" id="backdrop"></div>
         <aside class="sidebar" id="sidebar">
           <div class="sidebar-head">
             <div class="brand">
-              <span class="brand-mark" aria-hidden="true"></span>
-              <div>
-                <h1>VPS MANAGE</h1>
-                <p id="brand-role">${isOwner ? "Admin" : `Room · ${esc(state.me?.room?.name || "")}`}</p>
-              </div>
+              ${brandWordmarkHTML("brand-role", isOwner ? "Admin" : `Room · ${state.me?.room?.name || ""}`)}
             </div>
             <nav class="nav" id="nav"></nav>
           </div>
@@ -567,7 +583,7 @@
     const highlight = navHighlight(active || state.view);
     nav.innerHTML = items.map(([k, label]) => {
       const locked = k === "restore" && !state.backupReady;
-      return `<button data-go="${k}" class="${highlight === k ? "active" : ""} ${locked ? "nav-locked" : ""}" ${locked ? "title=\"Add & validate GitHub PAT first\"" : ""}>${label}${locked ? " 🔒" : ""}</button>`;
+      return `<button data-go="${k}" class="${highlight === k ? "active" : ""} ${locked ? "nav-locked" : ""}" ${locked ? "title=\"Add & validate GitHub PAT first\"" : ""}><span class="nav-ico">${navIco(k)}</span><span>${label}</span>${locked ? "<span class=\"nav-lock\">Locked</span>" : ""}</button>`;
     }).join("");
     nav.querySelectorAll("[data-go]").forEach((b) => {
       b.onclick = async () => {
@@ -734,40 +750,63 @@
     const gen = state._gen;
     const paint = (rooms) => {
       if (!rooms) {
-        shell(`<div class="topbar"><div><h2>Projects</h2><div class="sub">Admin view · all rooms and passwords</div></div>
+        shell(`<div class="topbar"><div><h2>Projects</h2><div class="sub">Rooms on this VPS</div></div>
           <button class="btn primary action" id="go-deploy">Deploy new</button></div>${skel(4)}`, "rooms");
         document.querySelector("#go-deploy")?.addEventListener("click", () => setView("deploy"));
         return;
       }
       const cards = (rooms || []).map((r) => {
         const st = r.status === "running" ? "ok" : r.status === "stopped" ? "stop" : "miss";
-        const used = r.quota_bytes ? `${fmtBytes(r.usage_bytes)} / ${fmtBytes(r.quota_bytes)}` : fmtBytes(r.usage_bytes);
+        const usedN = Number(r.usage_bytes) || 0;
+        const quotaN = Number(r.quota_bytes) || 0;
+        const used = quotaN ? `${fmtBytes(usedN)} / ${fmtBytes(quotaN)}` : fmtBytes(usedN);
+        const fill = quotaN > 0 ? Math.min(100, Math.round((usedN / quotaN) * 100)) : 0;
+        const heat = fill >= 90 ? "hot" : fill >= 70 ? "warm" : "";
         const pw = r.password || "";
-        return `<div class="room-card" data-room="${r.id}">
-          <div class="head"><h4>${esc(r.name)}</h4><span class="badge ${st}" data-badge>${esc(r.status)}</span></div>
-          <div style="margin-top:10px">
-            <div class="muted" style="font-size:0.75rem">Room password</div>
-            <div class="mono copyable" data-copy="${esc(pw)}" style="margin-top:4px;font-size:0.95rem;color:#93c5fd">${pw ? esc(pw) : "—"}</div>
+        const initial = String(r.name || "?").trim().slice(0, 1).toUpperCase() || "P";
+        return `<article class="room-card" data-room="${r.id}">
+          <div class="room-card-top">
+            <div class="room-ident">
+              <span class="room-avatar" aria-hidden="true">${esc(initial)}</span>
+              <div>
+                <h4>${esc(r.name)}</h4>
+                <div class="room-card-meta">Room</div>
+              </div>
+            </div>
+            <span class="badge ${st}" data-badge>${esc(r.status)}</span>
           </div>
-          <div class="muted" style="margin-top:8px;font-size:0.85rem">disk ${used}</div>
-          <div class="row-actions" style="margin-top:14px">
+          <div class="room-disk ${heat}">
+            <div class="room-disk-row"><span>Disk</span><span class="mono">${esc(used)}</span></div>
+            <div class="room-disk-bar"><i style="width:${fill}%"></i></div>
+          </div>
+          <div class="room-pass">
+            <span>Password</span>
+            <code class="mono copyable" data-copy="${esc(pw)}">${pw ? esc(pw) : "—"}</code>
+          </div>
+          <div class="row-actions room-card-actions">
             <button class="btn sm primary action" data-enter="${r.id}" data-name="${esc(r.name)}" data-pass="${esc(pw)}">Open</button>
             ${powerToggleHTML(r.id, r.status)}
             <button class="btn sm danger action" data-del="${r.id}">Delete</button>
           </div>
+        </article>`;
+      }).join("") || `<div class="empty-projects">
+          <span class="brand-mark" aria-hidden="true"><span>V</span></span>
+          <h3>No projects yet</h3>
+          <p class="muted">Deploy an image, set a disk quota, and start a room.</p>
+          <button class="btn primary action" id="empty-deploy">Deploy new</button>
         </div>`;
-      }).join("") || `<div class="panel"><p class="muted">No projects yet — use Deploy and set a disk quota first.</p></div>`;
 
       shell(`
         <div class="topbar"><div>
           <h2>Projects</h2>
-          <div class="sub">Admin view · all rooms and passwords</div>
+          <div class="sub">${(rooms || []).length ? `${rooms.length} room${rooms.length === 1 ? "" : "s"} on this VPS` : "Create a room with Deploy"}</div>
         </div>
         <button class="btn primary action" id="go-deploy">Deploy new</button>
         </div>
         <div class="rooms-grid">${cards}</div>`, "rooms");
 
       document.querySelector("#go-deploy")?.addEventListener("click", () => setView("deploy"));
+      document.querySelector("#empty-deploy")?.addEventListener("click", () => setView("deploy"));
       bindCopyables();
       document.querySelectorAll("[data-enter]").forEach((b) => bindAction(b, async () => {
         const roomId = b.dataset.enter;
@@ -1373,6 +1412,8 @@ docker save -o myapp.tar myapp:latest`;
         if (saved) saved.textContent = `Token saved on this VPS (${bk.token_hint || "••••"}) for @${bk.github_user || "?"} — you do not need to paste it again.`;
         if (inp) inp.placeholder = "Leave blank — already saved. Paste a new token only to replace.";
         el.textContent = `Enabled for @${bk.github_user || "?"} · last ${bk.last_backup_at || "never"} · next ${bk.next_backup_at || "—"}`;
+        const bakBtn = document.querySelector("#bak-now-settings");
+        if (bakBtn && bk.can_resume && bk.resume_kind === "backup") bakBtn.textContent = "Resume backup";
       } else {
         if (saved) saved.textContent = "";
         el.textContent = "Not configured — backups are disabled until a PAT is saved.";
@@ -1597,12 +1638,23 @@ docker save -o myapp.tar myapp:latest`;
     state.backupReady = !!bk.configured;
     const job = bk.job;
     const snaps = bk.snapshots || [];
-    const rows = snaps.map((s) => `<tr>
+    const canResume = !!bk.can_resume && (job?.status !== "running");
+    const resumeKind = bk.resume_kind || "";
+    const bakLabel = canResume && resumeKind === "backup" ? "Resume backup" : "Backup now";
+    const resumeNote = canResume
+      ? (resumeKind === "backup"
+        ? `Interrupted backup — ${bk.resume_rooms || 0} room(s) already uploaded. Click Resume to inspect and continue.`
+        : `Interrupted restore — ${bk.resume_rooms || 0} room(s) already applied. Click Resume restore to continue.`)
+      : "Runs on the server — leave anytime and check status here";
+    const rows = snaps.map((s) => {
+      const resumeThis = canResume && resumeKind === "restore" && bk.resume_snapshot && s.id === bk.resume_snapshot;
+      return `<tr>
       <td><strong>${esc(s.label || s.id)}</strong><div class="muted" style="font-size:0.8rem">${esc(s.description || "")}</div></td>
       <td class="muted">${esc(s.created_at || "")}</td>
       <td><span class="badge ${s.status === "ok" ? "ok" : "miss"}">${esc(s.status || "")}</span></td>
-      <td><button class="btn sm primary action" data-restore="${esc(s.id)}">Restore</button></td>
-    </tr>`).join("") || `<tr><td colspan="4" class="muted">No local snapshots yet — run Backup now or restore from GitHub.</td></tr>`;
+      <td><button class="btn sm primary action" data-restore="${esc(s.id)}">${resumeThis ? "Resume" : "Restore"}</button></td>
+    </tr>`;
+    }).join("") || `<tr><td colspan="4" class="muted">No local snapshots yet — run Backup now or restore from GitHub.</td></tr>`;
 
     const jobHTML = `<div id="job-live">${job ? jobPanelHTML(job) : ""}</div>`;
 
@@ -1610,12 +1662,15 @@ docker save -o myapp.tar myapp:latest`;
       <div class="topbar restore-hero ${job && job.status === "running" ? "is-running" : ""}">
         <div>
           <h2>Restore & Backup</h2>
-          <div class="sub restore-sub"><span class="restore-live" aria-hidden="true"></span>Runs on the server — leave anytime and check status here</div>
+          <div class="sub restore-sub"><span class="restore-live" aria-hidden="true"></span>${esc(resumeNote)}</div>
         </div>
-        <button class="btn primary action bak-now-btn" id="bak-now" ${job && job.status === "running" ? "disabled" : ""}>
-          <span class="bak-now-ring" aria-hidden="true"></span>
-          Backup now
-        </button>
+        <div class="topbar-actions">
+          ${canResume && resumeKind === "restore" ? `<button class="btn action" id="resume-restore">Resume restore</button>` : ""}
+          <button class="btn primary action bak-now-btn" id="bak-now" ${job && job.status === "running" ? "disabled" : ""}>
+            <span class="bak-now-ring" aria-hidden="true"></span>
+            ${esc(bakLabel)}
+          </button>
+        </div>
       </div>
       ${jobHTML}
       <div class="grid-2">
@@ -1650,6 +1705,28 @@ docker save -o myapp.tar myapp:latest`;
       startJobPoll("restore");
     }
 
+    const startRestore = async (snapshotId, token) => {
+      const err = document.querySelector("#bakerr");
+      const ok = document.querySelector("#bakok");
+      if (err) err.textContent = "";
+      ok?.classList.add("hidden");
+      const r = await api("/api/backup/restore", { method: "POST", body: JSON.stringify({ token: token || "", snapshot_id: snapshotId }) });
+      if (ok) {
+        ok.textContent = r.message || "Restore started — inspecting last point.";
+        ok.classList.remove("hidden");
+      }
+      paintJob({
+        kind: "restore", status: "running", percent: 1,
+        message: "Restore started — this can take several minutes",
+        progress: "Inspecting last restore point…", logs: ["Inspecting last restore point…"],
+      }, "#job-live");
+      startJobPoll("restore");
+    };
+
+    bindAction(document.querySelector("#resume-restore"), async () => {
+      await startRestore(bk.resume_snapshot || "latest");
+    });
+
     bindAction(document.querySelector("#bak-now"), async () => {
       const err = document.querySelector("#bakerr");
       const ok = document.querySelector("#bakok");
@@ -1657,7 +1734,10 @@ docker save -o myapp.tar myapp:latest`;
       try {
         const res = await api("/api/backup/now", {
           method: "POST",
-          body: JSON.stringify({ label: "Manual backup", description: "Backup now — 24h timer reset from this moment" }),
+          body: JSON.stringify({
+            label: canResume && resumeKind === "backup" ? "Resume backup" : "Manual backup",
+            description: "Inspect last point and continue — 24h timer reset from this moment",
+          }),
         });
         ok.textContent = res.message || "Backup started on server.";
         ok.classList.remove("hidden");
@@ -1667,7 +1747,7 @@ docker save -o myapp.tar myapp:latest`;
         paintJob({
           kind: "backup", status: "running", percent: 1,
           message: "Backup started — this can take several minutes",
-          progress: "Starting…", logs: ["Starting…"],
+          progress: "Inspecting last point…", logs: ["Inspecting last point…"],
         }, "#job-live");
         startJobPoll("restore");
       } catch (ex) { err.textContent = ex.message; }
