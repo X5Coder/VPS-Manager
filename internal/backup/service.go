@@ -1272,9 +1272,18 @@ func skipBackupRel(rel string) bool {
 	parts := strings.Split(n, "/")
 	for _, p := range parts {
 		if p == ".git" || p == "lost+found" || p == "pg_wal" || p == "pg_stat_tmp" ||
-			p == "__pycache__" || p == ".npm" || p == "dist" || p == "build" {
+			p == "node_modules" || p == "__pycache__" || p == ".cache" || p == ".npm" ||
+			p == "venv" || p == ".venv" || p == "site-packages" || p == "dist" || p == "build" ||
+			p == "huggingface" || p == ".huggingface" {
 			return true
 		}
+	}
+	base := parts[len(parts)-1]
+	if strings.HasPrefix(base, "__container_image") || strings.HasPrefix(base, "__container_export") {
+		return true
+	}
+	if strings.Contains(n, "/volumes/db/data") || strings.HasPrefix(n, "volumes/db/data") {
+		return true
 	}
 	return false
 }

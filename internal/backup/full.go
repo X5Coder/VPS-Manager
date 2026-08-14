@@ -125,23 +125,10 @@ func (s *Service) captureProjectData(roomID string, p store.Project) {
 		st, _ := s.Docker.InspectStatus(p.ContainerID)
 		if st != "missing" && !isCompose {
 			if p.Image != "" {
+				s.report(-1, "Keeping image name %s (pull on restore — skip docker save)", p.Image)
 				_ = os.WriteFile(filepath.Join(pdir, "__image_ref.txt"), []byte(strings.TrimSpace(p.Image)+"\n"), 0o644)
-				imgTar := filepath.Join(pdir, "__container_image.tar")
-				_ = os.Remove(imgTar)
-				tag := strings.TrimSpace(p.Image)
-				s.report(-1, "Saving Docker image %s", tag)
-				if err := s.Docker.SaveImage(tag, imgTar); err != nil {
-					s.report(-1, "docker save %s failed (%v) — committing container", tag, err)
-					tmpTag := "vpsrooms-backup/" + p.ID + ":restore"
-					if err2 := s.Docker.SaveCommittedImage(p.ContainerID, tmpTag, imgTar); err2 != nil {
-						s.report(-1, "image backup failed for %s: %v", p.Name, err2)
-						_ = os.Remove(imgTar)
-					}
-				}
-				if st, err := os.Stat(imgTar); err == nil && st.Size() > 1024 {
-					s.report(-1, "Image archive ready (%s)", formatBytes(st.Size()))
-				}
 			}
+			_ = os.Remove(filepath.Join(pdir, "__container_image.tar"))
 			_ = os.Remove(filepath.Join(pdir, "__container_export.tar"))
 			mounts, err := s.Docker.ListMounts(p.ContainerID)
 			if err == nil {
