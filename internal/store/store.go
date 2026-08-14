@@ -125,6 +125,7 @@ CREATE TABLE IF NOT EXISTS api_tokens (
 	_, _ = s.DB.Exec(`ALTER TABLE projects ADD COLUMN ssl_status TEXT NOT NULL DEFAULT ''`)
 	_, _ = s.DB.Exec(`ALTER TABLE projects ADD COLUMN external_url TEXT NOT NULL DEFAULT ''`)
 	_, _ = s.DB.Exec(`ALTER TABLE api_tokens ADD COLUMN token_plain TEXT NOT NULL DEFAULT ''`)
+	_, _ = s.DB.Exec(`ALTER TABLE api_tokens ADD COLUMN room_id TEXT NOT NULL DEFAULT ''`)
 	return nil
 }
 

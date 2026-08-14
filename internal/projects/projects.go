@@ -537,7 +537,7 @@ func (s *Service) RedeployImage(in RedeployInput) error {
 		digest = s.Docker.ImageID(image)
 	}
 	s.markDeployResult(p.RoomID, p.ID, image, digest, true, "")
-	fmt.Fprintf(log, "OK project=%s image=%s status=running\n", p.ID, image)
+	fmt.Fprintf(log, "Updated. Project is running automatically. project=%s image=%s status=running\n", p.ID, image)
 	return nil
 }
 

@@ -73,6 +73,24 @@ func (s *Server) portsPayload() map[string]any {
 	return map[string]any{"used_ports": out, "panel_port": 9090}
 }
 
+func (s *Server) tokenPublic(base string, t store.APIToken) map[string]any {
+	prompt, sheet, script := s.tokenCopyFields(base, t.TokenPlain)
+	return map[string]any{
+		"id":           t.ID,
+		"name":         t.Name,
+		"token_prefix": t.TokenPrefix,
+		"mode":         "owner",
+		"room_id":      "",
+		"room_name":    "all rooms",
+		"created_at":   t.CreatedAt,
+		"last_used_at": t.LastUsedAt,
+		"secret":       t.TokenPlain,
+		"prompt":       prompt,
+		"api":          sheet,
+		"script":       script,
+	}
+}
+
 func (s *Server) handleAPITokens(w http.ResponseWriter, r *http.Request) {
 	if s.requireOwner(w, r) == nil {
 		return
@@ -90,41 +108,31 @@ func (s *Server) handleAPITokens(w http.ResponseWriter, r *http.Request) {
 		base := requestBaseURL(r)
 		out := make([]map[string]any, 0, len(list))
 		for i := range list {
-			t := list[i]
-			item := map[string]any{
-				"id":           t.ID,
-				"name":         t.Name,
-				"token_prefix": t.TokenPrefix,
-				"mode":         t.Mode,
-				"created_at":   t.CreatedAt,
-				"last_used_at": t.LastUsedAt,
-				"secret":       t.TokenPlain,
-				"prompt":       s.buildAPIPrompt(base, t.TokenPlain, t.Mode),
-				"api":          s.buildAPISheet(base, t.TokenPlain, t.Mode),
-			}
-			out = append(out, item)
+			out = append(out, s.tokenPublic(base, list[i]))
 		}
 		writeJSON(w, 200, out)
 	case http.MethodPost:
 		var body struct {
-			Name string `json:"name"`
-			Mode string `json:"mode"`
+			Name   string `json:"name"`
+			RoomID string `json:"room_id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeErr(w, 400, "invalid request")
 			return
 		}
-		tok, plain, err := s.Store.CreateAPIToken(body.Name, body.Mode)
+		tok, plain, err := s.Store.CreateAPIToken(body.Name, "")
 		if err != nil {
 			writeErr(w, 400, err.Error())
 			return
 		}
 		base := requestBaseURL(r)
+		pub := s.tokenPublic(base, *tok)
 		writeJSON(w, 200, map[string]any{
 			"token":  tok,
 			"secret": plain,
-			"prompt": s.buildAPIPrompt(base, plain, tok.Mode),
-			"api":    s.buildAPISheet(base, plain, tok.Mode),
+			"prompt": pub["prompt"],
+			"api":    pub["api"],
+			"script": pub["script"],
 		})
 	default:
 		writeErr(w, 405, "method")
@@ -149,17 +157,7 @@ func (s *Server) handleAPITokenByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		base := requestBaseURL(r)
-		prompt, sheet := "", ""
-		if tok.TokenPlain != "" {
-			prompt = s.buildAPIPrompt(base, tok.TokenPlain, tok.Mode)
-			sheet = s.buildAPISheet(base, tok.TokenPlain, tok.Mode)
-		}
-		writeJSON(w, 200, map[string]any{
-			"token":  tok,
-			"secret": tok.TokenPlain,
-			"prompt": prompt,
-			"api":    sheet,
-		})
+		writeJSON(w, 200, s.tokenPublic(base, *tok))
 	case http.MethodDelete:
 		if err := s.Store.DeleteAPIToken(id); err != nil {
 			writeErr(w, 400, err.Error())
@@ -192,11 +190,21 @@ func (s *Server) requireAPIToken(w http.ResponseWriter, r *http.Request, writeNe
 		writeErr(w, 401, "invalid api token")
 		return nil
 	}
-	if writeNeeded && !store.TokenCanWrite(tok.Mode) {
-		writeErr(w, 403, "token is read-only")
-		return nil
-	}
+	_ = writeNeeded
 	return tok
+}
+
+func (s *Server) requireTokenRoom(w http.ResponseWriter, r *http.Request, id string, writeNeeded bool) (*store.APIToken, *store.Room, *store.Project) {
+	tok := s.requireAPIToken(w, r, writeNeeded)
+	if tok == nil {
+		return nil, nil, nil
+	}
+	room, p, err := s.resolveRoomProject(id)
+	if err != nil || room == nil {
+		writeErr(w, 404, "not found")
+		return nil, nil, nil
+	}
+	return tok, room, p
 }
 
 func (s *Server) handleAPIV1(w http.ResponseWriter, r *http.Request) {
@@ -232,12 +240,14 @@ func (s *Server) handleAPIV1Projects(w http.ResponseWriter, r *http.Request, par
 	if len(parts) == 0 {
 		switch r.Method {
 		case http.MethodGet:
-			if s.requireAPIToken(w, r, false) == nil {
+			tok := s.requireAPIToken(w, r, false)
+			if tok == nil {
 				return
 			}
 			s.apiListProjects(w)
 		case http.MethodPost:
-			if s.requireAPIToken(w, r, true) == nil {
+			tok := s.requireAPIToken(w, r, true)
+			if tok == nil {
 				return
 			}
 			s.apiCreateProject(w, r)
@@ -251,12 +261,12 @@ func (s *Server) handleAPIV1Projects(w http.ResponseWriter, r *http.Request, par
 	if len(parts) == 1 {
 		switch r.Method {
 		case http.MethodGet:
-			if s.requireAPIToken(w, r, false) == nil {
+			if tok, _, _ := s.requireTokenRoom(w, r, id, false); tok == nil {
 				return
 			}
 			s.apiGetProject(w, id)
 		case http.MethodPatch:
-			if s.requireAPIToken(w, r, true) == nil {
+			if tok, _, _ := s.requireTokenRoom(w, r, id, true); tok == nil {
 				return
 			}
 			s.apiPatchProject(w, r, id)
@@ -268,31 +278,26 @@ func (s *Server) handleAPIV1Projects(w http.ResponseWriter, r *http.Request, par
 		return
 	}
 
+	if tok, _, _ := s.requireTokenRoom(w, r, id, r.Method != http.MethodGet); tok == nil {
+		return
+	}
 	if parts[1] == "exec" && r.Method == http.MethodPost {
-		if s.requireAPIToken(w, r, true) == nil {
-			return
-		}
 		s.apiExecProject(w, r, id)
 		return
 	}
+	if parts[1] == "upload" && r.Method == http.MethodPost {
+		s.apiUploadProject(w, r, id)
+		return
+	}
 	if parts[1] == "redeploy" && r.Method == http.MethodPost {
-		if s.requireAPIToken(w, r, true) == nil {
-			return
-		}
 		s.apiRedeployProject(w, r, id)
 		return
 	}
 	if parts[1] == "build" && r.Method == http.MethodPost {
-		if s.requireAPIToken(w, r, true) == nil {
-			return
-		}
 		s.apiBuildProject(w, r, id)
 		return
 	}
 	if parts[1] == "deploys" && r.Method == http.MethodGet {
-		if s.requireAPIToken(w, r, false) == nil {
-			return
-		}
 		s.apiProjectDeploys(w, id)
 		return
 	}
@@ -322,12 +327,20 @@ func (s *Server) resolveRoomProject(id string) (*store.Room, *store.Project, err
 
 func (s *Server) projectView(room *store.Room, p *store.Project) map[string]any {
 	st := "empty"
+	quotaGB := float64(room.QuotaBytes) / (1024 * 1024 * 1024)
+	usage := s.cachedUsage(room.ID)
+	usageGB := float64(usage) / (1024 * 1024 * 1024)
 	out := map[string]any{
 		"id": room.ID, "room_id": room.ID, "name": room.Name,
-		"quota_bytes": room.QuotaBytes, "usage_bytes": s.cachedUsage(room.ID),
+		"quota_bytes": room.QuotaBytes, "quota_gb": quotaGB,
+		"usage_bytes": usage, "usage_gb": usageGB,
 		"password_set": room.PassPlain != "",
 		"created_at":   room.CreatedAt,
 		"status":       st,
+	}
+	if busy := s.jobKind(room.ID); busy != "" {
+		out["status"] = "deploying"
+		out["job"] = busy
 	}
 	if p != nil {
 		busy := s.jobKind(p.ID)
@@ -416,7 +429,7 @@ func (s *Server) apiListProjects(w http.ResponseWriter) {
 		}
 		list = append(list, s.projectView(&room, p))
 	}
-	writeJSON(w, 200, map[string]any{"projects": list})
+	writeJSON(w, 200, map[string]any{"projects": list, "storage": s.storageInfo()})
 }
 
 func (s *Server) apiGetProject(w http.ResponseWriter, id string) {
@@ -501,28 +514,58 @@ func (s *Server) apiCreateProject(w http.ResponseWriter, r *http.Request) {
 		Image         string   `json:"image"`
 		Command       string   `json:"command"`
 		QuotaGB       float64  `json:"quota_gb"`
+		Password      string   `json:"password"`
 		HostIP        string   `json:"host_ip"`
 		HostPort      int      `json:"host_port"`
 		ContainerPort int      `json:"container_port"`
 		Env           string   `json:"env"`
 		Domain        string   `json:"domain"`
 		Binds         []string `json:"binds"`
+		Empty         *bool    `json:"empty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, 400, "invalid request")
-		return
-	}
-	quota, err := s.allocateQuota(body.QuotaGB, 0)
-	if err != nil {
-		writeErr(w, 400, err.Error())
 		return
 	}
 	image := body.Image
 	if image == "" {
 		image = parseDockerPull(body.Command)
 	}
-	if image == "" {
-		writeErr(w, 400, "image or docker pull command required")
+	wantEmpty := (body.Empty != nil && *body.Empty) || image == ""
+	if wantEmpty {
+		if err := emptyRoomErr(body.QuotaGB); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		cPort := body.ContainerPort
+		if cPort == 0 {
+			cPort = 8080
+		}
+		name := body.Name
+		if name == "" {
+			name = "app"
+		}
+		if strings.TrimSpace(body.Password) == "" {
+			writeErr(w, 400, "password is required (min 6 characters)")
+			return
+		}
+		rm, pass, err := s.createEmptyRoom(name, body.QuotaGB, cPort, body.HostPort, body.Password)
+		if err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]any{
+			"ok":       true,
+			"empty":    true,
+			"project":  s.projectView(rm, nil),
+			"password": pass,
+			"status":   "empty",
+		})
+		return
+	}
+	quota, err := s.allocateQuota(body.QuotaGB, 0)
+	if err != nil {
+		writeErr(w, 400, err.Error())
 		return
 	}
 	projName := body.Name
@@ -711,8 +754,72 @@ func (s *Server) apiDoRedeploy(p *store.Project, image string, pull, recreate bo
 			return err
 		}
 	}
+	if pull && s.Docker != nil {
+		ref := strings.TrimSpace(image)
+		if strings.Contains(ref, "ghcr.io") {
+			if gt := s.githubToken(); gt != "" {
+				_ = s.Docker.Login("ghcr.io", "x-access-token", gt)
+			}
+		}
+	}
 	return s.Projects.RedeployImage(projects.RedeployInput{
 		ID: p.ID, Image: image, Pull: pull, Recreate: recreate, Log: io.Discard,
+	})
+}
+
+func (s *Server) apiUploadProject(w http.ResponseWriter, r *http.Request, id string) {
+	room, p, err := s.resolveRoomProject(id)
+	if err != nil || room == nil {
+		writeJSON(w, 404, map[string]any{"ok": false, "error": "not found"})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<30)
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		writeJSON(w, 400, map[string]any{"ok": false, "error": "could not read upload: " + err.Error()})
+		return
+	}
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		writeJSON(w, 400, map[string]any{"ok": false, "error": "multipart field file is required (docker save .tar)"})
+		return
+	}
+	defer file.Close()
+	tmp, err := os.MkdirTemp("", "vm-api-tar-*")
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	dest := filepath.Join(tmp, "app.tar")
+	out, err := os.Create(dest)
+	if err != nil {
+		_ = os.RemoveAll(tmp)
+		writeJSON(w, 500, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	n, err := io.Copy(out, file)
+	out.Close()
+	if err != nil {
+		_ = os.RemoveAll(tmp)
+		writeJSON(w, 400, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	if n < 64 {
+		_ = os.RemoveAll(tmp)
+		writeJSON(w, 400, map[string]any{"ok": false, "error": "empty image tar"})
+		return
+	}
+	if err := s.startTarDeployAsync(room, p, dest, tmp); err != nil {
+		writeJSON(w, 409, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	tag := projects.DefaultVpsroomsTag(room.Name)
+	if p != nil {
+		tag = s.localProjectTag(p)
+	}
+	s.acceptedProject(w, room.ID, map[string]any{
+		"status": "deploying",
+		"bytes":  n,
+		"image":  tag,
 	})
 }
 
@@ -786,10 +893,16 @@ func (s *Server) githubToken() string {
 
 func (s *Server) handleAPIV1Images(w http.ResponseWriter, r *http.Request, parts []string) {
 	if len(parts) == 1 && parts[0] == "build" && r.Method == http.MethodPost {
-		if s.requireAPIToken(w, r, true) == nil {
+		tok := s.requireAPIToken(w, r, true)
+		if tok == nil {
 			return
 		}
-		s.apiBuildImage(w, r, nil)
+		_, p, err := s.resolveRoomProject(tok.RoomID)
+		if err != nil {
+			writeJSON(w, 404, map[string]any{"ok": false, "error": "not found"})
+			return
+		}
+		s.apiBuildImage(w, r, p)
 		return
 	}
 	writeErr(w, 404, "not found")

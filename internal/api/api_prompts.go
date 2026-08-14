@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-
-	"github.com/x5coder/vps-rooms/internal/store"
 )
 
 func requestBaseURL(r *http.Request) string {
@@ -20,168 +18,239 @@ func requestBaseURL(r *http.Request) string {
 	return scheme + "://" + host
 }
 
-func tokenPromptMode(mode string) string {
-	return store.NormalizeTokenMode(mode)
+func (s *Server) tokenCopyFields(base, secret string) (prompt, api, script string) {
+	script = buildGitHubWorkflow(base, secret)
+	api = s.buildAPISheet(base, secret)
+	prompt = s.buildAPIPrompt(base, secret, script)
+	return
 }
 
-func (s *Server) buildAPIPrompt(base, secret, mode string) string {
+func buildGitHubWorkflow(base, secret string) string {
 	base = strings.TrimRight(strings.TrimSpace(base), "/")
 	secret = strings.TrimSpace(secret)
 	if secret == "" {
 		secret = "YOUR_SECRET"
 	}
-	switch tokenPromptMode(mode) {
-	case "write":
-		return apiPromptWrite(base, secret)
-	case "both":
-		return apiPromptBoth(base, secret)
-	default:
-		return apiPromptRead(base, secret)
-	}
+	return fmt.Sprintf(`# VPS Manager — one API for ALL rooms
+# Save as: .github/workflows/vps-deploy.yml  (keep the repo PRIVATE)
+# Set ROOM_ID to the room you want to update (GET BASE/api/v1/projects).
+# Or run the workflow manually and type the room id.
+# Build → docker save app.tar → POST /upload. No GHCR.
+
+name: Deploy to VPS
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      room_id:
+        description: "Room id to update (from GET /api/v1/projects)"
+        required: true
+        type: string
+
+env:
+  VPS_BASE: %q
+  VPS_TOKEN: %q
+  ROOM_ID: "PASTE_ROOM_ID_HERE"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Room id
+        run: |
+          RID="${{ github.event.inputs.room_id }}"
+          if [ -n "$RID" ]; then
+            echo "ROOM_ID=$RID" >> "$GITHUB_ENV"
+            export ROOM_ID="$RID"
+          fi
+          if [ -z "$ROOM_ID" ] || [ "$ROOM_ID" = "PASTE_ROOM_ID_HERE" ]; then
+            echo "Set ROOM_ID in this file, or type it in Run workflow."
+            exit 1
+          fi
+          echo "Updating room $ROOM_ID"
+
+      - name: Find Dockerfile
+        run: |
+          for f in Dockerfile dockerfile Containerfile; do
+            if [ -f "$f" ]; then echo "DOCKERFILE=$f" >> "$GITHUB_ENV"; exit 0; fi
+          done
+          echo "DOCKERFILE=Dockerfile" >> "$GITHUB_ENV"
+
+      - name: Note current deploy stamp
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          base = os.environ["VPS_BASE"].rstrip("/")
+          token = os.environ["VPS_TOKEN"]
+          pid = os.environ["ROOM_ID"]
+          url = base + "/api/v1/projects/" + pid
+          req = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
+          try:
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  data = json.load(r)
+              at = data.get("last_deploy_at") or ""
+          except Exception as e:
+              print("stamp wait:", e, flush=True)
+              at = ""
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              f.write("PREV_DEPLOY_AT=" + at + "\n")
+          print("PREV_DEPLOY_AT=" + at, flush=True)
+          PY
+
+      - name: Build Docker image
+        run: docker build -f "$DOCKERFILE" -t "vps-ci:${GITHUB_SHA}" .
+
+      - name: docker save -o app.tar
+        run: |
+          docker save -o app.tar "vps-ci:${GITHUB_SHA}"
+          ls -lh app.tar
+
+      - name: POST app.tar to VPS Manager
+        run: |
+          curl -fS --connect-timeout 30 --max-time 21600 \
+            -H "Authorization: Bearer ${VPS_TOKEN}" \
+            -F "file=@app.tar;filename=app.tar;type=application/octet-stream" \
+            "${VPS_BASE}/api/v1/projects/${ROOM_ID}/upload"
+          echo
+          echo "VPS accepted tar upload. Waiting until running..."
+
+      - name: Wait until project is running
+        timeout-minutes: 60
+        run: |
+          python3 - <<'PY'
+          import json, os, time, urllib.request
+          base = os.environ["VPS_BASE"].rstrip("/")
+          token = os.environ["VPS_TOKEN"]
+          pid = os.environ["ROOM_ID"]
+          prev = os.environ.get("PREV_DEPLOY_AT") or ""
+          url = base + "/api/v1/projects/" + pid
+          req = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
+          for i in range(180):
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      data = json.load(r)
+              except Exception as e:
+                  print("poll", i + 1, "wait:", e, flush=True)
+                  time.sleep(5)
+                  continue
+              st = data.get("status") or ""
+              img = data.get("image") or ""
+              at = data.get("last_deploy_at") or ""
+              ok = data.get("last_deploy_ok")
+              print("poll", i + 1, "status=" + st, "image=" + img, "ok=" + str(ok), "at=" + at, flush=True)
+              if at and at != prev:
+                  if ok is False or st == "error":
+                      print("last_deploy_error:", data.get("last_deploy_error"), flush=True)
+                      raise SystemExit(1)
+                  if st == "running" and ok is not False:
+                      print("UPDATED — project is running automatically", flush=True)
+                      raise SystemExit(0)
+              time.sleep(5)
+          raise SystemExit("timeout waiting for running")
+          PY
+`, base, secret)
 }
 
-func (s *Server) buildAPISheet(base, secret, mode string) string {
+func (s *Server) buildAPISheet(base, secret string) string {
 	base = strings.TrimRight(strings.TrimSpace(base), "/")
 	secret = strings.TrimSpace(secret)
 	if secret == "" {
 		secret = "YOUR_SECRET"
 	}
-	perm := "GET only"
-	switch tokenPromptMode(mode) {
-	case "write":
-		perm = "GET + POST/PATCH/exec/build/redeploy"
-	case "both":
-		perm = "GET + POST/PATCH/exec/build/redeploy (one key)"
+	return fmt.Sprintf("BASE=%s\nTOKEN=%s\nAuthorization: Bearer %s\n", base, secret, secret)
+}
+
+func (s *Server) buildAPIPrompt(base, secret, script string) string {
+	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	secret = strings.TrimSpace(secret)
+	if secret == "" {
+		secret = "YOUR_SECRET"
 	}
-	sheet := fmt.Sprintf(`VPS Manager HTTP API
-BASE=%s
-TOKEN=%s
-MODE=%s
-PERM=%s
-
-Header (every request):
-  Authorization: Bearer %s
-  Content-Type: application/json
-
-GET  %s/api/v1/storage
-GET  %s/api/v1/ports
-GET  %s/api/v1/projects
-GET  %s/api/v1/projects/{id}
-GET  %s/api/v1/projects/{id}/deploys
-`, base, secret, tokenPromptMode(mode), perm, secret, base, base, base, base, base)
-	if tokenPromptMode(mode) != "read" {
-		sheet += fmt.Sprintf(`
-POST   %s/api/v1/projects
-PATCH  %s/api/v1/projects/{id}
-POST   %s/api/v1/projects/{id}/redeploy
-POST   %s/api/v1/projects/{id}/build
-POST   %s/api/v1/images/build
-POST   %s/api/v1/projects/{id}/exec
-
-curl examples:
-  curl -sS -H "Authorization: Bearer %s" %s/api/v1/projects
-  curl -sS -X POST -H "Authorization: Bearer %s" -H "Content-Type: application/json" \
-    -d '{"image":"vpsrooms/app:latest","pull":true,"recreate":true}' \
-    %s/api/v1/projects/{id}/redeploy
-  # image omitted = pull+recreate current image; returns status=deploying; poll GET
-  curl -sS -X POST -H "Authorization: Bearer %s" -H "Content-Type: application/json" -d '{}' \
-    %s/api/v1/projects/{id}/redeploy
-  curl -sS -X POST -H "Authorization: Bearer %s" -H "Content-Type: application/json" \
-    -d '{"name":"app","image":"nginx:alpine","quota_gb":2}' \
-    %s/api/v1/projects
-`, base, base, base, base, base, base, secret, base, secret, base, secret, base, secret, base)
-	} else {
-		sheet += fmt.Sprintf(`
-This token cannot POST/PATCH. Read-only.
-
-curl:
-  curl -sS -H "Authorization: Bearer %s" %s/api/v1/storage
-  curl -sS -H "Authorization: Bearer %s" %s/api/v1/projects
-`, secret, base, secret, base)
+	if strings.TrimSpace(script) == "" {
+		script = buildGitHubWorkflow(base, secret)
 	}
-	sheet += `
-{id} = room id (project_id also works).
-DELETE is not available. Never send a guessed token.`
-	return strings.TrimSpace(sheet) + "\n"
-}
+	return strings.NewReplacer(
+		"{{BASE}}", base,
+		"{{TOKEN}}", secret,
+		"{{SCRIPT}}", strings.TrimSpace(script),
+	).Replace(`You are the VPS Manager API operator for this panel. One token controls ALL rooms. Paste this whole prompt into an AI. Match the user's language (Arabic or English — do not mix). Be precise. Never invent BASE, TOKEN, room ids, GB, or passwords. Never DELETE. Never guess a secret.
 
-func apiPromptRead(base, secret string) string {
-	return fmt.Sprintf(`You operate VPS Manager over HTTP. Read-only. Match the user's language. Be precise. Never invent numbers, never print secrets, never mutate.
+AUTH (use these exact values)
+  BASE={{BASE}}
+  TOKEN={{TOKEN}}
+  Header: Authorization: Bearer {{TOKEN}}
 
-Auth: BASE %s
-Authorization: Bearer %s
-JSON. {id} = room id (or project_id). GET env is masked (KEY=***).
+ROOM_ID (the variable you fill in)
+  ROOM_ID=PASTE_ROOM_ID_HERE
+  This is NOT the token. It is the room/project id from GET /api/v1/projects (field "id").
+  Before any room-specific curl or GitHub deploy: list rooms, copy the id, replace PASTE_ROOM_ID_HERE.
+  Same ROOM_ID for: first image on an empty room, and later updates of that room.
+  GitHub: set env ROOM_ID in the YAML below, or type it in Actions → Run workflow.
 
-Permission: READ — GET only. Refuse POST, PATCH, PUT, DELETE.
+HOW TO ANSWER
+  Teach with working curl. If they ask usage/quota/list/create/update: call or show the exact request, then explain the JSON.
+  status=empty means no container yet — upload a docker-save tar (panel or GitHub) onto that same id.
+  Publish unit is a Docker image. Never git/npm/build inside the running container.
 
-Inspect
-  GET /api/v1/storage     disk_free, quota_available_gb
-  GET /api/v1/ports       used_ports (9090 is the panel)
-  GET /api/v1/projects    id, image, status, ports, quota vs usage, last_deploy_*
-  GET /api/v1/projects/{id}
+1) LIST ALL ROOMS (name, id, quota, usage, status)
+curl -sS -H "Authorization: Bearer {{TOKEN}}" {{BASE}}/api/v1/projects
+  projects[]: id, name, status (empty|running|stopped|deploying|error), quota_gb, usage_gb, quota_bytes, usage_bytes, image, host_port
+  storage: disk_total, disk_used, disk_free, quota_reserved, quota_available_gb
 
-Method: GET storage + projects first, then answer from JSON. If they ask to deploy or change anything, say this key is read-only.`, base, secret)
-}
+2) ONE ROOM (quota + usage + status)
+curl -sS -H "Authorization: Bearer {{TOKEN}}" {{BASE}}/api/v1/projects/$ROOM_ID
 
-func apiPromptWrite(base, secret string) string {
-	return fmt.Sprintf(`You operate VPS Manager over HTTP. You may inspect and change rooms. You cannot delete. Match the user's language. Be precise. Never invent numbers. Never print secrets.
+3) HOST DISK (pick a new room size from this)
+curl -sS -H "Authorization: Bearer {{TOKEN}}" {{BASE}}/api/v1/storage
+  quota_gb for a new room must be > 0 and ≤ quota_available_gb.
 
-Auth: BASE %s
-Authorization: Bearer %s
-JSON. {id} = room id (or project_id). GET env is masked.
+4) CREATE EMPTY ROOM (no container yet — name + disk from free space + password)
+curl -sS -H "Authorization: Bearer {{TOKEN}}" -H "Content-Type: application/json" \
+  -d '{"name":"my-app","quota_gb":10,"password":"at-least-6-chars","container_port":8080}' \
+  {{BASE}}/api/v1/projects
+  Returns id + status=empty. Then set ROOM_ID to that id and upload (step 5 or GitHub).
 
-Permission: WRITE — GET plus POST/PATCH/exec/build/redeploy.
+5) UPLOAD IMAGE TAR (first deploy on empty room OR update existing)
+  Build locally: docker build -t myapp:latest . && docker save -o app.tar myapp:latest
+curl -fS -H "Authorization: Bearer {{TOKEN}}" \
+  -F "file=@app.tar;filename=app.tar;type=application/octet-stream" \
+  {{BASE}}/api/v1/projects/$ROOM_ID/upload
+  Poll GET until status=running and last_deploy_ok. Same id, quota, ports, domain, .env.
 
-Publish unit is a Docker image (name:tag). Never git clone, npm install, or copy source into a running container. Update an existing room on the same {id}; keep ports, domain, quota, .env. Create a new room only when they ask for a new one.
+6) GITHUB ACTION (same as Copy script)
+  Save the YAML at the bottom as .github/workflows/vps-deploy.yml (repo PRIVATE).
+  Put the room id in ROOM_ID: "PASTE_ROOM_ID_HERE" (or type it on Run workflow).
+  Push: docker build → docker save app.tar → POST /upload. No GHCR.
+  First image and later updates use the same file — only ROOM_ID changes.
 
-Read
-  GET /api/v1/storage
-  GET /api/v1/ports
-  GET /api/v1/projects
-  GET /api/v1/projects/{id}
+7) CHANGE QUOTA / NAME / PASSWORD
+curl -sS -H "Authorization: Bearer {{TOKEN}}" -H "Content-Type: application/json" \
+  -d '{"quota_gb":20}' \
+  -X PATCH {{BASE}}/api/v1/projects/$ROOM_ID
+  Also allowed: {"name":"new-name"}  {"password":"new-pass-6+"}
 
-Write
-  POST /api/v1/projects                         new room — quota_gb required, <= quota_available_gb after GET /storage
-  PATCH /api/v1/projects/{id}                   name, password, domain, env, quota_gb, action=pause|resume; image = async redeploy (poll GET)
-  POST /api/v1/projects/{id}/redeploy           image optional (omit = pull+recreate current image). Returns immediately status=deploying. Poll GET {id} until running or error.
-  POST /api/v1/projects/{id}/build              host build, optional deploy:true. Returns immediately status=building. Poll GET. last_deploy_error has the docker/git reason on failure.
-  POST /api/v1/projects/{id}/exec               diagnose only (timeout ≤ 120s)
+8) EXEC A COMMAND
+curl -sS -H "Authorization: Bearer {{TOKEN}}" -H "Content-Type: application/json" \
+  -d '{"command":"ps aux"}' \
+  {{BASE}}/api/v1/projects/$ROOM_ID/exec
+  If the room is empty (no container), exec runs on the room folder, not Docker.
 
-Flow
-1. GET storage + projects.
-2. Update current app → POST .../redeploy (image optional) → GET until status=running (not waiting on the POST).
-3. New app → POST /projects → return id, host_port, password.
-4. Never DELETE. Never open a second room to replace one that already exists.`, base, secret)
-}
+9) USED PORTS
+curl -sS -H "Authorization: Bearer {{TOKEN}}" {{BASE}}/api/v1/ports
 
-func apiPromptBoth(base, secret string) string {
-	return fmt.Sprintf(`You operate VPS Manager over HTTP with one token that can read and write. You cannot delete. Match the user's language. Be precise. Never invent numbers. Never print secrets. Do not ask for a second key.
+PANEL UI
+  Open the room by id → First image / Update image → drop app.tar.
+  Tokens page: Copy API = BASE+TOKEN only. Copy script = YAML only. This prompt = everything + YAML.
 
-Auth: BASE %s
-Authorization: Bearer %s
-JSON. {id} = room id (or project_id). GET env is masked (KEY=***).
-
-Permission: BOTH — GET plus POST/PATCH/exec/build/redeploy on this same secret.
-
-Publish unit is a Docker image (name:tag). Never git clone, npm install, or copy source into a running container. Update an existing room on the same {id}; keep ports, domain, quota, .env. Create a new room only when they ask for a new one.
-
-Read
-  GET /api/v1/storage
-  GET /api/v1/ports
-  GET /api/v1/projects
-  GET /api/v1/projects/{id}
-
-Write
-  POST /api/v1/projects                         new room — quota_gb required, <= quota_available_gb after GET /storage
-  PATCH /api/v1/projects/{id}                   name, password, domain, env, quota_gb, action=pause|resume; image = async redeploy (poll GET)
-  POST /api/v1/projects/{id}/redeploy           image optional (omit = pull+recreate current image). Returns immediately status=deploying. Poll GET {id} until running or error.
-  POST /api/v1/projects/{id}/build              host build, optional deploy:true. Returns immediately status=building. Poll GET. last_deploy_error has the docker/git reason on failure.
-  POST /api/v1/projects/{id}/exec               diagnose only (timeout ≤ 120s)
-
-Flow
-1. GET /api/v1/storage and GET /api/v1/projects.
-2. “Update this app” → POST .../redeploy (image optional = current image + pull) → GET {id} until status=running or error. POST returns immediately (accepted, status=deploying).
-3. Image not on the VPS yet → POST .../build with a git context and deploy:true, then poll GET. Failure reason is last_deploy_error.
-4. New app → POST /api/v1/projects with image + quota_gb → return id, host_port, password.
-5. Never DELETE.`, base, secret)
+===== BEGIN FILE .github/workflows/vps-deploy.yml =====
+Replace PASTE_ROOM_ID_HERE with the room id, then save this file.
+{{SCRIPT}}
+===== END FILE =====
+`)
 }

@@ -83,6 +83,22 @@ func (c *Client) RemoveNetwork(name string) error {
 	return nil
 }
 
+func (c *Client) Login(registry, user, password string) error {
+	registry = strings.TrimSpace(registry)
+	if registry == "" {
+		registry = "ghcr.io"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, c.bin, "login", registry, "-u", user, "--password-stdin")
+	cmd.Stdin = strings.NewReader(password)
+	b, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("docker login %s: %s", registry, strings.TrimSpace(string(b)))
+	}
+	return nil
+}
+
 func (c *Client) PullImage(ref string, w io.Writer) error {
 	return c.run(context.Background(), w, "pull", ref)
 }
@@ -564,7 +580,7 @@ func (c *Client) LoadImage(srcTar string) error {
 
 // LoadImageTag loads a docker save tar and returns a repo:tag when docker prints one.
 func (c *Client) LoadImageTag(srcTar string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Hour)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, c.bin, "load", "-i", srcTar)
 	b, err := cmd.CombinedOutput()
@@ -580,8 +596,35 @@ func (c *Client) LoadImageTag(srcTar string) (string, error) {
 				return tag, nil
 			}
 		}
+		if id, ok := strings.CutPrefix(line, "Loaded image ID: "); ok {
+			id = strings.TrimSpace(id)
+			tag := "vpsrooms/upload:latest"
+			if err := c.run(ctx, nil, "tag", id, tag); err == nil {
+				return tag, nil
+			}
+			return id, nil
+		}
 	}
-	return "", nil
+	return "", fmt.Errorf("docker load: no image tag in output: %s", out)
+}
+
+func (c *Client) Tag(src, dest string) error {
+	src = strings.TrimSpace(src)
+	dest = strings.TrimSpace(dest)
+	if src == "" || dest == "" {
+		return fmt.Errorf("docker tag: missing name")
+	}
+	if src == dest {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, c.bin, "tag", src, dest)
+	b, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("docker tag %s → %s: %s: %w", src, dest, strings.TrimSpace(string(b)), err)
+	}
+	return nil
 }
 
 // ImportFilesystem creates an image from a docker-export tar.

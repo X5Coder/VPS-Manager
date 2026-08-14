@@ -344,6 +344,7 @@ button, input, textarea, select { font: inherit; color: inherit; }
 }
 .badge.ok { color: var(--ok); border-color: rgba(109,255,176,.3); }
 .badge.stop { color: var(--warn); border-color: rgba(255,210,122,.3); }
+.badge.empty, .badge.warn { color: #9ecbff; border-color: rgba(158,203,255,.35); }
 .badge.miss { color: var(--danger); border-color: rgba(255,107,107,.3); }
 
 .btn {
@@ -1230,6 +1231,10 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .proj-ico.ok {
   color: #6dffb0;
   background: rgba(109, 255, 176, 0.08);
+}
+.proj-ico.empty {
+  color: #9ecbff;
+  background: rgba(158, 203, 255, 0.08);
 }
 .proj-ico.stop, .proj-ico.miss {
   color: #9a9a9a;

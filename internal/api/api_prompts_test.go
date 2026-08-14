@@ -9,33 +9,47 @@ func TestBuildAPIPromptModes(t *testing.T) {
 	s := &Server{}
 	base := "http://127.0.0.1:9090"
 	secret := "vm_testhook"
-	read := s.buildAPIPrompt(base, secret, "read")
-	write := s.buildAPIPrompt(base, secret, "write")
-	both := s.buildAPIPrompt(base, secret, "both")
-	sheet := s.buildAPISheet(base, secret, "both")
-	if !strings.Contains(read, "Read-only") && !strings.Contains(read, "READ") {
-		t.Fatalf("read prompt")
+	prompt := s.buildAPIPrompt(base, secret, "")
+	sheet := s.buildAPISheet(base, secret)
+	script := buildGitHubWorkflow(base, secret)
+	if !strings.Contains(prompt, "vps-deploy.yml") || !strings.Contains(prompt, secret) {
+		t.Fatalf("prompt missing yaml or credentials")
 	}
-	if strings.Contains(read, "/redeploy") {
-		t.Fatalf("read prompt should not teach redeploy")
+	if !strings.Contains(prompt, "curl -sS") || !strings.Contains(prompt, "ROOM_ID=PASTE_ROOM_ID_HERE") {
+		t.Fatalf("prompt must be a full operator brief with curl and ROOM_ID variable")
 	}
-	if !strings.Contains(write, "WRITE") || !strings.Contains(write, "/redeploy") {
-		t.Fatalf("write prompt missing redeploy")
+	if strings.Contains(prompt, "{{BASE}}") || strings.Contains(prompt, "{{TOKEN}}") || strings.Contains(prompt, "{{SCRIPT}}") {
+		t.Fatal("prompt placeholders not replaced")
 	}
-	if !strings.Contains(both, "BOTH") || !strings.Contains(both, secret) || !strings.Contains(both, base) {
-		t.Fatalf("both prompt missing secret or base")
+	if strings.Contains(script, "You are the VPS Manager") {
+		t.Fatal("script must be GitHub YAML only")
 	}
-	if !strings.Contains(both, "You operate") {
-		t.Fatalf("prompt should be an operator brief")
+	if !strings.Contains(prompt, "/upload") || !strings.Contains(prompt, "status=empty") {
+		t.Fatalf("prompt must document tar upload and empty rooms")
 	}
-	if strings.Contains(sheet, "You operate") {
-		t.Fatalf("API sheet must not be the prompt")
+	if !strings.Contains(script, "timeout-minutes: 360") || !strings.Contains(script, "UPDATED") {
+		t.Fatalf("script timeout/log")
+	}
+	if !strings.Contains(script, "ROOM_ID") || !strings.Contains(script, "PASTE_ROOM_ID_HERE") {
+		t.Fatalf("script must use ROOM_ID variable")
+	}
+	if strings.Contains(sheet, "You operate") || strings.Contains(sheet, "curl") {
+		t.Fatalf("API copy must be credentials only, got %q", sheet)
 	}
 	if !strings.Contains(sheet, "BASE=") || !strings.Contains(sheet, "TOKEN="+secret) {
 		t.Fatalf("API sheet missing credentials")
 	}
-	if read == write || write == both || both == sheet {
-		t.Fatal("prompt and API copies must differ")
+	if !strings.Contains(script, "vps-deploy.yml") || !strings.Contains(script, secret) {
+		t.Fatalf("github script")
+	}
+	if !strings.Contains(script, "/upload") || !strings.Contains(script, "docker save") {
+		t.Fatalf("script must upload docker save tar")
+	}
+	if strings.Contains(script, "ghcr.io") {
+		t.Fatalf("script must not use GHCR")
+	}
+	if prompt == sheet || sheet == script {
+		t.Fatal("copies must differ")
 	}
 }
 

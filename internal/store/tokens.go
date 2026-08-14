@@ -17,27 +17,28 @@ type APIToken struct {
 	TokenHash   string `json:"-"`
 	TokenPlain  string `json:"secret,omitempty"`
 	TokenPrefix string `json:"token_prefix"`
-	Mode        string `json:"mode"` // read | write | both
+	Mode        string `json:"mode"` // always both; kept for backups
+	RoomID      string `json:"room_id"`
 	CreatedAt   string `json:"created_at"`
 	LastUsedAt  string `json:"last_used_at,omitempty"`
 }
 
+const tokenCols = `id,name,token_hash,COALESCE(token_plain,''),token_prefix,mode,COALESCE(room_id,''),created_at,last_used_at`
+
+func scanAPIToken(s interface {
+	Scan(dest ...any) error
+}) (APIToken, error) {
+	var t APIToken
+	err := s.Scan(&t.ID, &t.Name, &t.TokenHash, &t.TokenPlain, &t.TokenPrefix, &t.Mode, &t.RoomID, &t.CreatedAt, &t.LastUsedAt)
+	return t, err
+}
+
 func NormalizeTokenMode(mode string) string {
-	m := strings.ToLower(strings.TrimSpace(mode))
-	m = strings.ReplaceAll(m, " ", "")
-	switch {
-	case m == "both" || (strings.Contains(m, "read") && strings.Contains(m, "write")):
-		return "both"
-	case m == "write":
-		return "write"
-	default:
-		return "read"
-	}
+	return "both"
 }
 
 func TokenCanWrite(mode string) bool {
-	m := NormalizeTokenMode(mode)
-	return m == "write" || m == "both"
+	return true
 }
 
 func HashAPIToken(plain string) string {
@@ -53,12 +54,11 @@ func NewAPITokenPlain() (string, error) {
 	return "vm_" + hex.EncodeToString(b), nil
 }
 
-func (s *Store) CreateAPIToken(name, mode string) (*APIToken, string, error) {
+func (s *Store) CreateAPIToken(name, roomID string) (*APIToken, string, error) {
 	name = trimLen(name, 64)
 	if name == "" {
 		name = "API token"
 	}
-	mode = NormalizeTokenMode(mode)
 	plain, err := NewAPITokenPlain()
 	if err != nil {
 		return nil, "", err
@@ -69,11 +69,12 @@ func (s *Store) CreateAPIToken(name, mode string) (*APIToken, string, error) {
 		TokenHash:   HashAPIToken(plain),
 		TokenPlain:  plain,
 		TokenPrefix: plain[:10] + "…",
-		Mode:        mode,
+		Mode:        "owner",
+		RoomID:      "",
 		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
 	}
-	_, err = s.DB.Exec(`INSERT INTO api_tokens(id,name,token_hash,token_plain,token_prefix,mode,created_at,last_used_at)
-		VALUES(?,?,?,?,?,?,?,?)`, t.ID, t.Name, t.TokenHash, plain, t.TokenPrefix, t.Mode, t.CreatedAt, "")
+	_, err = s.DB.Exec(`INSERT INTO api_tokens(id,name,token_hash,token_plain,token_prefix,mode,room_id,created_at,last_used_at)
+		VALUES(?,?,?,?,?,?,?,?,?)`, t.ID, t.Name, t.TokenHash, plain, t.TokenPrefix, t.Mode, t.RoomID, t.CreatedAt, "")
 	if err != nil {
 		return nil, "", err
 	}
@@ -81,15 +82,15 @@ func (s *Store) CreateAPIToken(name, mode string) (*APIToken, string, error) {
 }
 
 func (s *Store) ListAPITokens() ([]APIToken, error) {
-	rows, err := s.DB.Query(`SELECT id,name,token_hash,COALESCE(token_plain,''),token_prefix,mode,created_at,last_used_at FROM api_tokens ORDER BY created_at DESC`)
+	rows, err := s.DB.Query(`SELECT ` + tokenCols + ` FROM api_tokens ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []APIToken
 	for rows.Next() {
-		var t APIToken
-		if err := rows.Scan(&t.ID, &t.Name, &t.TokenHash, &t.TokenPlain, &t.TokenPrefix, &t.Mode, &t.CreatedAt, &t.LastUsedAt); err != nil {
+		t, err := scanAPIToken(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, t)
@@ -98,9 +99,7 @@ func (s *Store) ListAPITokens() ([]APIToken, error) {
 }
 
 func (s *Store) GetAPIToken(id string) (*APIToken, error) {
-	var t APIToken
-	err := s.DB.QueryRow(`SELECT id,name,token_hash,COALESCE(token_plain,''),token_prefix,mode,created_at,last_used_at FROM api_tokens WHERE id=?`, id).
-		Scan(&t.ID, &t.Name, &t.TokenHash, &t.TokenPlain, &t.TokenPrefix, &t.Mode, &t.CreatedAt, &t.LastUsedAt)
+	t, err := scanAPIToken(s.DB.QueryRow(`SELECT `+tokenCols+` FROM api_tokens WHERE id=?`, id))
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -115,9 +114,7 @@ func (s *Store) GetAPITokenByName(name string) (*APIToken, error) {
 	if name == "" {
 		return nil, nil
 	}
-	var t APIToken
-	err := s.DB.QueryRow(`SELECT id,name,token_hash,COALESCE(token_plain,''),token_prefix,mode,created_at,last_used_at FROM api_tokens WHERE lower(name)=lower(?) ORDER BY created_at DESC LIMIT 1`, name).
-		Scan(&t.ID, &t.Name, &t.TokenHash, &t.TokenPlain, &t.TokenPrefix, &t.Mode, &t.CreatedAt, &t.LastUsedAt)
+	t, err := scanAPIToken(s.DB.QueryRow(`SELECT `+tokenCols+` FROM api_tokens WHERE lower(name)=lower(?) ORDER BY created_at DESC LIMIT 1`, name))
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -132,7 +129,6 @@ func (s *Store) DeleteAPIToken(id string) error {
 	return err
 }
 
-// UpsertAPIToken restores an API token with its original secret (full backup).
 func (s *Store) UpsertAPIToken(t APIToken) error {
 	if t.TokenHash == "" && t.TokenPlain != "" {
 		t.TokenHash = HashAPIToken(t.TokenPlain)
@@ -140,20 +136,21 @@ func (s *Store) UpsertAPIToken(t APIToken) error {
 	if t.TokenPrefix == "" && len(t.TokenPlain) >= 10 {
 		t.TokenPrefix = t.TokenPlain[:10] + "…"
 	}
-	t.Mode = NormalizeTokenMode(t.Mode)
+	t.Mode = "both"
 	if t.CreatedAt == "" {
 		t.CreatedAt = time.Now().UTC().Format(time.RFC3339)
 	}
-	_, err := s.DB.Exec(`INSERT INTO api_tokens(id,name,token_hash,token_plain,token_prefix,mode,created_at,last_used_at)
-		VALUES(?,?,?,?,?,?,?,?)
+	_, err := s.DB.Exec(`INSERT INTO api_tokens(id,name,token_hash,token_plain,token_prefix,mode,room_id,created_at,last_used_at)
+		VALUES(?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET
 			name=excluded.name,
 			token_hash=excluded.token_hash,
 			token_plain=excluded.token_plain,
 			token_prefix=excluded.token_prefix,
 			mode=excluded.mode,
+			room_id=excluded.room_id,
 			last_used_at=excluded.last_used_at`,
-		t.ID, t.Name, t.TokenHash, t.TokenPlain, t.TokenPrefix, t.Mode, t.CreatedAt, t.LastUsedAt)
+		t.ID, t.Name, t.TokenHash, t.TokenPlain, t.TokenPrefix, t.Mode, t.RoomID, t.CreatedAt, t.LastUsedAt)
 	return err
 }
 
@@ -162,9 +159,7 @@ func (s *Store) LookupAPIToken(plain string) (*APIToken, error) {
 		return nil, nil
 	}
 	hash := HashAPIToken(plain)
-	var t APIToken
-	err := s.DB.QueryRow(`SELECT id,name,token_hash,COALESCE(token_plain,''),token_prefix,mode,created_at,last_used_at FROM api_tokens WHERE token_hash=?`, hash).
-		Scan(&t.ID, &t.Name, &t.TokenHash, &t.TokenPlain, &t.TokenPrefix, &t.Mode, &t.CreatedAt, &t.LastUsedAt)
+	t, err := scanAPIToken(s.DB.QueryRow(`SELECT `+tokenCols+` FROM api_tokens WHERE token_hash=?`, hash))
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

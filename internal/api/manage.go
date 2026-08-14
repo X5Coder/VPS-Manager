@@ -944,6 +944,96 @@ func (s *Server) handleRoomUpdate(w http.ResponseWriter, r *http.Request, roomID
 	_ = appendLog(s.Cfg.DataDir, "deploy", "UPDATE project="+pid+" room="+room.ID+" image="+image)
 }
 
+func (s *Server) handleRoomImageTar(w http.ResponseWriter, r *http.Request, roomID string) {
+	room, p0, err := s.resolveRoomProject(roomID)
+	if err != nil || room == nil {
+		writeErr(w, 404, "not found")
+		return
+	}
+	if _, ctrl := s.canControlRoom(w, r, room.ID); ctrl == nil {
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeErr(w, 405, "method")
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-cache")
+	flusher, _ := w.(http.Flusher)
+	logw := &flushWriter{w: w, f: flusher}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<30)
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		fmt.Fprintf(logw, "error: could not read upload (%v)\n", err)
+		return
+	}
+	file, hdr, err := r.FormFile("file")
+	if err != nil {
+		fmt.Fprintf(logw, "error: upload an image file (docker save .tar)\n")
+		return
+	}
+	defer file.Close()
+	fname := "upload.tar"
+	if hdr != nil && hdr.Filename != "" {
+		fname = hdr.Filename
+	}
+	tmp, err := os.MkdirTemp("", "vm-tar-*")
+	if err != nil {
+		fmt.Fprintf(logw, "error: %v\n", err)
+		return
+	}
+	defer os.RemoveAll(tmp)
+	dest := filepath.Join(tmp, "image.tar")
+	out, err := os.Create(dest)
+	if err != nil {
+		fmt.Fprintf(logw, "error: %v\n", err)
+		return
+	}
+	fmt.Fprintf(logw, "Receiving %s...\n", fname)
+	n, err := io.Copy(out, file)
+	out.Close()
+	if err != nil {
+		fmt.Fprintf(logw, "error: %v\n", err)
+		return
+	}
+	fmt.Fprintf(logw, "Saved %d bytes\nLoading image (large files can take a while)...\n", n)
+	if s.Docker == nil || !s.Docker.Available() {
+		fmt.Fprintf(logw, "error: Docker unavailable\n")
+		return
+	}
+	jobKey := room.ID
+	if p0 != nil {
+		jobKey = p0.ID
+	}
+	if err := s.tryBeginJob(jobKey, "deploy"); err != nil {
+		fmt.Fprintf(logw, "error: %v\n", err)
+		return
+	}
+	defer s.endJob(jobKey)
+	if p0 != nil {
+		s.Projects.MarkDeploying(room.ID, p0.ID, s.localProjectTag(p0), "deploy")
+	}
+	image, err := s.applyImageTarRoom(room, p0, dest, logw)
+	if err != nil {
+		fmt.Fprintf(logw, "error: %v\n", err)
+		return
+	}
+	st := "running"
+	if p0 != nil && s.Docker != nil && p0.ContainerID != "" {
+		if st2, e := s.Docker.InspectStatus(p0.ContainerID); e == nil && st2 != "" {
+			st = st2
+		}
+	}
+	if p0 != nil {
+		if p2, _ := s.Store.GetProject(p0.ID); p2 != nil && p2.Status != "" {
+			st = p2.Status
+		}
+	}
+	fmt.Fprintf(logw, "Updated. Project is running automatically. image=%s status=%s\n", image, st)
+	_ = appendLog(s.Cfg.DataDir, "deploy", "TAR-UPDATE room="+room.ID+" image="+image+" status="+st)
+}
+
 func (s *Server) handleDeployPull(w http.ResponseWriter, r *http.Request) {
 	if s.requireOwner(w, r) == nil {
 		return

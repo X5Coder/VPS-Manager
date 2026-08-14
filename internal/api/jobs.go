@@ -2,8 +2,10 @@ package api
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/x5coder/vps-rooms/internal/projects"
@@ -126,6 +128,114 @@ func (s *Server) startBuildAsync(p *store.Project, in projects.BuildImageInput, 
 			s.Projects.MarkDeployResult(proj.RoomID, proj.ID, built, s.dockerDigest(built), true, "")
 		}
 	}(pCopy, in, deploy, pull, recreate)
+	return nil
+}
+
+func (s *Server) localProjectTag(p *store.Project) string {
+	if p == nil {
+		return "vpsrooms/app:latest"
+	}
+	img := strings.TrimSpace(p.Image)
+	if strings.HasPrefix(img, "vpsrooms/") {
+		return img
+	}
+	return projects.DefaultVpsroomsTag(p.Name)
+}
+
+func (s *Server) applyImageTar(p *store.Project, tarPath string, logw io.Writer) (string, error) {
+	if p == nil {
+		return "", fmt.Errorf("project has no container")
+	}
+	room, err := s.Store.GetRoom(p.RoomID)
+	if err != nil || room == nil {
+		return "", fmt.Errorf("room not found")
+	}
+	return s.applyImageTarRoom(room, p, tarPath, logw)
+}
+
+func (s *Server) applyImageTarRoom(room *store.Room, p *store.Project, tarPath string, logw io.Writer) (string, error) {
+	if room == nil {
+		return "", fmt.Errorf("room not found")
+	}
+	if s.Docker == nil || !s.Docker.Available() {
+		return "", fmt.Errorf("Docker unavailable")
+	}
+	if logw == nil {
+		logw = io.Discard
+	}
+	want := projects.DefaultVpsroomsTag(room.Name)
+	if p != nil {
+		want = s.localProjectTag(p)
+	}
+	loaded, err := s.Docker.LoadImageTag(tarPath)
+	if err != nil {
+		if p != nil {
+			s.Projects.MarkDeployResult(p.RoomID, p.ID, p.Image, "", false, err.Error())
+		}
+		return "", err
+	}
+	fmt.Fprintf(logw, "Loaded %s\n", loaded)
+	if err := s.Docker.Tag(loaded, want); err != nil {
+		if p != nil {
+			s.Projects.MarkDeployResult(p.RoomID, p.ID, p.Image, "", false, err.Error())
+		}
+		return "", err
+	}
+	fmt.Fprintf(logw, "Tagged %s → %s\nRecreating container (same id, ports, env)...\n", loaded, want)
+	if p != nil {
+		if err := s.Projects.RedeployImage(projects.RedeployInput{
+			ID: p.ID, Image: want, Pull: false, Recreate: true, Log: logw,
+		}); err != nil {
+			return want, err
+		}
+		return want, nil
+	}
+	cPort, hPort := s.readRoomPending(room.ID)
+	created, err := s.Projects.DeployImage(projects.DeployImageInput{
+		RoomID: room.ID, Name: room.Name, Image: want,
+		HostPort: hPort, ContainerPort: cPort, Log: logw,
+	})
+	if err != nil {
+		s.Projects.MarkDeployResult(room.ID, room.ID, want, "", false, err.Error())
+		return want, err
+	}
+	digest := s.dockerDigest(want)
+	s.Projects.MarkDeployResult(room.ID, created.ID, want, digest, true, "")
+	fmt.Fprintf(logw, "Updated. Project is running automatically. project=%s image=%s\n", created.ID, want)
+	return want, nil
+}
+
+func (s *Server) startTarDeployAsync(room *store.Room, p *store.Project, tarPath, tmpDir string) error {
+	if room == nil {
+		_ = os.RemoveAll(tmpDir)
+		return fmt.Errorf("room not found")
+	}
+	key := room.ID
+	if p != nil {
+		key = p.ID
+	}
+	if err := s.tryBeginJob(key, "deploy"); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return err
+	}
+	want := projects.DefaultVpsroomsTag(room.Name)
+	if p != nil {
+		want = s.localProjectTag(p)
+		s.Projects.MarkDeploying(p.RoomID, p.ID, want, "deploy")
+	}
+	var pCopy *store.Project
+	if p != nil {
+		cp := *p
+		pCopy = &cp
+	}
+	roomCopy := *room
+	go func(room store.Room, p *store.Project, tarPath, tmpDir, key string) {
+		defer s.endJob(key)
+		defer os.RemoveAll(tmpDir)
+		if _, err := s.applyImageTarRoom(&room, p, tarPath, io.Discard); err != nil {
+			log.Printf("upload %s: %v", key, err)
+		}
+	}(roomCopy, pCopy, tarPath, tmpDir, key)
 	return nil
 }
 

@@ -33,6 +33,17 @@ func TestAISlotOrderOnlyPreferred(t *testing.T) {
 	}
 }
 
+func TestParseCreateTokenNameOnly(t *testing.T) {
+	raw := `{"say":"created","ask":[],"create_token":true,"token_name":"ops","done":true}`
+	r, ok := parseReply(raw)
+	if !ok {
+		t.Fatal("parse")
+	}
+	if !r.CreateToken || r.TokenName != "ops" {
+		t.Fatalf("create token by name only failed: %+v", r)
+	}
+}
+
 func TestSanitizeSayUnescapesNewlines(t *testing.T) {
 	raw := `{"say":"في هذا سجل API.\n\n- تم إنشاء مشروع embeddings-server\n\nملاحظة مهمة","ask":[],"choices":[],"done":true}`
 	r, ok := parseReply(raw)

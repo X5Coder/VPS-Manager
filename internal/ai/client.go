@@ -31,22 +31,27 @@ type Message struct {
 }
 
 type Reply struct {
-	Say         string   `json:"say"`
-	Says        []string `json:"says"`
-	Command     string   `json:"command"`
-	Ask         []string `json:"ask"`
-	Choices     []string `json:"choices"`
-	QuotaGB     float64  `json:"quota_gb"`
-	Image       string   `json:"image"`
-	UpdateID    string   `json:"update_id"` // room id or project id — publish image onto that project
-	Start       bool     `json:"start"`
-	Done        bool     `json:"done"`
-	Action      string   `json:"action"`   // pause | resume | ""
-	LogKind     string   `json:"log_kind"` // panel | api | deploy | host
-	CreateToken bool     `json:"create_token"`
-	TokenName   string   `json:"token_name"`
-	TokenMode   string   `json:"token_mode"`
-	TypeOnly    bool     `json:"type_only"` // fill the terminal input, do not run
+	Say            string   `json:"say"`
+	Says           []string `json:"says"`
+	Command        string   `json:"command"`
+	Ask            []string `json:"ask"`
+	Choices        []string `json:"choices"`
+	QuotaGB        float64  `json:"quota_gb"`
+	Image          string   `json:"image"`
+	UpdateID       string   `json:"update_id"` // room id or project id — publish image onto that project
+	Start          bool     `json:"start"`
+	Done           bool     `json:"done"`
+	Action         string   `json:"action"`   // pause | resume | ""
+	LogKind        string   `json:"log_kind"` // panel | api | deploy | host
+	CreateToken    bool     `json:"create_token"`
+	CreateRoom     bool     `json:"create_room"`
+	RoomName       string   `json:"room_name"`
+	RoomPassword   string   `json:"room_password"`
+	ContainerPort  int      `json:"container_port"`
+	TokenName      string   `json:"token_name"`
+	TokenMode      string   `json:"token_mode"`
+	TokenProjectID string   `json:"token_project_id"`
+	TypeOnly       bool     `json:"type_only"` // fill the terminal input, do not run
 }
 
 type apiResp struct {
@@ -120,6 +125,7 @@ Scope:
 - You already know this room from SYSTEM-NOTE (id, project_id, image, ports, quota, password is NOT in your note). Act as its operator.
 - MAY: files via terminal, edit files via terminal, run commands, analyze THIS room usage, raise quota (quota_gb — Save applies the live disk cap), pause/resume.
 - MAY publish a Docker update to THIS same project: docker pull or docker build, then set image to that tag and start true. Same id. Do not create a new room. Do not git clone a different app.
+- Tell them they can also drop a docker save .tar on Overview → Update image (live log). GitHub: create an API bound to this project, Copy script into .github/workflows/vps-deploy.yml.
 - MUST refuse: delete this room, other rooms, tokens, host-wide logs, unrelated general chat. One short refusal, then what you can do here.
 - Name and password are edited in the project page (or tell them the fields). You may explain how.
 - Host CPU in SYSTEM-NOTE may jump second-to-second (normal VPS sampling). Real pressure = load1 staying above CPU cores, or disk/RAM high.
@@ -169,36 +175,42 @@ Rules:
 - Do not invent log lines. Only use the provided excerpt.
 - ask at most one question. done true when finished.`
 
-const TokenPrompt = `You are the VPS Manager Tokens agent. You ONLY help with API tokens: create them, explain how to use them. Refuse anything else.
+const TokenPrompt = `You are the VPS Manager API specialist. One API token controls ALL rooms. You TEACH every call with working curl, and you CAN create a token (name only) or an empty room (name + quota_gb + password) from this page. You are not a refusal bot.
 
-Language: match the user. JSON keys stay English. One spoken "say". "says" MUST stay []. Never dump JSON into say.
+Language: match the user. Arabic or English — do not mix. JSON keys stay English. One spoken "say" that actually answers. "says" MUST stay []. Use **bold**, ` + "`code`" + `, and fenced curl/yaml inside say. Keep JSON valid (\\n for newlines).
 
 Always reply with ONLY one JSON object:
-{"say":"spoken reply","says":[],"ask":[],"choices":[],"create_token":false,"token_name":"","token_mode":"","done":false}
+{"say":"full useful answer","says":[],"ask":[],"choices":[],"create_room":false,"room_name":"","room_password":"","quota_gb":0,"container_port":0,"create_token":false,"token_name":"","done":false}
 
-You decide the question. Do not repeat yourself.
+Never invent BASE, TOKEN, ids, GB, or passwords. Use SYSTEM-NOTE. Never print a guessed secret. Never DELETE.
 
-Modes (one token):
-- read = GET only
-- write = GET + create/update/exec
-- both = that same token can read AND write
-Never create two tokens for "both". One secret, mode "both".
+THIS API (BASE from SYSTEM-NOTE)
+Authorization: Bearer <token>
+- GET BASE/api/v1/projects  → every room: id, name, status (empty|running|…), quota_gb, usage_gb, plus storage.disk_total / disk_free / quota_available_gb
+- GET BASE/api/v1/projects/{ROOM_ID}  → one room. status=empty means no container yet.
+- GET BASE/api/v1/storage  → host disk. Use quota_available_gb when choosing a new room size.
+- POST BASE/api/v1/projects  {"name":"my-app","quota_gb":10,"password":"secret6+","container_port":8080}  → empty room
+- POST BASE/api/v1/projects/{ROOM_ID}/upload  multipart file=app.tar (docker save). Fills an empty room or updates an existing one.
+- PATCH BASE/api/v1/projects/{ROOM_ID}  {"quota_gb":N}
+- POST BASE/api/v1/projects/{ROOM_ID}/exec  {"command":"…"}
+- GET BASE/api/v1/ports
 
-Flow:
-1) If mode is unknown: ONE question in "ask" (your own wording). Set choices ONLY if you want taps — typically ["read","write","both"]. Empty say or a short lead-in that is NOT the same sentence as ask. Wait.
-2) If they already picked a mode (ANSWERS or earlier text): do not ask mode again.
-3) If name is unknown: ONE ask for a short name. choices MUST be [] so they type it. Do not also put the name question in "say". Do not ask the name twice with different wording.
-4) When you have name + mode: set create_token true ONCE with token_name and token_mode. Empty ask. done MUST be true. Never set create_token again for that name (the panel already created it). Tell them to copy the AI prompt from the card.
+GITHUB
+Copy script is one workflow for every room. They set ROOM_ID (or type it in Run workflow). Build → docker save → upload. Same YAML for first deploy on an empty room and for later updates.
 
-If they already have tokens, answer. To create another, same flow — once each, not repeated.
+CREATE TOKEN HERE
+Ask for a short name if missing. Then create_token true with token_name only. Do NOT ask which room. One token = all rooms.
 
-Delete via API is never allowed.
-Auth: Authorization: Bearer <secret>  or  X-API-Token: <secret>
-Base URL is in SYSTEM-NOTE.
+CREATE EMPTY ROOM HERE
+Need unique name (A-Za-z0-9_-), quota_gb > 0 and ≤ quota_available_gb in SYSTEM-NOTE, password ≥ 6 chars. Show total/free disk from SYSTEM-NOTE when asking GB. Then create_room true with room_name, quota_gb, room_password, container_port (8080 if they did not pick). Tell them the new id; status=empty until tar/GitHub.
 
-Endpoints: GET /api/v1/projects (ids, image, masked env, deploy status). POST /api/v1/projects/{id}/redeploy — image optional (omit = pull+recreate current). Returns immediately status=deploying; poll GET until running. POST .../build is async (poll GET; last_deploy_error on fail). POST /api/v1/projects is NEW rooms only. PATCH image is the same async redeploy. Never DELETE. Never git/npm inside the app container as publish. both = that same secret can GET and POST/PATCH/exec/build/redeploy.
+HOW TO ANSWER
+If they ask how listing, usage, quota, create room, GitHub, tar, or ROOM_ID works: ANSWER NOW with steps and curl. create_token false unless they asked to mint a key.
+If they want a token: name → create_token.
+If they want a new empty room: collect name+GB+password, then create_room. Do not also mint a token unless they asked.
+Do not refuse with “I only create tokens”.
 
-ask: at most one. create_token false while asking. done true when finished.`
+ask at most one. create_* false while asking. done true when the answer is complete or you created something.`
 
 const UsagePrompt = `You are the VPS Manager Usage agent. Your ONLY job is live consumption: CPU, memory, disk, load, network, GPU if present, how many rooms, each room NAME + its disk used vs quota, vs host totals. Refuse anything else (deploy, tokens, file contents, passwords). Short refusal.
 
@@ -335,24 +347,20 @@ func TurnWith(sys string, history []Message) (Reply, string, error) {
 		rep.Command = ""
 		rep.Start = false
 		rep.CreateToken = false
+		rep.CreateRoom = false
 		rep.TypeOnly = false
 	}
 	if rep.TypeOnly {
 		rep.Start = false
 	}
 	rep.TokenName = strings.TrimSpace(rep.TokenName)
-	rep.TokenMode = strings.ToLower(strings.TrimSpace(rep.TokenMode))
-	rep.TokenMode = strings.ReplaceAll(rep.TokenMode, " ", "")
-	switch {
-	case rep.TokenMode == "both" || strings.Contains(rep.TokenMode, "read") && strings.Contains(rep.TokenMode, "write"):
-		rep.TokenMode = "both"
-	case rep.TokenMode == "read" || rep.TokenMode == "write":
-		// ok
-	default:
-		rep.TokenMode = ""
+	rep.TokenProjectID = strings.TrimSpace(rep.TokenProjectID)
+	if rep.TokenProjectID == "" {
+		rep.TokenProjectID = strings.TrimSpace(rep.TokenMode)
 	}
+	rep.RoomPassword = strings.TrimSpace(rep.RoomPassword)
 	compactSpeech(&rep)
-	if rep.CreateToken && (rep.TokenMode == "" || len(rep.Ask) > 0) {
+	if rep.CreateToken && len(rep.Ask) > 0 {
 		rep.CreateToken = false
 	}
 	if rep.QuotaGB < 0 {
@@ -581,7 +589,7 @@ func extractJSONStringField(body, key string) string {
 		return out.String()
 	}
 	// Unquoted / broken: take until next JSON key or end.
-	stopKeys := []string{`,"ask"`, `,"says"`, `,"command"`, `,"choices"`, `,"done"`, `,"create_token"`, `,"token_name"`, `,"quota_gb"`, `,"action"`, `,"log_kind"`, `,"image"`, `,"start"`}
+	stopKeys := []string{`,"ask"`, `,"says"`, `,"command"`, `,"choices"`, `,"done"`, `,"create_token"`, `,"token_name"`, `,"token_project_id"`, `,"quota_gb"`, `,"action"`, `,"log_kind"`, `,"image"`, `,"start"`}
 	end := len(rest)
 	for _, sk := range stopKeys {
 		if p := strings.Index(rest, sk); p >= 0 && p < end {

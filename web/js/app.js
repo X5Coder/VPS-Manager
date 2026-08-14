@@ -182,8 +182,8 @@
   }
 
   const AGENT_HELLO = "Hello — write me a command and I’ll run it in the terminal.";
-  const TOKEN_HELLO = "Hello — I create API tokens. read = GET only. write = GET + change. both = the same key can read and write. Copy prompt = AI operator brief. Copy API = base URL, token, and curl routes.";
-  const ROOM_HELLO = "Hello — I’m inside this project. I can inspect files, change disk (Save applies it live), pause/resume, and publish a Docker image update on this same id. I won’t delete the project.";
+  const TOKEN_HELLO = "Hello — one API covers every room. I can create a key by name, list rooms (id, quota, usage), create an empty room, and show GitHub: set ROOM_ID then push app.tar. Ask me anything about the API.";
+  const ROOM_HELLO = "Hello — I’m inside this project. Update the image from Overview (drop a .tar) or via GitHub Action (API → Copy script). I can inspect files, change disk, pause/resume, and publish a Docker tag on this same id. I won’t delete the project.";
   const LOGS_HELLO = "Hello — I analyze panel logs. Ask me to analyze, then pick which log.";
   const USAGE_HELLO = "Hello — I analyze this server’s live usage: CPU, RAM, disk, load, room names, and each room’s disk vs the host total.";
 
@@ -2041,7 +2041,7 @@
         return;
       }
       const cards = (rooms || []).map((r) => {
-        const st = r.status === "running" ? "ok" : r.status === "stopped" ? "stop" : "miss";
+        const st = r.status === "running" ? "ok" : r.status === "empty" ? "empty" : r.status === "stopped" ? "stop" : "miss";
         const usedN = Number(r.usage_bytes) || 0;
         const quotaN = Number(r.quota_bytes) || 0;
         const used = quotaN ? `${fmtBytes(usedN)} / ${fmtBytes(quotaN)}` : fmtBytes(usedN);
@@ -2057,7 +2057,7 @@
               <h4>${esc(r.name)}</h4>
               <span class="badge ${st}" data-badge>${esc(r.status)}</span>
             </div>
-            <p class="proj-meta">${img ? `<span class="mono">${esc(img)}</span>` : `<span class="muted">No image</span>`}${port ? `<span class="proj-dot"></span><span class="mono">:${port}</span>` : ""}</p>
+            <p class="proj-meta">${img ? `<span class="mono">${esc(img)}</span>` : `<span class="muted">${r.status === "empty" ? "Empty — upload tar or set ROOM_ID in GitHub" : "No image"}</span>`}${port ? `<span class="proj-dot"></span><span class="mono">:${port}</span>` : ""}</p>
             <button type="button" class="proj-id-btn copyable" data-copy="${esc(r.id)}" title="Copy id">
               <span>ID</span>
               <code>${esc(r.id)}</code>
@@ -3082,17 +3082,20 @@ docker save -o myapp.tar myapp:latest`;
     const secret = t.secret || opts.secret || "";
     const prompt = t.prompt || opts.prompt || "";
     const apiSheet = t.api || opts.api || "";
+    const script = t.script || opts.script || "";
     const fresh = opts.fresh ? " tok-fresh" : "";
     const copyVal = secret || "";
+    const roomLabel = "all rooms";
     return `<div class="tok-card${fresh}" data-tok-id="${esc(t.id)}">
       <div class="tok-card-top">
         <div>
           <strong>${esc(t.name)}</strong>
-          <span class="badge ${t.mode === "read" ? "stop" : "ok"}">${esc(t.mode)}</span>
+          <span class="badge ok">${esc(roomLabel)}</span>
         </div>
         <div class="row-actions">
-          <button class="btn sm action" type="button" data-copy-prompt ${prompt ? "" : "disabled"}>Copy prompt</button>
-          <button class="btn sm action" type="button" data-copy-api ${apiSheet ? "" : "disabled"}>Copy API</button>
+          <button class="btn sm action" type="button" data-copy-prompt ${prompt ? "" : "disabled"} title="Full AI prompt: all API commands + GitHub YAML + ROOM_ID">Copy prompt</button>
+          <button class="btn sm action" type="button" data-copy-api ${apiSheet ? "" : "disabled"} title="BASE and TOKEN only">Copy API</button>
+          <button class="btn sm action" type="button" data-copy-script ${script ? "" : "disabled"} title="GitHub Action YAML — set ROOM_ID">Copy script</button>
           <button class="btn sm danger action" data-del-tok="${esc(t.id)}">Revoke</button>
         </div>
       </div>
@@ -3101,7 +3104,8 @@ docker save -o myapp.tar myapp:latest`;
       </div>
       ${prompt ? `<textarea class="hidden tok-prompt" readonly>${esc(prompt)}</textarea>` : ""}
       ${apiSheet ? `<textarea class="hidden tok-api" readonly>${esc(apiSheet)}</textarea>` : ""}
-      <div class="muted" style="font-size:0.75rem;margin-top:6px">created ${esc(t.created_at || "")}${t.last_used_at ? " · last used " + esc(t.last_used_at) : ""}</div>
+      ${script ? `<textarea class="hidden tok-script" readonly>${esc(script)}</textarea>` : ""}
+      <div class="muted" style="font-size:0.75rem;margin-top:6px">one API · all rooms · set ROOM_ID in the script · created ${esc(t.created_at || "")}${t.last_used_at ? " · last used " + esc(t.last_used_at) : ""}</div>
     </div>`;
   }
 
@@ -3121,10 +3125,10 @@ docker save -o myapp.tar myapp:latest`;
     const cards = list.map((t) => tokenCardHTML(t)).join("");
     const hero = empty ? `
       <div class="tok-hero" id="tok-hero">
-        <p class="muted">No API tokens yet</p>
-        <button class="btn primary action" id="tok-hero-new" type="button">Create new token</button>
+        <p class="muted">One API for all rooms. Create by name only — then set ROOM_ID in GitHub.</p>
+        <button class="btn primary action" id="tok-hero-new" type="button">Create API</button>
       </div>` : "";
-    const agentBlock = empty ? "" : agentDeskHTML({
+    const agentBlock = agentDeskHTML({
       title: "Tokens agent",
       showTerm: false,
     });
@@ -3132,9 +3136,9 @@ docker save -o myapp.tar myapp:latest`;
     shell(`
       <div class="topbar"><div>
         <h2>Tokens</h2>
-        <div class="sub">${list.length ? `${list.length} saved` : "Create a key to use the HTTP API"}</div>
+        <div class="sub">${list.length ? `${list.length} saved` : "One API for all rooms · set ROOM_ID in GitHub"}</div>
       </div>
-        ${empty ? "" : `<button class="btn primary action" id="tok-new" type="button">Create token</button>`}
+        ${`<button class="btn primary action" id="tok-new" type="button">Create token</button>`}
       </div>
       <div id="tok-fresh"></div>
       <div id="tok-list" class="tok-list">${cards}${hero}</div>
@@ -3149,7 +3153,7 @@ docker save -o myapp.tar myapp:latest`;
       box.innerHTML = rest.map((t) => tokenCardHTML(t)).join("") || (freshId ? "" : `<div class="tok-hero" id="tok-hero"><p class="muted">No API tokens yet</p><button class="btn primary action" id="tok-hero-new" type="button">Create new token</button></div>`);
       const top = document.querySelector("#tok-fresh");
       if (top) {
-        top.innerHTML = freshTok ? tokenCardHTML(freshTok, { secret: fresh.secret || freshTok.secret, prompt: fresh.prompt || freshTok.prompt, api: fresh.api || freshTok.api, fresh: true }) : "";
+        top.innerHTML = freshTok ? tokenCardHTML(freshTok, { secret: fresh.secret || freshTok.secret, prompt: fresh.prompt || freshTok.prompt, api: fresh.api || freshTok.api, script: fresh.script || freshTok.script, fresh: true }) : "";
       }
       bindCopyables();
       document.querySelectorAll("[data-copy-prompt]").forEach((b) => {
@@ -3164,79 +3168,71 @@ docker save -o myapp.tar myapp:latest`;
           await copyText(pre ? pre.value || pre.textContent : "");
         };
       });
+      document.querySelectorAll("[data-copy-script]").forEach((b) => {
+        b.onclick = async () => {
+          const pre = b.closest(".tok-card")?.querySelector(".tok-script");
+          await copyText(pre ? pre.value || pre.textContent : "");
+        };
+      });
       document.querySelectorAll("[data-del-tok]").forEach((btn) => bindAction(btn, async () => {
         if (!confirm("Revoke this API token?")) return;
         await api(`/api/settings/tokens/${btn.dataset.delTok}`, { method: "DELETE" });
         renderTokens();
       }));
-      document.querySelector("#tok-hero-new")?.addEventListener("click", () => {
-        openCreateTokenModal(async () => { await renderTokens(); });
-      });
+      document.querySelector("#tok-hero-new")?.addEventListener("click", openCreate);
     };
-    paintList(list);
-
     const openCreate = () => openCreateTokenModal(async (created) => {
       if (!created) return;
       list = [created, ...list.filter((t) => t.id !== created.id)];
       await renderTokens();
     });
+    paintList(list);
     document.querySelector("#tok-new")?.addEventListener("click", openCreate);
-    document.querySelector("#tok-hero-new")?.addEventListener("click", openCreate);
 
-    if (!empty) {
-      bindAgentChat({
+    bindAgentChat({
         key: "tokens",
         stillHere: () => state.view === "tokens",
         aiPath: "/api/tokens/ai",
         hello: TOKEN_HELLO,
         onToken: (res) => {
-          const tok = Object.assign({}, res.token || {}, { secret: res.secret, prompt: res.prompt, api: res.api });
+          const tok = Object.assign({}, res.token || {}, { secret: res.secret, prompt: res.prompt, api: res.api, script: res.script });
           if (!tok.id) return;
           list = [tok, ...list.filter((t) => t.id !== tok.id && String(t.name || "").toLowerCase() !== String(tok.name || "").toLowerCase())];
-          paintList(list, { token: tok, secret: tok.secret, prompt: res.prompt || tok.prompt, api: res.api || tok.api });
+          paintList(list, { token: tok, secret: tok.secret, prompt: res.prompt || tok.prompt, api: res.api || tok.api, script: res.script || tok.script });
         },
       });
-    }
   }
 
   function openCreateTokenModal(onDone) {
+    document.getElementById("tok-create-modal")?.remove();
     const modal = el(`<div class="modal-back logout-modal" id="tok-create-modal">
       <div class="modal-card logout-card tok-create-card">
         <div id="tok-create-form">
-          <h3>Create new token</h3>
-          <p class="muted">Pick a name and what this key is allowed to do.</p>
+          <h3>Create API</h3>
+          <p class="muted">One key for <strong>all rooms</strong>. In GitHub, set <code>ROOM_ID</code> to the room you update.</p>
           <div class="field" style="margin-top:14px"><label>Name</label>
             <input id="tok-create-name" type="text" maxlength="64" placeholder="My API key" autocomplete="off" /></div>
-          <div class="field"><label>Mode</label>
-            <div class="tok-mode-picks" id="tok-create-modes">
-              <button type="button" class="tok-mode-btn on" data-mode="read">read</button>
-              <button type="button" class="tok-mode-btn" data-mode="write">write</button>
-              <button type="button" class="tok-mode-btn" data-mode="both">both</button>
-            </div>
-            <p class="muted" style="margin-top:8px;font-size:0.78rem">read = GET only · write = GET + change · both = the same key can read and write</p>
-          </div>
           <p class="error" id="tok-create-err"></p>
           <div class="row-actions" style="margin-top:16px">
             <button class="btn ghost" type="button" data-cancel>Cancel</button>
-            <button class="btn primary action" type="button" data-save>Create token</button>
+            <button class="btn primary action" type="button" data-save>Create API</button>
           </div>
         </div>
         <div id="tok-create-done" class="hidden">
-          <h3>Token created</h3>
-          <p class="muted" id="tok-create-done-note">Copy prompt for an AI. Copy API for curl. Both stay on the card after you close.</p>
+          <h3>API created</h3>
+          <p class="muted" id="tok-create-done-note">Copy prompt = AI instructions + YAML. Copy script = GitHub Action (set ROOM_ID). Copy API = BASE and TOKEN only.</p>
           <div class="secret-row" style="margin-top:12px">
             <code class="tok-plain" id="tok-create-secret"></code>
           </div>
           <div class="row-actions" style="margin-top:16px">
-            <button class="btn primary action" type="button" data-copy-prompt>Copy prompt</button>
+            <button class="btn primary action" type="button" data-copy-script>Copy script</button>
             <button class="btn action" type="button" data-copy-api>Copy API</button>
+            <button class="btn action" type="button" data-copy-prompt>Copy prompt</button>
             <button class="btn ghost" type="button" data-close>Done</button>
           </div>
         </div>
       </div>
     </div>`);
-    let mode = "read";
-    let secret = "";
     const close = (created) => {
       modal.classList.remove("show");
       modal.classList.add("hide");
@@ -3245,44 +3241,32 @@ docker save -o myapp.tar myapp:latest`;
         if (created && onDone) onDone(created);
       }, 280);
     };
-    modal.querySelectorAll(".tok-mode-btn").forEach((b) => {
-      b.onclick = () => {
-        mode = b.dataset.mode;
-        modal.querySelectorAll(".tok-mode-btn").forEach((x) => x.classList.toggle("on", x === b));
-      };
-    });
     modal.querySelector("[data-cancel]").onclick = () => close(null);
     modal.addEventListener("click", (e) => { if (e.target === modal) close(null); });
     modal.querySelector("[data-save]").onclick = async () => {
       const err = modal.querySelector("#tok-create-err");
+      const saveBtn = modal.querySelector("[data-save]");
       err.textContent = "";
       const name = (modal.querySelector("#tok-create-name").value || "").trim() || "API token";
+      saveBtn.disabled = true;
       try {
-        const res = await api("/api/settings/tokens", { method: "POST", body: JSON.stringify({ name, mode }) });
-        const tok = Object.assign({}, res.token || {}, { secret: res.secret, prompt: res.prompt, api: res.api });
-        secret = res.secret || tok.secret || "";
-        const note = modal.querySelector("#tok-create-done-note");
-        if (note) {
-          note.textContent = mode === "both"
-            ? "Same key for GET and writes. Copy prompt for an AI. Copy API for curl."
-            : mode === "write"
-              ? "This key can read and change projects. Copy prompt for an AI. Copy API for curl."
-              : "This key is read-only. Copy prompt for an AI. Copy API for curl.";
-        }
-        modal.querySelector("#tok-create-form").classList.add("tok-out");
-        setTimeout(() => {
-          modal.querySelector("#tok-create-form").classList.add("hidden");
-          const done = modal.querySelector("#tok-create-done");
-          done.classList.remove("hidden");
-          done.classList.add("tok-in");
-        }, 180);
+        const res = await api("/api/settings/tokens", { method: "POST", body: JSON.stringify({ name }) });
+        const tok = Object.assign({}, res.token || {}, { secret: res.secret, prompt: res.prompt, api: res.api, script: res.script });
+        const secret = res.secret || tok.secret || "";
+        modal.querySelector("#tok-create-form").classList.add("hidden");
+        const done = modal.querySelector("#tok-create-done");
+        done.classList.remove("hidden");
+        done.classList.add("tok-in");
         modal.querySelector("#tok-create-secret").textContent = secret;
         const promptText = res.prompt || tok.prompt || "";
         const apiText = res.api || tok.api || "";
+        const scriptText = res.script || tok.script || "";
         modal.querySelector("[data-copy-prompt]").onclick = async () => { await copyText(promptText); };
         modal.querySelector("[data-copy-api]").onclick = async () => { await copyText(apiText); };
+        modal.querySelector("[data-copy-script]").onclick = async () => { await copyText(scriptText); };
         modal.querySelector("[data-close]").onclick = () => close(tok);
       } catch (ex) {
+        saveBtn.disabled = false;
         err.textContent = ex.message || "Could not create token";
       }
     };
@@ -3385,6 +3369,7 @@ docker save -o myapp.tar myapp:latest`;
     const tab = state.roomTab || "overview";
     const projs = room.projects || [];
     const mainProj = projs[0];
+    const emptyRoom = !mainProj;
     let st = null;
     try { st = await api("/api/storage"); } catch {}
 
@@ -3394,7 +3379,7 @@ docker save -o myapp.tar myapp:latest`;
       body = `
         <div class="proj-hero">
           <div class="proj-hero-top">
-            ${projectIconHTML((mainProj && mainProj.status === "running") ? "ok" : "stop")}
+            ${projectIconHTML((mainProj && mainProj.status === "running") ? "ok" : (emptyRoom ? "empty" : "stop"))}
             <div class="proj-ident">
               <h4>${esc(room.name)}</h4>
               <button type="button" class="proj-id-btn copyable" data-copy="${esc(id)}" title="Copy id">
@@ -3402,7 +3387,7 @@ docker save -o myapp.tar myapp:latest`;
                 <code>${esc(id)}</code>
               </button>
             </div>
-            <span class="badge ${(mainProj && mainProj.status === "running") ? "ok" : "stop"}">${esc((mainProj && mainProj.status) || "—")}</span>
+            <span class="badge ${(mainProj && mainProj.status === "running") ? "ok" : (emptyRoom ? "warn" : "stop")}">${esc(emptyRoom ? "empty" : ((mainProj && mainProj.status) || "stopped"))}</span>
           </div>
         </div>
         <div class="grid grid-3">
@@ -3464,6 +3449,27 @@ docker save -o myapp.tar myapp:latest`;
         <div class="panel"><h3>Containers</h3>
           <table class="table"><thead><tr><th>Name</th><th>ID</th><th>Status</th><th>Port</th><th>Image</th></tr></thead>
           <tbody id="containers-live">${projs.map((p) => `<tr data-cid="${esc(p.id)}"><td>${esc(p.name)}</td><td><code class="copyable" data-copy="${esc(p.id)}">${esc(p.id)}</code></td><td><span class="badge ${p.status === "running" ? "ok" : "stop"}" data-cstatus>${esc(p.status)}</span></td><td data-cport>${p.host_port || "—"}</td><td class="mono muted">${esc(p.image)}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">No containers</td></tr>`}</tbody></table>
+        </div>
+        <div class="panel"><h3>${emptyRoom ? "First image" : "Update image"}</h3>
+          <p class="muted" style="margin:0 0 10px">${emptyRoom
+            ? `No container yet. Drop a <code>docker save</code> .tar here, or set <code>ROOM_ID</code> to <code>${esc(id)}</code> in GitHub and push.`
+            : "Upload a <code>docker save</code> .tar. Same project id, ports, domain, and env. Watch the log below."}</p>
+          <form id="tar-update-form">
+            <label class="dropzone" id="tar-dz">
+              <input type="file" name="file" accept=".tar,.tar.gz,.tgz" />
+              <div class="dz-icon">▣</div>
+              <div class="dz-title">Drop .tar here</div>
+              <div class="dz-sub">docker save -o app.tar yourimage:tag</div>
+              <div class="dz-file" id="tar-fname"></div>
+            </label>
+            <div class="row-actions" style="margin-top:12px">
+              <button class="btn primary action" type="submit">${emptyRoom ? "Upload first image" : "Update this project"}</button>
+            </div>
+          </form>
+          <p class="error" id="tarerr"></p>
+          <div class="logs-viewer" style="margin-top:12px;min-height:120px">
+            <div class="logs-body" id="tar-log">(waiting for upload)</div>
+          </div>
         </div>
         <div class="panel"><h3>Name, password & disk</h3>
           ${(() => {
@@ -3592,6 +3598,44 @@ docker save -o myapp.tar myapp:latest`;
     bindCopyables();
 
     if (tab === "overview") {
+      const dz = document.querySelector("#tar-dz");
+      const finp = dz?.querySelector("input[type=file]");
+      const fname = document.querySelector("#tar-fname");
+      if (dz && finp) {
+        const mark = () => {
+          const f = finp.files && finp.files[0];
+          dz.classList.toggle("has-file", !!f);
+          if (fname) fname.textContent = f ? f.name : "";
+        };
+        finp.addEventListener("change", mark);
+        dz.addEventListener("dragover", (e) => { e.preventDefault(); dz.classList.add("drag"); });
+        dz.addEventListener("dragleave", () => dz.classList.remove("drag"));
+        dz.addEventListener("drop", (e) => {
+          e.preventDefault();
+          dz.classList.remove("drag");
+          if (e.dataTransfer.files[0]) { finp.files = e.dataTransfer.files; mark(); }
+        });
+      }
+      document.querySelector("#tar-update-form")?.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const err = document.querySelector("#tarerr");
+        const logEl = document.querySelector("#tar-log");
+        if (err) err.textContent = "";
+        const file = finp && finp.files && finp.files[0];
+        if (!file) { if (err) err.textContent = "Choose a .tar file"; return; }
+        const fd = new FormData();
+        fd.append("file", file);
+        if (logEl) logEl.textContent = "Uploading...\n";
+        try {
+          await streamFetch(`/api/rooms/${id}/image-tar`, { method: "POST", body: fd }, (chunk) => {
+            if (!logEl) return;
+            logEl.textContent += chunk;
+            logEl.scrollTop = logEl.scrollHeight;
+          });
+        } catch (ex) {
+          if (err) err.textContent = ex.message || "Update failed";
+        }
+      });
       bindQuotaSliders();
       const flashOk = () => {
         const el = document.querySelector("#rok");
@@ -3827,7 +3871,7 @@ docker save -o myapp.tar myapp:latest`;
         seedContext: `SYSTEM CONTEXT (do not ask again): You are inside room "${room.name}". id=${id} project_id=${mainProj?.id || id}. ` +
           `Disk used ${fmtBytes(room.usage_bytes)} of quota ${room.quota_bytes ? fmtBytes(room.quota_bytes) : "not set"}. ` +
           `Projects: ${(projs || []).map((p) => `${p.name} id=${p.id} image=${p.image} status=${p.status} port=${p.host_port || 0} domain=${p.domain || "-"}`).join("; ") || "none"}. ` +
-          `If they ask for usage, answer with those numbers in one say. You may publish a Docker update on this same id (image + start). You may edit files via the terminal after reading them. Refuse deleting this room.`,
+          `If they ask for usage, answer with those numbers in one say. You may publish a Docker update on this same id (image + start). They can also drop a docker save .tar on Overview → Update image. GitHub: Tokens → pick this project → Copy script into .github/workflows/vps-deploy.yml. You may edit files via the terminal after reading them. Refuse deleting this room.`,
         onQuota: (gb) => api(`/api/rooms/${id}/quota`, { method: "POST", body: JSON.stringify({ quota_gb: gb }) }),
         onStart: async (image) => {
           const text = await streamFetch(`/api/rooms/${id}/update`, {

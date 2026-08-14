@@ -450,11 +450,11 @@ func (s *Service) mergePanelDB(path string) error {
 	}
 	prows.Close()
 
-	trows, err := db.Query(`SELECT id,name,token_hash,COALESCE(token_plain,''),token_prefix,mode,created_at,COALESCE(last_used_at,'') FROM api_tokens`)
+	trows, err := db.Query(`SELECT id,name,token_hash,COALESCE(token_plain,''),token_prefix,mode,COALESCE(room_id,''),created_at,COALESCE(last_used_at,'') FROM api_tokens`)
 	if err == nil {
 		for trows.Next() {
 			var t store.APIToken
-			if err := trows.Scan(&t.ID, &t.Name, &t.TokenHash, &t.TokenPlain, &t.TokenPrefix, &t.Mode, &t.CreatedAt, &t.LastUsedAt); err != nil {
+			if err := trows.Scan(&t.ID, &t.Name, &t.TokenHash, &t.TokenPlain, &t.TokenPrefix, &t.Mode, &t.RoomID, &t.CreatedAt, &t.LastUsedAt); err != nil {
 				break
 			}
 			_ = s.Store.UpsertAPIToken(t)

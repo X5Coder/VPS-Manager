@@ -647,6 +647,18 @@ func (s *Server) handleRooms(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 500, err.Error())
 			return
 		}
+		if r.URL.Query().Get("lite") == "1" {
+			type lite struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			}
+			out := make([]lite, 0, len(list))
+			for _, rm := range list {
+				out = append(out, lite{ID: rm.ID, Name: rm.Name})
+			}
+			writeJSON(w, 200, out)
+			return
+		}
 		type roomOut struct {
 			ID            string `json:"id"`
 			ProjectID     string `json:"project_id"`
@@ -665,7 +677,7 @@ func (s *Server) handleRooms(w http.ResponseWriter, r *http.Request) {
 		}
 		out := make([]roomOut, 0, len(list))
 		for _, rm := range list {
-			usage, _ := s.Rooms.UsageBytes(rm.ID)
+			usage := s.cachedUsage(rm.ID)
 			projs, _ := s.Projects.List(rm.ID)
 			st := "empty"
 			hostPort := 0
@@ -805,6 +817,9 @@ func (s *Server) handleRoomByID(w http.ResponseWriter, r *http.Request) {
 			return
 		case "update":
 			s.handleRoomUpdate(w, r, id)
+			return
+		case "image-tar":
+			s.handleRoomImageTar(w, r, id)
 			return
 		case "pause":
 			if r.Method != http.MethodPost {

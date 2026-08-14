@@ -260,18 +260,34 @@ func (s *Server) handleTokensAI(w http.ResponseWriter, r *http.Request) {
 		n = len(list)
 	}
 	base := requestBaseURL(r)
-	names := make([]string, 0, n)
+	roomsList, _ := s.Store.ListRooms()
+	tokLines := make([]string, 0, n)
 	for _, t := range list {
-		names = append(names, fmt.Sprintf("%s (%s)", t.Name, t.Mode))
+		tokLines = append(tokLines, t.Name+" → all rooms")
 	}
+	st := s.storageInfo()
+	totalGB := float64(asInt64(st["disk_total"])) / (1024 * 1024 * 1024)
+	freeGB := float64(asInt64(st["quota_available"])) / (1024 * 1024 * 1024)
 	note := fmt.Sprintf(
-		"Page: Tokens. Existing tokens: %d. %s Base URL: %s. Never print a guessed secret. If you set create_token, the panel creates the real secret and a copyable AI prompt on the card (read, write, or both — matching that token).",
-		n, strings.Join(names, "; "), base,
+		"Page: Tokens. BASE=%s. Host disk_total=%.2f GB. quota_available_gb=%.2f GB. Existing tokens (name only, each covers ALL rooms): %d. %s Rooms: ",
+		base, totalGB, freeGB, n, strings.Join(tokLines, "; "),
 	)
-	if n == 0 {
-		note += " User has ZERO tokens — first step is create one."
+	for _, rm := range roomsList {
+		projs, _ := s.Store.ListProjects(rm.ID)
+		stt := "empty"
+		if len(projs) > 0 {
+			stt = projs[0].Status
+			if stt == "" {
+				stt = "has-project"
+			}
+		}
+		usage, _ := s.Rooms.UsageBytes(rm.ID)
+		note += fmt.Sprintf("%s id=%s status=%s quota_gb=%.2f usage_gb=%.2f; ", rm.Name, rm.ID, stt, float64(rm.QuotaBytes)/(1024*1024*1024), float64(usage)/(1024*1024*1024))
 	}
-	note += " Modes for ONE token: read (GET only), write (GET+mutate), both (that same token can read and write). Never create two tokens for both. Do not repeat questions. Name questions have empty choices."
+	note += "create_token needs token_name only. create_room needs room_name + quota_gb + room_password. Empty rooms fill on tar/GitHub with ROOM_ID. Answer API how-to in full. Never print a guessed secret."
+	if len(roomsList) == 0 {
+		note += " No rooms yet — you MAY create_room."
+	}
 	hist := append([]ai.Message{{Role: "system-note", Text: note}}, body.Messages...)
 	rep, raw, err := ai.TurnWith(ai.TokenPrompt, hist)
 	if err != nil {
@@ -280,10 +296,6 @@ func (s *Server) handleTokensAI(w http.ResponseWriter, r *http.Request) {
 	}
 	rep.Command = ""
 	rep.Start = false
-	askJoined := strings.ToLower(strings.Join(rep.Ask, " "))
-	if looksLikeNameAsk(askJoined) && onlyModeChoices(rep.Choices) {
-		rep.Choices = nil
-	}
 	out := map[string]any{
 		"say":          rep.Say,
 		"says":         rep.Says,
@@ -295,32 +307,67 @@ func (s *Server) handleTokensAI(w http.ResponseWriter, r *http.Request) {
 		"start":        false,
 		"done":         rep.Done,
 		"create_token": false,
+		"create_room":  false,
 		"raw":          raw,
 	}
-	if rep.CreateToken && (rep.TokenMode == "read" || rep.TokenMode == "write" || rep.TokenMode == "both") {
-		name := rep.TokenName
-		if name == "" {
-			name = "API token"
+	if rep.CreateRoom && strings.TrimSpace(rep.RoomName) != "" && rep.QuotaGB > 0 {
+		cPort := rep.ContainerPort
+		if cPort <= 0 {
+			cPort = 8080
 		}
-		if existing, _ := s.Store.GetAPITokenByName(name); existing != nil {
+		pass := strings.TrimSpace(rep.RoomPassword)
+		if len(pass) < 6 {
 			out["say"] = strings.TrimSpace(rep.Say)
 			if out["say"] == "" {
-				out["say"] = "That token name already exists. Use the card already on this page — I did not create a second one."
+				out["say"] = "Need a room password (at least 6 characters) and a disk size from the free space above."
+			}
+			out["ask"] = []string{"Room password?"}
+			out["done"] = false
+		} else if rm, _, err := s.createEmptyRoom(rep.RoomName, rep.QuotaGB, cPort, 0, pass); err != nil {
+			out["say"] = strings.TrimSpace(rep.Say + " Could not create the room: " + err.Error())
+			out["done"] = false
+		} else {
+			out["create_room"] = true
+			out["room_id"] = rm.ID
+			out["room_name"] = rm.Name
+			if strings.TrimSpace(rep.Say) == "" {
+				out["say"] = fmt.Sprintf("Empty room **%s** is ready (id `%s`, %.2f GB). Status is empty until you drop a .tar or set ROOM_ID in GitHub.", rm.Name, rm.ID, rep.QuotaGB)
+			} else {
+				out["say"] = strings.TrimSpace(rep.Say)
+			}
+			out["done"] = true
+		}
+	}
+	if rep.CreateToken {
+		name := strings.TrimSpace(rep.TokenName)
+		if name == "" {
+			out["say"] = strings.TrimSpace(rep.Say)
+			if out["say"] == "" {
+				out["say"] = "What should this API be called?"
+			}
+			out["ask"] = []string{"API name?"}
+			out["done"] = false
+		} else if existing, _ := s.Store.GetAPITokenByName(name); existing != nil {
+			out["say"] = strings.TrimSpace(rep.Say)
+			if out["say"] == "" {
+				out["say"] = "That token name already exists. Use the card already on this page."
 			}
 			out["done"] = true
 		} else {
-			tok, plain, err := s.Store.CreateAPIToken(name, rep.TokenMode)
+			tok, plain, err := s.Store.CreateAPIToken(name, "")
 			if err != nil {
 				out["say"] = strings.TrimSpace(rep.Say + " Could not create the token: " + err.Error())
 			} else {
+				pub := s.tokenPublic(base, *tok)
 				out["create_token"] = true
 				out["token"] = tok
 				out["secret"] = plain
-				out["prompt"] = s.buildAPIPrompt(base, plain, tok.Mode)
-				out["api"] = s.buildAPISheet(base, plain, tok.Mode)
+				out["prompt"] = pub["prompt"]
+				out["api"] = pub["api"]
+				out["script"] = pub["script"]
 				out["say"] = strings.TrimSpace(rep.Say)
 				if out["say"] == "" {
-					out["say"] = "Token created. Copy prompt for an AI operator. Copy API for curl and scripts."
+					out["say"] = "API created for all rooms. Copy script, set ROOM_ID for the room you update. Copy API is BASE and TOKEN only."
 				}
 				out["done"] = true
 			}
