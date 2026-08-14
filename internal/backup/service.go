@@ -1043,22 +1043,33 @@ func (s *Service) executeRestore(token, snapshotID string) error {
 		s.saveCheckpoint(cp)
 	}
 
-	// Redeploy managed containers (skip live compose stacks — restore dumps instead)
+	// Recreate everything on this VPS: pull/build images here (not stored on GitHub).
 	if s.Projects != nil {
-		s.report(88, "Recreating managed containers")
+		s.report(88, "Recreating projects on this VPS (pull/build images, then start)")
 		all, _ := s.Store.ListAllProjects()
 		for _, p := range all {
 			pdir := s.Rooms.ProjectDir(p.RoomID, p.ID)
 			_, composeDir, composeProject, _ := projects.ProjectLayout(pdir)
-			if composeDir != "" || composeProject != "" {
-				s.report(-1, "Keeping compose stack %s (not recreating)", p.Name)
-				s.restoreProjectDumps(p)
+			if composeDir == "" {
+				if dockerx.ComposeFile(pdir) != "" {
+					composeDir = pdir
+				}
+			}
+			if composeDir != "" {
+				s.report(-1, "Compose %s: pulling images on this VPS then starting", p.Name)
+				if err := s.Docker.ComposePullUp(composeDir, composeProject, nil); err != nil {
+					s.report(-1, "compose %s: %v", p.Name, err)
+				} else {
+					s.report(-1, "Compose stack %s is up", p.Name)
+				}
+				s.waitAndRestorePostgres(p, composeProject)
 				continue
 			}
+			s.report(-1, "Starting %s — image/models download on this VPS", p.Name)
 			if err := s.Projects.Redeploy(p.ID); err != nil {
 				s.report(-1, "redeploy %s: %v", p.Name, err)
 			} else {
-				s.report(-1, "Redeployed %s", p.Name)
+				s.report(-1, "Running %s (caches like models fill in after start)", p.Name)
 			}
 		}
 	}
@@ -1431,6 +1442,30 @@ func formatBytes(n int64) string {
 		return fmt.Sprintf("%.1f MB", float64(n)/(1024*1024))
 	}
 	return fmt.Sprintf("%.1f GB", float64(n)/(1024*1024*1024))
+}
+
+func (s *Service) waitAndRestorePostgres(p store.Project, composeProject string) {
+	if s.Docker == nil || !s.Docker.Available() {
+		return
+	}
+	pdir := s.Rooms.ProjectDir(p.RoomID, p.ID)
+	dump := filepath.Join(pdir, "__dumps", "postgres.sql.gz")
+	if st, err := os.Stat(dump); err != nil || st.Size() < 32 {
+		return
+	}
+	s.report(-1, "Waiting for database of %s then restoring dump", p.Name)
+	deadline := time.Now().Add(2 * time.Minute)
+	var ctr string
+	for time.Now().Before(deadline) {
+		ctr = s.findPostgresContainer(p, composeProject)
+		if ctr != "" {
+			if st, err := s.Docker.InspectStatus(ctr); err == nil && (st == "running" || st == "healthy") {
+				break
+			}
+		}
+		time.Sleep(3 * time.Second)
+	}
+	s.restoreProjectDumps(p)
 }
 
 func (s *Service) restoreProjectDumps(p store.Project) {

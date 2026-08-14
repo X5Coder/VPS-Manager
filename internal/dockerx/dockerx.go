@@ -431,6 +431,36 @@ type ComposeCtr struct {
 	Service string
 }
 
+func ComposeFile(dir string) string {
+	for _, n := range []string{"compose.yml", "compose.yaml", "docker-compose.yml", "docker-compose.yaml"} {
+		p := filepath.Join(dir, n)
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+// ComposePullUp downloads images on this VPS then starts the stack (no image tars in backup).
+func (c *Client) ComposePullUp(dir, project string, w io.Writer) error {
+	file := ComposeFile(dir)
+	if file == "" {
+		return fmt.Errorf("no compose file in %s", dir)
+	}
+	base := []string{"compose", "-f", file}
+	if strings.TrimSpace(project) != "" {
+		base = append(base, "-p", project)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	pull := append(append([]string{}, base...), "pull")
+	if err := c.run(ctx, w, pull...); err != nil && w != nil {
+		fmt.Fprintf(w, "compose pull: %v (will still try up)\n", err)
+	}
+	up := append(append([]string{}, base...), "up", "-d", "--remove-orphans")
+	return c.run(ctx, w, up...)
+}
+
 func (c *Client) ListCompose(project string) ([]ComposeCtr, error) {
 	if project == "" {
 		return nil, nil

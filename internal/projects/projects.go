@@ -791,6 +791,17 @@ func DetectDeployKind(p store.Project, pdir string) string {
 	return "image"
 }
 
+func pullableImage(image string) bool {
+	image = strings.TrimSpace(image)
+	if image == "" {
+		return false
+	}
+	if strings.HasPrefix(image, "vpsrooms-bak/") || strings.HasPrefix(image, "vpsrooms-restore/") {
+		return false
+	}
+	return true
+}
+
 // Redeploy recreates the container from restored files (full backup restore).
 func (s *Service) Redeploy(id string) error {
 	if s.Docker == nil || !s.Docker.Available() {
@@ -831,19 +842,31 @@ func (s *Service) Redeploy(id string) error {
 	}
 
 	kind := DetectDeployKind(*p, pdir)
-	image := p.Image
+	image := strings.TrimSpace(p.Image)
+	if b, err := os.ReadFile(filepath.Join(pdir, "__image_ref.txt")); err == nil {
+		if ref := strings.TrimSpace(string(b)); ref != "" {
+			image = ref
+		}
+	}
 	meta := readMountsMeta(pdir)
 	var binds []string
 	hostIP := meta.HostIP
 	if kind == "build" {
-		tag := p.Image
+		tag := image
 		if !strings.HasPrefix(tag, "vpsrooms/") {
 			tag = fmt.Sprintf("vpsrooms/%s:latest", p.ID[:8])
 		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
 		if _, err := os.Stat(filepath.Join(pdir, "Dockerfile")); err == nil {
-			if err := s.Docker.BuildImage(context.Background(), pdir, tag, io.Discard); err != nil {
-				return fmt.Errorf("rebuild: %w", err)
+			if err := s.Docker.BuildImage(ctx, pdir, tag, io.Discard); err != nil {
+				return fmt.Errorf("rebuild on this VPS: %w", err)
 			}
+		} else if pullableImage(image) {
+			if err := s.Docker.PullImage(image, io.Discard); err != nil {
+				return fmt.Errorf("pull %s on this VPS: %w", image, err)
+			}
+			tag = image
 		}
 		image = tag
 		binds = []string{pdir + ":/data"}
@@ -861,8 +884,26 @@ func (s *Service) Redeploy(id string) error {
 			if err := s.Docker.ImportFilesystem(exportTar, image); err != nil {
 				return err
 			}
-		} else if image != "" && !strings.HasPrefix(image, "vpsrooms-bak/") && !strings.HasPrefix(image, "vpsrooms-restore/") {
-			_ = s.Docker.PullImage(image, io.Discard)
+		} else {
+			if !pullableImage(image) {
+				return fmt.Errorf("no image name to pull for %s", p.Name)
+			}
+			if err := s.Docker.PullImage(image, io.Discard); err != nil {
+				if _, df := os.Stat(filepath.Join(pdir, "Dockerfile")); df == nil {
+					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+					defer cancel()
+					tag := image
+					if !strings.HasPrefix(tag, "vpsrooms/") {
+						tag = fmt.Sprintf("vpsrooms/%s:latest", p.ID[:8])
+					}
+					if err2 := s.Docker.BuildImage(ctx, pdir, tag, io.Discard); err2 != nil {
+						return fmt.Errorf("pull %s: %v; rebuild: %w", image, err, err2)
+					}
+					image = tag
+				} else {
+					return fmt.Errorf("pull %s on this VPS: %w", image, err)
+				}
+			}
 		}
 		if len(meta.Binds) > 0 {
 			binds = append([]string{}, meta.Binds...)
