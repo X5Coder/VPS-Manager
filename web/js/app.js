@@ -3081,7 +3081,7 @@ bash install.sh`;
       shell(`<p class="error">${esc(e.message)}</p>`, "tokens"); return;
     }
     if (!alive("tokens", gen)) return;
-    const list = tokens || [];
+    let list = tokens || [];
     const cards = list.map((t) => tokenCardHTML(t)).join("") || `<p class="muted" id="tok-empty">No tokens yet — the agent will create the first one.</p>`;
 
     shell(`

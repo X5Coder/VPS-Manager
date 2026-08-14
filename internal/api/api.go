@@ -152,34 +152,33 @@ func (s *Server) Handler(webFS http.FileSystem) http.Handler {
 			w.Header().Set("Pragma", "no-cache")
 		}
 		if isAppRoute(path) {
-			f, err := webFS.Open("/index.html")
-			if err != nil {
-				http.NotFound(w, r)
-				return
-			}
-			defer f.Close()
-			stat, _ := f.Stat()
-			http.ServeContent(w, r, "index.html", stat.ModTime(), f.(io.ReadSeeker))
+			serveIndex(w, r, webFS)
 			return
 		}
 		static.ServeHTTP(w, r)
 	})
 }
 
+func serveIndex(w http.ResponseWriter, r *http.Request, webFS http.FileSystem) {
+	f, err := webFS.Open("/index.html")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer f.Close()
+	stat, _ := f.Stat()
+	http.ServeContent(w, r, "index.html", stat.ModTime(), f.(io.ReadSeeker))
+}
+
 func isAppRoute(path string) bool {
 	if path == "/" {
 		return true
 	}
-	bases := []string{
-		"/server", "/projects", "/deploy", "/restore", "/logs",
-		"/settings", "/docs", "/guide", "/owner", "/room", "/app",
+	base := path
+	if i := strings.LastIndex(path, "/"); i >= 0 {
+		base = path[i+1:]
 	}
-	for _, b := range bases {
-		if path == b || strings.HasPrefix(path, b+"/") {
-			return true
-		}
-	}
-	return false
+	return base == "" || !strings.Contains(base, ".")
 }
 
 func (s *Server) withGate(next http.HandlerFunc) http.HandlerFunc {
