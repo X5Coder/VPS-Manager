@@ -1,10 +1,12 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -56,12 +58,7 @@ func (s *Server) handlePorts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) portsPayload() map[string]any {
-	ports := []int{}
-	if s.Docker != nil && s.Docker.Available() {
-		if p, err := s.Docker.UsedPorts(); err == nil {
-			ports = p
-		}
-	}
+	ports := s.cachedPorts()
 	seen := map[int]bool{}
 	out := make([]int, 0, len(ports)+1)
 	for _, p := range ports {
@@ -103,6 +100,7 @@ func (s *Server) handleAPITokens(w http.ResponseWriter, r *http.Request) {
 				"last_used_at": t.LastUsedAt,
 				"secret":       t.TokenPlain,
 				"prompt":       s.buildAPIPrompt(base, t.TokenPlain, t.Mode),
+				"api":          s.buildAPISheet(base, t.TokenPlain, t.Mode),
 			}
 			out = append(out, item)
 		}
@@ -126,6 +124,7 @@ func (s *Server) handleAPITokens(w http.ResponseWriter, r *http.Request) {
 			"token":  tok,
 			"secret": plain,
 			"prompt": s.buildAPIPrompt(base, plain, tok.Mode),
+			"api":    s.buildAPISheet(base, plain, tok.Mode),
 		})
 	default:
 		writeErr(w, 405, "method")
@@ -150,14 +149,16 @@ func (s *Server) handleAPITokenByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		base := requestBaseURL(r)
-		prompt := ""
+		prompt, sheet := "", ""
 		if tok.TokenPlain != "" {
 			prompt = s.buildAPIPrompt(base, tok.TokenPlain, tok.Mode)
+			sheet = s.buildAPISheet(base, tok.TokenPlain, tok.Mode)
 		}
 		writeJSON(w, 200, map[string]any{
 			"token":  tok,
 			"secret": tok.TokenPlain,
 			"prompt": prompt,
+			"api":    sheet,
 		})
 	case http.MethodDelete:
 		if err := s.Store.DeleteAPIToken(id); err != nil {
@@ -220,6 +221,8 @@ func (s *Server) handleAPIV1(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, s.portsPayload())
 	case "projects":
 		s.handleAPIV1Projects(w, r, parts[1:])
+	case "images":
+		s.handleAPIV1Images(w, r, parts[1:])
 	default:
 		writeErr(w, 404, "not found")
 	}
@@ -272,6 +275,27 @@ func (s *Server) handleAPIV1Projects(w http.ResponseWriter, r *http.Request, par
 		s.apiExecProject(w, r, id)
 		return
 	}
+	if parts[1] == "redeploy" && r.Method == http.MethodPost {
+		if s.requireAPIToken(w, r, true) == nil {
+			return
+		}
+		s.apiRedeployProject(w, r, id)
+		return
+	}
+	if parts[1] == "build" && r.Method == http.MethodPost {
+		if s.requireAPIToken(w, r, true) == nil {
+			return
+		}
+		s.apiBuildProject(w, r, id)
+		return
+	}
+	if parts[1] == "deploys" && r.Method == http.MethodGet {
+		if s.requireAPIToken(w, r, false) == nil {
+			return
+		}
+		s.apiProjectDeploys(w, id)
+		return
+	}
 	writeErr(w, 404, "not found")
 }
 
@@ -297,21 +321,24 @@ func (s *Server) resolveRoomProject(id string) (*store.Room, *store.Project, err
 }
 
 func (s *Server) projectView(room *store.Room, p *store.Project) map[string]any {
-	usage, _ := s.Rooms.UsageBytes(room.ID)
 	st := "empty"
 	out := map[string]any{
 		"id": room.ID, "room_id": room.ID, "name": room.Name,
-		"quota_bytes": room.QuotaBytes, "usage_bytes": usage,
-		"password": room.PassPlain, "created_at": room.CreatedAt,
-		"status": st,
+		"quota_bytes": room.QuotaBytes, "usage_bytes": s.cachedUsage(room.ID),
+		"password_set": room.PassPlain != "",
+		"created_at":   room.CreatedAt,
+		"status":       st,
 	}
 	if p != nil {
-		if s.Docker != nil && p.ContainerID != "" {
-			if st2, e := s.Docker.InspectStatus(p.ContainerID); e == nil {
-				st = st2
-			}
-		} else {
+		busy := s.jobKind(p.ID)
+		st = s.cachedStatus(p.ID)
+		if st == "" {
 			st = p.Status
+		}
+		if busy == "build" {
+			st = "building"
+		} else if busy != "" {
+			st = "deploying"
 		}
 		out["project_id"] = p.ID
 		out["project_name"] = p.Name
@@ -319,10 +346,57 @@ func (s *Server) projectView(room *store.Room, p *store.Project) map[string]any 
 		out["host_port"] = p.HostPort
 		out["container_port"] = p.ContainerPort
 		out["domain"] = p.Domain
+		out["domain_enabled"] = p.DomainEnabled
+		out["ssl_status"] = p.SSLStatus
+		out["external_url"] = p.ExternalURL
 		out["status"] = st
 		out["container_id"] = p.ContainerID
+		meta := s.Projects.ReadDeployMeta(room.ID, p.ID)
+		out["image_digest"] = meta.ImageDigest
+		out["last_deploy_at"] = meta.LastDeployAt
+		out["last_deploy_ok"] = meta.LastDeployOK
+		out["last_deploy_error"] = meta.LastDeployError
+		if busy == "build" {
+			out["status"] = "building"
+			out["job"] = "build"
+		} else if busy == "deploy" {
+			out["status"] = "deploying"
+			out["job"] = "deploy"
+		} else if meta.Status == "error" && st != "running" {
+			out["status"] = "error"
+		}
+		if env, err := s.Projects.ReadEnv(p.ID); err == nil {
+			out["env"] = maskEnvText(env)
+		}
 	}
 	return out
+}
+
+func maskEnvText(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trim := strings.TrimSpace(line)
+		if trim == "" || strings.HasPrefix(trim, "#") {
+			out = append(out, line)
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			out = append(out, line)
+			continue
+		}
+		k = strings.TrimSpace(k)
+		if strings.TrimSpace(v) == "" {
+			out = append(out, k+"=set")
+		} else {
+			out = append(out, k+"=***")
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 func (s *Server) apiListProjects(w http.ResponseWriter) {
@@ -495,11 +569,15 @@ func (s *Server) apiPatchProject(w http.ResponseWriter, r *http.Request, id stri
 		return
 	}
 	var body struct {
-		Name    *string  `json:"name"`
-		Domain  *string  `json:"domain"`
-		Env     *string  `json:"env"`
-		QuotaGB *float64 `json:"quota_gb"`
-		Action  string   `json:"action"`
+		Name     *string  `json:"name"`
+		Password *string  `json:"password"`
+		Domain   *string  `json:"domain"`
+		Env      *string  `json:"env"`
+		QuotaGB  *float64 `json:"quota_gb"`
+		Image    *string  `json:"image"`
+		Pull     *bool    `json:"pull"`
+		Recreate *bool    `json:"recreate"`
+		Action   string   `json:"action"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, 400, "invalid request")
@@ -511,14 +589,23 @@ func (s *Server) apiPatchProject(w http.ResponseWriter, r *http.Request, id stri
 			writeErr(w, 400, err.Error())
 			return
 		}
-		if err := s.Rooms.SetQuota(room.ID, q); err != nil {
+		if err := s.Projects.ApplyQuota(room.ID, q); err != nil {
 			writeErr(w, 400, err.Error())
 			return
 		}
 	}
-	if body.Name != nil && strings.TrimSpace(*body.Name) != "" && p != nil {
-		p.Name = sanitizeName(*body.Name)
-		_ = s.Store.UpdateProject(*p)
+	if body.Name != nil && strings.TrimSpace(*body.Name) != "" {
+		_ = s.Rooms.SetName(room.ID, strings.TrimSpace(*body.Name))
+		if p != nil {
+			p.Name = sanitizeName(*body.Name)
+			_ = s.Store.UpdateProject(*p)
+		}
+	}
+	if body.Password != nil && strings.TrimSpace(*body.Password) != "" {
+		if err := s.Rooms.SetPassword(room.ID, strings.TrimSpace(*body.Password)); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
 	}
 	if body.Domain != nil && p != nil {
 		_ = s.Projects.SetDomain(p.ID, *body.Domain)
@@ -541,8 +628,27 @@ func (s *Server) apiPatchProject(w http.ResponseWriter, r *http.Request, id stri
 			_ = s.Projects.Start(pp.ID)
 		}
 	}
+	if body.Image != nil && strings.TrimSpace(*body.Image) != "" && p != nil {
+		pull := true
+		if body.Pull != nil {
+			pull = *body.Pull
+		}
+		recreate := true
+		if body.Recreate != nil {
+			recreate = *body.Recreate
+		}
+		if err := s.startRedeployAsync(p, strings.TrimSpace(*body.Image), pull, recreate); err != nil {
+			writeJSON(w, 409, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		s.acceptedProject(w, room.ID, map[string]any{
+			"status": "deploying", "image": strings.TrimSpace(*body.Image),
+			"pull": pull, "recreate": recreate,
+		})
+		return
+	}
 	room2, p2, _ := s.resolveRoomProject(room.ID)
-	writeJSON(w, 200, s.projectView(room2, p2))
+	writeJSON(w, 200, map[string]any{"ok": true, "project": s.projectView(room2, p2)})
 }
 
 func (s *Server) apiExecProject(w http.ResponseWriter, r *http.Request, id string) {
@@ -552,27 +658,214 @@ func (s *Server) apiExecProject(w http.ResponseWriter, r *http.Request, id strin
 		return
 	}
 	var body struct {
-		Command string `json:"command"`
+		Command    string `json:"command"`
+		TimeoutSec int    `json:"timeout_sec"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Command) == "" {
 		writeErr(w, 400, "command required")
 		return
 	}
+	timeout := 60 * time.Second
+	if body.TimeoutSec > 0 {
+		timeout = time.Duration(body.TimeoutSec) * time.Second
+	}
+	if timeout > 2*time.Minute {
+		timeout = 2 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
 	cmdLine := body.Command
 	var cmd *exec.Cmd
 	if p != nil && s.Docker != nil && p.ContainerID != "" {
-		cmd = exec.Command("docker", "exec", p.ContainerID, "sh", "-lc", cmdLine)
+		cmd = exec.CommandContext(ctx, "docker", "exec", p.ContainerID, "sh", "-lc", cmdLine)
 	}
 	if cmd == nil {
 		dir := filepath.Join(s.Cfg.RuntimeDir, room.ID)
-		cmd = exec.Command("sh", "-lc", cmdLine)
+		cmd = exec.CommandContext(ctx, "sh", "-lc", cmdLine)
 		cmd.Dir = dir
 	}
 	out, err := cmd.CombinedOutput()
-	res := map[string]any{"output": string(out), "exit_code": 0}
+	text := string(out)
+	if len(text) > 200*1024 {
+		text = text[:200*1024] + "\n…truncated"
+	}
+	res := map[string]any{"output": text, "exit_code": 0}
 	if err != nil {
 		res["error"] = err.Error()
 		res["exit_code"] = 1
 	}
 	writeJSON(w, 200, res)
+}
+
+func (s *Server) apiDoRedeploy(p *store.Project, image string, pull, recreate bool) error {
+	if p == nil {
+		return fmt.Errorf("project has no container")
+	}
+	room, err := s.Store.GetRoom(p.RoomID)
+	if err != nil || room == nil {
+		return fmt.Errorf("room not found")
+	}
+	if room.QuotaBytes > 0 {
+		gb := float64(room.QuotaBytes) / (1024 * 1024 * 1024)
+		if _, err := s.allocateQuota(gb, room.QuotaBytes); err != nil {
+			return err
+		}
+	}
+	return s.Projects.RedeployImage(projects.RedeployInput{
+		ID: p.ID, Image: image, Pull: pull, Recreate: recreate, Log: io.Discard,
+	})
+}
+
+func (s *Server) apiRedeployProject(w http.ResponseWriter, r *http.Request, id string) {
+	room, p, err := s.resolveRoomProject(id)
+	if err != nil || p == nil {
+		writeJSON(w, 404, map[string]any{"ok": false, "error": "not found"})
+		return
+	}
+	var body struct {
+		Image    string `json:"image"`
+		Pull     *bool  `json:"pull"`
+		Recreate *bool  `json:"recreate"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+		writeJSON(w, 400, map[string]any{"ok": false, "error": "invalid request"})
+		return
+	}
+	image := strings.TrimSpace(body.Image)
+	fromRequest := image != ""
+	if image == "" {
+		image = p.Image
+	}
+	if strings.TrimSpace(image) == "" {
+		writeJSON(w, 400, map[string]any{"ok": false, "error": "image required (omit to reuse the current image)"})
+		return
+	}
+	pull := true
+	if body.Pull != nil {
+		pull = *body.Pull
+	}
+	recreate := true
+	if body.Recreate != nil {
+		recreate = *body.Recreate
+	}
+	if err := s.startRedeployAsync(p, image, pull, recreate); err != nil {
+		writeJSON(w, 409, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	s.acceptedProject(w, room.ID, map[string]any{
+		"status":             "deploying",
+		"image":              image,
+		"image_from_request": fromRequest,
+		"pull":               pull,
+		"recreate":           recreate,
+	})
+}
+
+func (s *Server) apiProjectDeploys(w http.ResponseWriter, id string) {
+	room, p, err := s.resolveRoomProject(id)
+	if err != nil || p == nil {
+		writeErr(w, 404, "not found")
+		return
+	}
+	writeJSON(w, 200, s.projectView(room, p))
+}
+
+func (s *Server) githubToken() string {
+	b, err := os.ReadFile(filepath.Join(s.Cfg.DataDir, "secrets", "github.env"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "GITHUB_TOKEN=") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "GITHUB_TOKEN="))
+		}
+	}
+	return ""
+}
+
+func (s *Server) handleAPIV1Images(w http.ResponseWriter, r *http.Request, parts []string) {
+	if len(parts) == 1 && parts[0] == "build" && r.Method == http.MethodPost {
+		if s.requireAPIToken(w, r, true) == nil {
+			return
+		}
+		s.apiBuildImage(w, r, nil)
+		return
+	}
+	writeErr(w, 404, "not found")
+}
+
+func (s *Server) apiBuildProject(w http.ResponseWriter, r *http.Request, id string) {
+	_, p, err := s.resolveRoomProject(id)
+	if err != nil {
+		writeJSON(w, 404, map[string]any{"ok": false, "error": "not found"})
+		return
+	}
+	s.apiBuildImage(w, r, p)
+}
+
+func (s *Server) apiBuildImage(w http.ResponseWriter, r *http.Request, p *store.Project) {
+	var body struct {
+		Image      string            `json:"image"`
+		Context    string            `json:"context"`
+		Dockerfile string            `json:"dockerfile"`
+		BuildArgs  map[string]string `json:"build_args"`
+		Push       bool              `json:"push"`
+		Deploy     bool              `json:"deploy"`
+		Pull       *bool             `json:"pull"`
+		Recreate   *bool             `json:"recreate"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, 400, map[string]any{"ok": false, "error": "invalid request"})
+		return
+	}
+	tag := strings.TrimSpace(body.Image)
+	if tag == "" && p != nil {
+		tag = projects.DefaultVpsroomsTag(p.Name)
+		if p.Image != "" && strings.HasPrefix(p.Image, "vpsrooms/") {
+			tag = p.Image
+		}
+	}
+	if tag == "" {
+		writeJSON(w, 400, map[string]any{"ok": false, "error": "image tag required"})
+		return
+	}
+	if strings.TrimSpace(body.Context) == "" {
+		writeJSON(w, 400, map[string]any{"ok": false, "error": "context required (git URL or host path)"})
+		return
+	}
+	work := filepath.Join(s.Cfg.RuntimeDir, "_build")
+	_ = os.MkdirAll(work, 0o750)
+	in := projects.BuildImageInput{
+		Image:      tag,
+		Context:    body.Context,
+		Dockerfile: body.Dockerfile,
+		BuildArgs:  body.BuildArgs,
+		Push:       body.Push,
+		GitToken:   s.githubToken(),
+		WorkDir:    work,
+		Log:        io.Discard,
+	}
+	pull := false
+	if body.Pull != nil {
+		pull = *body.Pull
+	}
+	recreate := true
+	if body.Recreate != nil {
+		recreate = *body.Recreate
+	}
+	if err := s.startBuildAsync(p, in, body.Deploy, pull, recreate); err != nil {
+		writeJSON(w, 409, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	st := "building"
+	if body.Deploy && p != nil {
+		st = "deploying"
+	}
+	extra := map[string]any{"status": st, "image": tag, "deploy": body.Deploy}
+	if p != nil {
+		s.acceptedProject(w, p.RoomID, extra)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "accepted": true, "status": st, "image": tag})
 }

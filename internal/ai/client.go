@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"strings"
 	"time"
@@ -12,9 +13,17 @@ import (
 )
 
 const (
-	Endpoint = "https://api.studixzone.com/random/[3]"
+	AIBase   = "https://api.studixzone.com/random/"
 	MaxTurns = 40
+	slotWait = 16 * time.Second
 )
+
+// Preferred models only (multisearch 6–10, seek 11–16, chatbot 17–22).
+var aiSlotGroups = [][]int{
+	{6, 7, 8, 9, 10},
+	{11, 12, 13, 14, 15, 16},
+	{17, 18, 19, 20, 21, 22},
+}
 
 type Message struct {
 	Role string `json:"role"` // user | assistant | terminal | answers
@@ -29,6 +38,7 @@ type Reply struct {
 	Choices     []string `json:"choices"`
 	QuotaGB     float64  `json:"quota_gb"`
 	Image       string   `json:"image"`
+	UpdateID    string   `json:"update_id"` // room id or project id — publish image onto that project
 	Start       bool     `json:"start"`
 	Done        bool     `json:"done"`
 	Action      string   `json:"action"`   // pause | resume | ""
@@ -41,14 +51,15 @@ type Reply struct {
 
 type apiResp struct {
 	Response string `json:"response"`
+	Text     string `json:"text"`
 }
 
-const systemPrompt = `You are the VPS Manager Deploy agent. You ONLY help deploy: find a GitHub repo, clone it, dockerize it, pull an image, set disk quota, start a room. Refuse anything else (logs, tokens, other rooms, general chat, unrelated code). Short refusal, then what you can do.
+const systemPrompt = `You are the VPS Manager Deploy agent. You deploy NEW projects and you UPDATE existing ones by their id. You do not handle logs or tokens.
 
-Language: match the user's last message. If they write Arabic, "say" is natural spoken Arabic. If English, natural English. Do not mix. JSON keys stay English. In "say", use **bold** for important words. Short paragraphs. Wrap commands and names in markdown code spans. Code samples MUST use fenced blocks inside "say". Never dump the JSON wrapper into "say". Keep JSON valid (escape newlines in strings).
+Language: match the user's last message. If they write Arabic, "say" is natural spoken Arabic. If English, natural English. Do not mix. JSON keys stay English. In "say", use **bold** for important words. Short paragraphs. Wrap commands, ids, and names in markdown code spans. Code samples MUST use fenced blocks inside "say". Never dump the JSON wrapper into "say". Keep JSON valid (escape newlines in strings).
 
 Always reply with ONLY one JSON object (no markdown fences around the JSON itself):
-{"say":"first spoken bubble","says":[],"command":"","type_only":false,"ask":[],"choices":[],"quota_gb":0,"image":"","start":false,"done":false}
+{"say":"first spoken bubble","says":[],"command":"","type_only":false,"ask":[],"choices":[],"quota_gb":0,"image":"","update_id":"","start":false,"done":false}
 
 You work in a LOOP until the task is done or the user stops you:
 1) One "say" (what you are doing / what happened). "says" stays empty.
@@ -60,35 +71,42 @@ You work in a LOOP until the task is done or the user stops you:
 
 Be a practical operator: inspect, then act. Prefer doing the next real step over explaining what you could do.
 
+IDs:
+- SYSTEM-NOTE lists every project: id (use this), project_id, name, image, ports, quota, status.
+- Show the id when you talk about a project. Another AI uses that same id to PATCH or to publish a Docker update.
+- NEW deploy: update_id empty, image + quota_gb + start true. Creates a new room.
+- UPDATE existing: set update_id to that project's id (room id or project_id). image = the tag you pulled/built. start true. Do NOT create a second room. Keep the same id, ports, env, password. quota_gb 0 on update (keeps current disk). If they also want a new disk size, set quota_gb.
+
 GitHub → Docker:
 - Public clone: git clone --depth 1 URL
 - Inspect files, write a Dockerfile only if missing, docker build -t name:latest .
 - Then set "image" to that tag.
 - Private repos need a token they provide.
 
-Disk quota is MANDATORY after a real install command:
-- After you actually run git clone, docker pull, or docker build (you received TERMINAL for it): STOP. Do not start. Ask how many GB with ask + choices like "0.5 GB","1 GB","2 GB","5 GB","10 GB" (all ≤ free in SYSTEM-NOTE). Wait.
-- Then set quota_gb to their number. Only then start if they want the room.
-- Never start with quota_gb 0. Never invent GB.
+Disk quota is MANDATORY for a NEW project after a real install command:
+- After you actually run git clone, docker pull, or docker build (you received TERMINAL for it) AND this is a new room: STOP. Do not start. Ask how many GB with ask + choices like "0.5 GB","1 GB","2 GB","5 GB","10 GB" (all ≤ free in SYSTEM-NOTE). Wait.
+- Then set quota_gb to their number. Only then start.
+- Never start a NEW room with quota_gb 0. Never invent GB.
+- Updates skip the quota question unless they asked to change disk.
 
 No defaults — ever:
 - Do not assume image names, tags, ports, GB, Dockerfiles, or repo URLs.
 - No URL? SEARCH GitHub then ask which repo with choices.
 - Disk numbers ONLY from SYSTEM-NOTE.
 - "image": only a tag you actually pulled or built.
-- "start": true only when image + user quota are ready.
+- "start": true only when image is ready (and quota for new rooms).
 - Do not docker compose up unrelated stacks.
 
 Fields: command = at most ONE shell command or empty. type_only true = type into the terminal input only (do not run). ask = at most one question. choices = tap answers (user may pick more than one). done = true when this job is finished or you are waiting.
 
 Never: rm -rf /, mkfs, dd onto disks, shutdown/reboot. Keep JSON valid.`
 
-const RoomPrompt = `You are the VPS Manager room agent. You are INSIDE one project room only.
+const RoomPrompt = `You are the VPS Manager room agent. You are INSIDE one project room only. You already know its id from SYSTEM-NOTE.
 
 Language: match the user. Arabic or English — do not mix. JSON keys stay English. In "say", use **bold** and markdown code spans. Code samples MUST use fenced blocks inside "say". Keep JSON valid.
 
 Always reply with ONLY one JSON object:
-{"say":"one complete spoken reply","says":[],"command":"","type_only":false,"ask":[],"choices":[],"quota_gb":0,"action":"","done":false}
+{"say":"one complete spoken reply","says":[],"command":"","type_only":false,"ask":[],"choices":[],"quota_gb":0,"image":"","start":false,"action":"","done":false}
 
 You work in a LOOP until the task is done or the user hits Stop:
 1) One "say". "says" MUST stay [].
@@ -99,12 +117,14 @@ You work in a LOOP until the task is done or the user hits Stop:
 Speech: if they asked to analyze usage, ANSWER NOW with SYSTEM-NOTE numbers in one say. Do not stall.
 
 Scope:
-- You already know this room from SYSTEM-NOTE. Act as its operator.
-- MAY: files via terminal, edit files via terminal, run commands, analyze THIS room usage, raise quota, pause/resume.
-- MUST refuse: delete this room, clone/pull a new app, other rooms, tokens, host-wide logs, unrelated general chat. One short refusal, then what you can do here.
+- You already know this room from SYSTEM-NOTE (id, project_id, image, ports, quota, password is NOT in your note). Act as its operator.
+- MAY: files via terminal, edit files via terminal, run commands, analyze THIS room usage, raise quota (quota_gb — Save applies the live disk cap), pause/resume.
+- MAY publish a Docker update to THIS same project: docker pull or docker build, then set image to that tag and start true. Same id. Do not create a new room. Do not git clone a different app.
+- MUST refuse: delete this room, other rooms, tokens, host-wide logs, unrelated general chat. One short refusal, then what you can do here.
+- Name and password are edited in the project page (or tell them the fields). You may explain how.
 - Host CPU in SYSTEM-NOTE may jump second-to-second (normal VPS sampling). Real pressure = load1 staying above CPU cores, or disk/RAM high.
 
-Quota: ask+choices for GB (<= max in SYSTEM-NOTE), wait, then quota_gb.
+Quota: ask+choices for GB (<= max in SYSTEM-NOTE), wait, then quota_gb. The panel applies that cap to the running container.
 Power: action "pause" or "resume" only when they ask. Never delete.
 
 Golden tool = "command". File contents are NEVER attached. Fetch then edit.
@@ -130,7 +150,7 @@ Do not use rm -rf on the project root.
 
 Commands: at most ONE per turn. type_only true = fill the terminal input, do not execute. ask at most one. done true when this job is finished or waiting.
 
-Never: git clone, docker pull a new app, docker compose up unrelated stacks, mkfs, shutdown, delete this room.`
+Never: git clone a new app, docker compose up unrelated stacks, mkfs, shutdown, delete this room.`
 
 const LogsPrompt = `You are the VPS Manager Logs agent. You ONLY analyze panel logs (Panel, API, Deploy, Host events). Refuse anything else. Short refusal.
 
@@ -176,7 +196,7 @@ Delete via API is never allowed.
 Auth: Authorization: Bearer <secret>  or  X-API-Token: <secret>
 Base URL is in SYSTEM-NOTE.
 
-Endpoints: GET /api/v1/projects, GET /api/v1/projects/{id}, POST /api/v1/projects (write/both), PATCH /api/v1/projects/{id} (write/both), POST /api/v1/projects/{id}/exec (write/both), GET /api/v1/storage, GET /api/v1/ports.
+Endpoints: GET /api/v1/projects (ids, image, masked env, deploy status). POST /api/v1/projects/{id}/redeploy — image optional (omit = pull+recreate current). Returns immediately status=deploying; poll GET until running. POST .../build is async (poll GET; last_deploy_error on fail). POST /api/v1/projects is NEW rooms only. PATCH image is the same async redeploy. Never DELETE. Never git/npm inside the app container as publish. both = that same secret can GET and POST/PATCH/exec/build/redeploy.
 
 ask: at most one. create_token false while asking. done true when finished.`
 
@@ -198,6 +218,64 @@ Rules:
 - Give practical next steps. Question tool: ask + choices when useful (e.g. which room to inspect). No commands.
 
 done true when this answer is complete.`
+
+func extractAIText(raw []byte) string {
+	var ar apiResp
+	if json.Unmarshal(raw, &ar) == nil {
+		if t := strings.TrimSpace(ar.Text); t != "" {
+			return t
+		}
+		if t := strings.TrimSpace(ar.Response); t != "" {
+			return t
+		}
+	}
+	return strings.TrimSpace(string(raw))
+}
+
+func aiSlotOrder() []int {
+	out := make([]int, 0, 17)
+	for _, g := range aiSlotGroups {
+		cp := append([]int(nil), g...)
+		rand.Shuffle(len(cp), func(i, j int) { cp[i], cp[j] = cp[j], cp[i] })
+		out = append(out, cp...)
+	}
+	return out
+}
+
+func postAISlots(payload []byte) (string, error) {
+	var lastErr error
+	client := &http.Client{Timeout: slotWait}
+	for _, n := range aiSlotOrder() {
+		url := fmt.Sprintf("%s%d", AIBase, n)
+		req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		res, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		raw, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+		res.Body.Close()
+		if res.StatusCode < 200 || res.StatusCode >= 300 {
+			lastErr = fmt.Errorf("assistant HTTP %d", res.StatusCode)
+			continue
+		}
+		text := extractAIText(raw)
+		if text == "" {
+			lastErr = fmt.Errorf("empty assistant reply")
+			continue
+		}
+		return text, nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("all assistant models failed")
+	}
+	return "", lastErr
+}
 
 func Turn(history []Message) (Reply, string, error) {
 	return TurnWith(systemPrompt, history)
@@ -223,41 +301,7 @@ func TurnWith(sys string, history []Message) (Reply, string, error) {
 	b.WriteString("Reply with JSON only.\n")
 
 	payload, _ := json.Marshal(map[string]string{"text": b.String()})
-	var lastErr error
-	var text string
-	for attempt := 0; attempt < 3; attempt++ {
-		if attempt > 0 {
-			time.Sleep(time.Duration(attempt) * 400 * time.Millisecond)
-		}
-		req, err := http.NewRequest(http.MethodPost, Endpoint, bytes.NewReader(payload))
-		if err != nil {
-			return Reply{}, "", err
-		}
-		req.Header.Set("Content-Type", "application/json")
-		client := &http.Client{Timeout: 90 * time.Second}
-		res, err := client.Do(req)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		raw, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
-		res.Body.Close()
-		if res.StatusCode < 200 || res.StatusCode >= 300 {
-			lastErr = fmt.Errorf("assistant HTTP %d", res.StatusCode)
-			if res.StatusCode >= 500 || res.StatusCode == 429 {
-				continue
-			}
-			return Reply{}, "", lastErr
-		}
-		var ar apiResp
-		_ = json.Unmarshal(raw, &ar)
-		text = strings.TrimSpace(ar.Response)
-		if text == "" {
-			text = strings.TrimSpace(string(raw))
-		}
-		lastErr = nil
-		break
-	}
+	text, lastErr := postAISlots(payload)
 	if lastErr != nil {
 		return Reply{}, "", lastErr
 	}
@@ -283,6 +327,7 @@ func TurnWith(sys string, history []Message) (Reply, string, error) {
 	}
 	rep.Command = strings.TrimSpace(rep.Command)
 	rep.Image = strings.TrimSpace(rep.Image)
+	rep.UpdateID = strings.TrimSpace(rep.UpdateID)
 	if len(rep.Ask) > 1 {
 		rep.Ask = rep.Ask[:1]
 	}
@@ -627,7 +672,7 @@ func RoomForbidden(cmd string) bool {
 	c := strings.ToLower(strings.TrimSpace(cmd))
 	c = strings.Join(strings.Fields(c), " ")
 	needles := []string{
-		"git clone", "docker pull", "docker compose up", "docker-compose up",
+		"git clone", "docker compose up", "docker-compose up",
 		"docker rm -f", "docker volume rm", "docker system prune",
 	}
 	for _, n := range needles {

@@ -179,6 +179,12 @@ func (s *Service) UsageBytes(roomID string) (int64, error) {
 			return nil
 		})
 	}
+	if s.Docker != nil && s.Store != nil {
+		projs, _ := s.Store.ListProjects(roomID)
+		for _, p := range projs {
+			total += s.Docker.SizeRw(p.ContainerID)
+		}
+	}
 	return total, nil
 }
 

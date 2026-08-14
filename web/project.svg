@@ -1,12 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Project">
-  <defs>
-    <linearGradient id="pg" x1="10" y1="6" x2="58" y2="60" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#2a2a2a"/>
-      <stop offset="1" stop-color="#121212"/>
-    </linearGradient>
-  </defs>
-  <rect width="64" height="64" rx="16" fill="url(#pg)"/>
-  <path d="M32 12 L52 22 V42 L32 52 L12 42 V22 Z" fill="none" stroke="#e8e8e8" stroke-width="2.2" stroke-linejoin="round"/>
-  <path d="M32 32 V52" stroke="#6dffb0" stroke-width="2"/>
-  <path d="M12 22 L32 32 L52 22" fill="none" stroke="#bdbdbd" stroke-width="2" stroke-linejoin="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#e8e8e8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Project">
+  <path d="M12 3 20 7.5v9L12 21 4 16.5v-9L12 3z"/>
+  <path d="M12 12 20 7.5"/>
+  <path d="M12 12v9"/>
+  <path d="M12 12 4 7.5"/>
 </svg>

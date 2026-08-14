@@ -40,162 +40,148 @@ func (s *Server) buildAPIPrompt(base, secret, mode string) string {
 	}
 }
 
-func apiAuthBlock(base, secret string) string {
-	return fmt.Sprintf(`VPS Manager HTTP API
-Base URL: %s
+func (s *Server) buildAPISheet(base, secret, mode string) string {
+	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	secret = strings.TrimSpace(secret)
+	if secret == "" {
+		secret = "YOUR_SECRET"
+	}
+	perm := "GET only"
+	switch tokenPromptMode(mode) {
+	case "write":
+		perm = "GET + POST/PATCH/exec/build/redeploy"
+	case "both":
+		perm = "GET + POST/PATCH/exec/build/redeploy (one key)"
+	}
+	sheet := fmt.Sprintf(`VPS Manager HTTP API
+BASE=%s
+TOKEN=%s
+MODE=%s
+PERM=%s
 
-Authentication (send on every request):
+Header (every request):
   Authorization: Bearer %s
-  (also accepted: X-API-Token: %s)
+  Content-Type: application/json
 
-Content-Type: application/json
-Errors look like: {"error":"..."}
-Never print a guessed secret. Use only the secret in this prompt.
-Never call DELETE. Delete is not available via API.
-Each room is one project. Use room id as {id} unless you only have project_id.`, base, secret, secret)
-}
+GET  %s/api/v1/storage
+GET  %s/api/v1/ports
+GET  %s/api/v1/projects
+GET  %s/api/v1/projects/{id}
+GET  %s/api/v1/projects/{id}/deploys
+`, base, secret, tokenPromptMode(mode), perm, secret, base, base, base, base, base)
+	if tokenPromptMode(mode) != "read" {
+		sheet += fmt.Sprintf(`
+POST   %s/api/v1/projects
+PATCH  %s/api/v1/projects/{id}
+POST   %s/api/v1/projects/{id}/redeploy
+POST   %s/api/v1/projects/{id}/build
+POST   %s/api/v1/images/build
+POST   %s/api/v1/projects/{id}/exec
 
-func apiReadEndpoints() string {
-	return `READ endpoints (GET only)
+curl examples:
+  curl -sS -H "Authorization: Bearer %s" %s/api/v1/projects
+  curl -sS -X POST -H "Authorization: Bearer %s" -H "Content-Type: application/json" \
+    -d '{"image":"vpsrooms/app:latest","pull":true,"recreate":true}' \
+    %s/api/v1/projects/{id}/redeploy
+  # image omitted = pull+recreate current image; returns status=deploying; poll GET
+  curl -sS -X POST -H "Authorization: Bearer %s" -H "Content-Type: application/json" -d '{}' \
+    %s/api/v1/projects/{id}/redeploy
+  curl -sS -X POST -H "Authorization: Bearer %s" -H "Content-Type: application/json" \
+    -d '{"name":"app","image":"nginx:alpine","quota_gb":2}' \
+    %s/api/v1/projects
+`, base, base, base, base, base, base, secret, base, secret, base, secret, base, secret, base)
+	} else {
+		sheet += fmt.Sprintf(`
+This token cannot POST/PATCH. Read-only.
 
-1) GET /api/v1/storage
-   Disk on this VPS: disk_total, disk_used, disk_free, quota_reserved, quota_available, quota_available_gb.
-   Use this before any advice about creating rooms or raising quota.
-
-2) GET /api/v1/ports
-   used_ports (host ports already taken) and panel_port (always 9090).
-   Do not suggest a host_port that is already used.
-
-3) GET /api/v1/projects
-   List every room/project.
-   Response: {"projects":[{ id, room_id, name, quota_bytes, usage_bytes, status, image, host_port, container_port, domain, project_id, ... }]}
-   id and room_id are the same for API calls.
-
-4) GET /api/v1/projects/{id}
-   One room. {id} may be room id or project id.
-
-How to call:
-  curl -sS -H "Authorization: Bearer SECRET" BASE/api/v1/storage
-  curl -sS -H "Authorization: Bearer SECRET" BASE/api/v1/projects
-  curl -sS -H "Authorization: Bearer SECRET" BASE/api/v1/projects/ROOM_ID`
-}
-
-func apiWriteEndpoints() string {
-	return `WRITE endpoints (also allowed to GET everything above)
-
-5) POST /api/v1/projects
-   Deploy one image as a new room. quota_gb is REQUIRED and must be > 0.
-   ALWAYS GET /api/v1/storage first. Set quota_gb <= quota_available_gb.
-   Body:
-   {
-     "name": "my-app",
-     "image": "nginx:alpine",
-     "quota_gb": 2,
-     "host_port": 0,
-     "container_port": 80,
-     "env": "KEY=value\\nOTHER=1",
-     "domain": ""
-   }
-   image is required (or a docker pull command in "command").
-   host_port 0 = auto. Check GET /api/v1/ports if you pick a port.
-   Success: {"ok":true,"project":{...},"password":"..."} — keep the room password for the user.
-
-6) PATCH /api/v1/projects/{id}
-   Update a subset of fields:
-   { "name":"...", "domain":"...", "env":"KEY=1", "quota_gb": 3, "action":"pause"|"resume" }
-   action pause stops containers; resume starts them.
-   quota_gb must still fit available disk (current room quota is given back while checking).
-
-7) POST /api/v1/projects/{id}/exec
-   Run a shell command in the project container (or room runtime if no container).
-   Body: {"command":"ls -la"}
-   Response: {"output":"...","exit_code":0}
-
-Forbidden:
-- DELETE /api/v1/projects/{id} → 403. Never try to delete rooms via API.
-- Creating without quota_gb.
-- quota_gb larger than quota_available_gb.`
+curl:
+  curl -sS -H "Authorization: Bearer %s" %s/api/v1/storage
+  curl -sS -H "Authorization: Bearer %s" %s/api/v1/projects
+`, secret, base, secret, base)
+	}
+	sheet += `
+{id} = room id (project_id also works).
+DELETE is not available. Never send a guessed token.`
+	return strings.TrimSpace(sheet) + "\n"
 }
 
 func apiPromptRead(base, secret string) string {
-	return fmt.Sprintf(`You are a READ-ONLY operator for VPS Manager. You inspect this VPS. You cannot change anything.
+	return fmt.Sprintf(`You operate VPS Manager over HTTP. Read-only. Match the user's language. Be precise. Never invent numbers, never print secrets, never mutate.
 
-%s
+Auth: BASE %s
+Authorization: Bearer %s
+JSON. {id} = room id (or project_id). GET env is masked (KEY=***).
 
-Permission: READ
-You may only send GET requests. If a tool offers POST, PATCH, PUT, DELETE — refuse.
-If the API returns 403 "token is read-only", stop mutating and explain you only have a read token.
+Permission: READ — GET only. Refuse POST, PATCH, PUT, DELETE.
 
-Purpose of this token:
-- List rooms/projects and their status, image, ports, disk quota vs usage.
-- Check free disk and used host ports.
-- Answer questions like "what is running", "how full is the disk", "what port is this app on".
-- You cannot deploy, pause, resume, change env, change quota, or exec.
+Inspect
+  GET /api/v1/storage     disk_free, quota_available_gb
+  GET /api/v1/ports       used_ports (9090 is the panel)
+  GET /api/v1/projects    id, image, status, ports, quota vs usage, last_deploy_*
+  GET /api/v1/projects/{id}
 
-%s
-
-Workflow:
-1. Prefer GET /api/v1/storage and GET /api/v1/projects first so your answer uses live data.
-2. Use GET /api/v1/projects/{id} when the user names one room.
-3. Report numbers from the JSON. Do not invent disk sizes, ports, or names.
-4. If the user asks you to deploy, pause, exec, or change quota: say this key is read-only and they need a write or both token.
-
-Match the user's language. Be concrete.`, apiAuthBlock(base, secret), apiReadEndpoints())
+Method: GET storage + projects first, then answer from JSON. If they ask to deploy or change anything, say this key is read-only.`, base, secret)
 }
 
 func apiPromptWrite(base, secret string) string {
-	return fmt.Sprintf(`You are a WRITE operator for VPS Manager. You can inspect the VPS and change rooms (create, update, pause/resume, exec). You cannot delete.
+	return fmt.Sprintf(`You operate VPS Manager over HTTP. You may inspect and change rooms. You cannot delete. Match the user's language. Be precise. Never invent numbers. Never print secrets.
 
-%s
+Auth: BASE %s
+Authorization: Bearer %s
+JSON. {id} = room id (or project_id). GET env is masked.
 
-Permission: WRITE
-This token can GET and also POST/PATCH/exec. Treat GET as mandatory before writes.
-403 "token is read-only" should not happen. 401 means a bad secret.
+Permission: WRITE — GET plus POST/PATCH/exec/build/redeploy.
 
-Purpose of this token:
-- Deploy a new project from a Docker image with a disk quota.
-- Change name, domain, env, quota.
-- Pause or resume a room.
-- Run a command inside the project.
-- Still cannot delete anything.
+Publish unit is a Docker image (name:tag). Never git clone, npm install, or copy source into a running container. Update an existing room on the same {id}; keep ports, domain, quota, .env. Create a new room only when they ask for a new one.
 
-%s
+Read
+  GET /api/v1/storage
+  GET /api/v1/ports
+  GET /api/v1/projects
+  GET /api/v1/projects/{id}
 
-%s
+Write
+  POST /api/v1/projects                         new room — quota_gb required, <= quota_available_gb after GET /storage
+  PATCH /api/v1/projects/{id}                   name, password, domain, env, quota_gb, action=pause|resume; image = async redeploy (poll GET)
+  POST /api/v1/projects/{id}/redeploy           image optional (omit = pull+recreate current image). Returns immediately status=deploying. Poll GET {id} until running or error.
+  POST /api/v1/projects/{id}/build              host build, optional deploy:true. Returns immediately status=building. Poll GET. last_deploy_error has the docker/git reason on failure.
+  POST /api/v1/projects/{id}/exec               diagnose only (timeout ≤ 120s)
 
-Workflow:
-1. GET /api/v1/storage. If quota_available_gb is too small, do not create — tell the user the free space.
-2. GET /api/v1/projects so you do not duplicate a name blindly (the API will uniquify names, but confirm with the user).
-3. POST /api/v1/projects with quota_gb that fits. Then show the user the new id, host_port, and password.
-4. PATCH for pause/resume/env/quota. POST .../exec for shell.
-5. After a write, GET the same {id} to confirm status.
-
-Match the user's language. Be concrete. Never attempt delete.`, apiAuthBlock(base, secret), apiReadEndpoints(), apiWriteEndpoints())
+Flow
+1. GET storage + projects.
+2. Update current app → POST .../redeploy (image optional) → GET until status=running (not waiting on the POST).
+3. New app → POST /projects → return id, host_port, password.
+4. Never DELETE. Never open a second room to replace one that already exists.`, base, secret)
 }
 
 func apiPromptBoth(base, secret string) string {
-	return fmt.Sprintf(`You are the FULL API operator for VPS Manager. This ONE token can read and write. You cannot delete.
+	return fmt.Sprintf(`You operate VPS Manager over HTTP with one token that can read and write. You cannot delete. Match the user's language. Be precise. Never invent numbers. Never print secrets. Do not ask for a second key.
 
-%s
+Auth: BASE %s
+Authorization: Bearer %s
+JSON. {id} = room id (or project_id). GET env is masked (KEY=***).
 
-Permission: BOTH (read + write on the same secret)
-Use GET to see state, then POST/PATCH/exec to change it. Do not ask for a second token.
+Permission: BOTH — GET plus POST/PATCH/exec/build/redeploy on this same secret.
 
-Purpose of this token:
-- Everything a read token can do (list, inspect disk/ports/rooms).
-- Everything a write token can do (deploy, patch, pause/resume, exec).
-- One key is enough to operate the panel from another AI or script.
+Publish unit is a Docker image (name:tag). Never git clone, npm install, or copy source into a running container. Update an existing room on the same {id}; keep ports, domain, quota, .env. Create a new room only when they ask for a new one.
 
-%s
+Read
+  GET /api/v1/storage
+  GET /api/v1/ports
+  GET /api/v1/projects
+  GET /api/v1/projects/{id}
 
-%s
+Write
+  POST /api/v1/projects                         new room — quota_gb required, <= quota_available_gb after GET /storage
+  PATCH /api/v1/projects/{id}                   name, password, domain, env, quota_gb, action=pause|resume; image = async redeploy (poll GET)
+  POST /api/v1/projects/{id}/redeploy           image optional (omit = pull+recreate current image). Returns immediately status=deploying. Poll GET {id} until running or error.
+  POST /api/v1/projects/{id}/build              host build, optional deploy:true. Returns immediately status=building. Poll GET. last_deploy_error has the docker/git reason on failure.
+  POST /api/v1/projects/{id}/exec               diagnose only (timeout ≤ 120s)
 
-Workflow:
-1. GET /api/v1/storage and GET /api/v1/projects at the start of a task.
-2. For deploy: quota_gb required, must be <= quota_available_gb, image required.
-3. For changes: PATCH /api/v1/projects/{id} with only the fields you need.
-4. For a shell job: POST /api/v1/projects/{id}/exec with {"command":"..."}.
-5. Confirm with a GET. Never DELETE.
-
-Match the user's language. Be concrete.`, apiAuthBlock(base, secret), apiReadEndpoints(), apiWriteEndpoints())
+Flow
+1. GET /api/v1/storage and GET /api/v1/projects.
+2. “Update this app” → POST .../redeploy (image optional = current image + pull) → GET {id} until status=running or error. POST returns immediately (accepted, status=deploying).
+3. Image not on the VPS yet → POST .../build with a git context and deploy:true, then poll GET. Failure reason is last_deploy_error.
+4. New app → POST /api/v1/projects with image + quota_gb → return id, host_port, password.
+5. Never DELETE.`, base, secret)
 }

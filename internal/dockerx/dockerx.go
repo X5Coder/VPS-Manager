@@ -51,8 +51,20 @@ func (c *Client) run(ctx context.Context, w io.Writer, args ...string) error {
 }
 
 func (c *Client) output(args ...string) (string, error) {
-	cmd := exec.Command(c.bin, args...)
+	return c.outputTimeout(1500*time.Millisecond, args...)
+}
+
+func (c *Client) outputTimeout(d time.Duration, args ...string) (string, error) {
+	if d <= 0 {
+		d = 1500 * time.Millisecond
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, c.bin, args...)
 	b, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return string(b), fmt.Errorf("docker %s timed out", args[0])
+	}
 	return string(b), err
 }
 
@@ -75,16 +87,130 @@ func (c *Client) PullImage(ref string, w io.Writer) error {
 	return c.run(context.Background(), w, "pull", ref)
 }
 
+// RegistryPullable reports images a new VPS can docker-pull identically
+// (Docker Hub / ghcr / quay / *.io). Local tags like vpsrooms/* are false.
+func RegistryPullable(image string) bool {
+	image = strings.TrimSpace(image)
+	if image == "" {
+		return false
+	}
+	lower := strings.ToLower(image)
+	switch {
+	case strings.HasPrefix(lower, "vpsrooms/"),
+		strings.HasPrefix(lower, "vpsrooms-bak/"),
+		strings.HasPrefix(lower, "vpsrooms-restore/"),
+		strings.HasPrefix(lower, "localhost/"),
+		strings.Contains(lower, "127.0.0.1"):
+		return false
+	}
+	return true
+}
+
 func (c *Client) ImageExists(ref string) bool {
 	out, err := c.output("image", "inspect", "--format", "{{.Id}}", ref)
 	return err == nil && strings.TrimSpace(out) != ""
 }
 
+// RepoDigest returns registry digest (name@sha256:…) when Docker recorded one.
+func (c *Client) RepoDigest(ref string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ""
+	}
+	out, err := c.output("image", "inspect", "--format", "{{range .RepoDigests}}{{.}} {{end}}", ref)
+	if err != nil {
+		return ""
+	}
+	want := strings.Split(ref, ":")[0]
+	for _, d := range strings.Fields(out) {
+		d = strings.TrimSpace(d)
+		if d == "" {
+			continue
+		}
+		if want == "" || strings.Contains(d, want) || strings.Contains(d, "@sha256:") {
+			return d
+		}
+	}
+	return ""
+}
+
 func (c *Client) BuildImage(ctx context.Context, contextDir, tag string, w io.Writer) error {
-	cmd := exec.CommandContext(ctx, c.bin, "build", "-t", tag, contextDir)
-	cmd.Stdout = w
-	cmd.Stderr = w
-	return cmd.Run()
+	return c.Build(ctx, BuildOpts{Tag: tag, Context: contextDir}, w)
+}
+
+type BuildOpts struct {
+	Tag        string
+	Context    string
+	Dockerfile string
+	Args       map[string]string
+}
+
+func (c *Client) Build(ctx context.Context, opts BuildOpts, w io.Writer) error {
+	args := []string{"build", "-t", opts.Tag}
+	df := strings.TrimSpace(opts.Dockerfile)
+	if df != "" {
+		if !filepath.IsAbs(df) && opts.Context != "" && !strings.Contains(opts.Context, "://") {
+			df = filepath.Join(opts.Context, df)
+		}
+		args = append(args, "-f", df)
+	}
+	keys := make([]string, 0, len(opts.Args))
+	for k := range opts.Args {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		args = append(args, "--build-arg", k+"="+opts.Args[k])
+	}
+	ctxDir := opts.Context
+	if ctxDir == "" {
+		ctxDir = "."
+	}
+	args = append(args, ctxDir)
+	cmd := exec.CommandContext(ctx, c.bin, args...)
+	var buf bytes.Buffer
+	if w != nil && w != io.Discard {
+		mw := io.MultiWriter(w, &buf)
+		cmd.Stdout = mw
+		cmd.Stderr = mw
+	} else {
+		cmd.Stdout = &buf
+		cmd.Stderr = &buf
+	}
+	if err := cmd.Run(); err != nil {
+		tail := strings.TrimSpace(buf.String())
+		if tail == "" {
+			return err
+		}
+		if len(tail) > 4000 {
+			tail = "…" + tail[len(tail)-4000:]
+		}
+		return fmt.Errorf("%w: %s", err, tail)
+	}
+	return nil
+}
+
+func (c *Client) PushImage(ref string, w io.Writer) error {
+	return c.run(ctxOrBg(), w, "push", ref)
+}
+
+func ctxOrBg() context.Context {
+	return context.Background()
+}
+
+func (c *Client) Rename(id, name string) error {
+	if id == "" || name == "" {
+		return fmt.Errorf("rename requires id and name")
+	}
+	return c.run(context.Background(), nil, "rename", id, name)
+}
+
+func (c *Client) ImageID(ref string) string {
+	out, err := c.output("image", "inspect", "--format", "{{.Id}}", ref)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
 }
 
 type RunOpts struct {
@@ -97,10 +223,27 @@ type RunOpts struct {
 	Env           []string
 	Binds         []string
 	Labels        map[string]string
+	StorageBytes  int64 // container writable-layer cap when the driver supports it
 }
 
-func (c *Client) Run(opts RunOpts) (string, error) {
+func storageOpt(n int64) string {
+	if n <= 0 {
+		return ""
+	}
+	mb := (n + (1 << 20) - 1) >> 20
+	if mb < 64 {
+		mb = 64
+	}
+	return fmt.Sprintf("size=%dM", mb)
+}
+
+func (c *Client) runContainer(opts RunOpts, withSize bool) (string, error) {
 	args := []string{"run", "-d", "--name", opts.Name, "--label", "vps-rooms=1", "--restart", "unless-stopped", "--shm-size=1g"}
+	if withSize {
+		if opt := storageOpt(opts.StorageBytes); opt != "" {
+			args = append(args, "--storage-opt", opt)
+		}
+	}
 	if opts.Network != "" {
 		args = append(args, "--network", opts.Network)
 	}
@@ -128,6 +271,37 @@ func (c *Client) Run(opts RunOpts) (string, error) {
 		return "", fmt.Errorf("%s: %w", id, err)
 	}
 	return id, nil
+}
+
+func (c *Client) Run(opts RunOpts) (string, error) {
+	if opts.StorageBytes > 0 {
+		id, err := c.runContainer(opts, true)
+		if err == nil {
+			return id, nil
+		}
+		low := strings.ToLower(err.Error())
+		if strings.Contains(low, "storage-opt") || strings.Contains(low, "overlay") || strings.Contains(low, "unknown") {
+			return c.runContainer(opts, false)
+		}
+		return "", err
+	}
+	return c.runContainer(opts, false)
+}
+
+// SizeRw is the container writable layer in bytes (0 if unknown).
+func (c *Client) SizeRw(id string) int64 {
+	if id == "" {
+		return 0
+	}
+	out, err := c.output("inspect", "-s", "--format", "{{.SizeRw}}", id)
+	if err != nil {
+		return 0
+	}
+	n, _ := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	if n < 0 {
+		return 0
+	}
+	return n
 }
 
 func (c *Client) Start(id string) error {
@@ -209,7 +383,7 @@ func (c *Client) Logs(id string, tail int) (string, error) {
 }
 
 func (c *Client) UsedPorts() ([]int, error) {
-	out, err := c.output("ps", "-a", "--format", "{{.Ports}}")
+	out, err := c.outputTimeout(8*time.Second, "ps", "-a", "--format", "{{.Ports}}")
 	if err != nil {
 		return nil, err
 	}
@@ -319,10 +493,43 @@ func (c *Client) SaveImage(imageTag, destTar string) error {
 	if err := os.MkdirAll(filepath.Dir(destTar), 0o750); err != nil {
 		return err
 	}
-	cmd := exec.Command(c.bin, "save", "-o", destTar, imageTag)
-	b, err := cmd.CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+	defer cancel()
+	out, err := os.Create(destTar)
 	if err != nil {
-		return fmt.Errorf("docker save: %s: %w", strings.TrimSpace(string(b)), err)
+		return err
+	}
+	defer out.Close()
+	save := exec.CommandContext(ctx, c.bin, "save", imageTag)
+	gzBin, gzArgs := "gzip", []string{"-1"}
+	if _, err := exec.LookPath("pigz"); err == nil {
+		gzBin, gzArgs = "pigz", []string{"-1"}
+	}
+	gz := exec.CommandContext(ctx, gzBin, gzArgs...)
+	pipe, err := save.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	gz.Stdin = pipe
+	gz.Stdout = out
+	var errSave, errGz bytes.Buffer
+	save.Stderr = &errSave
+	gz.Stderr = &errGz
+	if err := gz.Start(); err != nil {
+		return err
+	}
+	if err := save.Start(); err != nil {
+		_ = gz.Process.Kill()
+		return err
+	}
+	saveErr := save.Wait()
+	_ = pipe.Close()
+	gzErr := gz.Wait()
+	if saveErr != nil {
+		return fmt.Errorf("docker save: %s: %w", strings.TrimSpace(errSave.String()), saveErr)
+	}
+	if gzErr != nil {
+		return fmt.Errorf("compress image: %s: %w", strings.TrimSpace(errGz.String()), gzErr)
 	}
 	st, _ := os.Stat(destTar)
 	if st == nil || st.Size() < 32 {
@@ -357,7 +564,9 @@ func (c *Client) LoadImage(srcTar string) error {
 
 // LoadImageTag loads a docker save tar and returns a repo:tag when docker prints one.
 func (c *Client) LoadImageTag(srcTar string) (string, error) {
-	cmd := exec.Command(c.bin, "load", "-i", srcTar)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, c.bin, "load", "-i", srcTar)
 	b, err := cmd.CombinedOutput()
 	out := strings.TrimSpace(string(b))
 	if err != nil {
@@ -372,7 +581,7 @@ func (c *Client) LoadImageTag(srcTar string) (string, error) {
 			}
 		}
 	}
-	return "", fmt.Errorf("image loaded but has no name — save it as: docker save -o app.tar myapp:latest")
+	return "", nil
 }
 
 // ImportFilesystem creates an image from a docker-export tar.
@@ -441,8 +650,14 @@ func ComposeFile(dir string) string {
 	return ""
 }
 
-// ComposePullUp downloads images on this VPS then starts the stack (no image tars in backup).
+// ComposePullUp downloads images then starts the stack.
 func (c *Client) ComposePullUp(dir, project string, w io.Writer) error {
+	return c.ComposeUp(dir, project, true, w)
+}
+
+// ComposeUp starts a compose stack. When pull is false, uses images already
+// loaded on this VPS (from backup tars) and does not contact a registry.
+func (c *Client) ComposeUp(dir, project string, pull bool, w io.Writer) error {
 	file := ComposeFile(dir)
 	if file == "" {
 		return fmt.Errorf("no compose file in %s", dir)
@@ -453,11 +668,16 @@ func (c *Client) ComposePullUp(dir, project string, w io.Writer) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
-	pull := append(append([]string{}, base...), "pull")
-	if err := c.run(ctx, w, pull...); err != nil && w != nil {
-		fmt.Fprintf(w, "compose pull: %v (will still try up)\n", err)
+	if pull {
+		pullArgs := append(append([]string{}, base...), "pull")
+		if err := c.run(ctx, w, pullArgs...); err != nil && w != nil {
+			fmt.Fprintf(w, "compose pull: %v (will still try up)\n", err)
+		}
 	}
 	up := append(append([]string{}, base...), "up", "-d", "--remove-orphans")
+	if !pull {
+		up = append(up, "--pull", "never")
+	}
 	return c.run(ctx, w, up...)
 }
 

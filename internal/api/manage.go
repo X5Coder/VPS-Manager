@@ -832,11 +832,11 @@ func (s *Server) handleRoomQuota(w http.ResponseWriter, r *http.Request, roomID 
 		writeErr(w, 400, err.Error())
 		return
 	}
-	if err := s.Rooms.SetQuota(roomID, q); err != nil {
+	if err := s.Projects.ApplyQuota(roomID, q); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"ok": "1", "quota_bytes": q})
+	writeJSON(w, 200, map[string]any{"ok": "1", "quota_bytes": q, "applied": true})
 }
 
 func (s *Server) handleRoomPassword(w http.ResponseWriter, r *http.Request, roomID string) {
@@ -881,6 +881,67 @@ func (s *Server) handleRoomName(w http.ResponseWriter, r *http.Request, roomID s
 		return
 	}
 	writeJSON(w, 200, map[string]string{"ok": "1", "name": strings.TrimSpace(body.Name)})
+}
+
+func (s *Server) handleRoomUpdate(w http.ResponseWriter, r *http.Request, roomID string) {
+	room, p0, err := s.resolveRoomProject(roomID)
+	if err != nil || room == nil {
+		writeErr(w, 404, "not found")
+		return
+	}
+	if _, ctrl := s.canControlRoom(w, r, room.ID); ctrl == nil {
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeErr(w, 405, "method")
+		return
+	}
+	var body struct {
+		Image     string `json:"image"`
+		ProjectID string `json:"project_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, 400, "invalid request")
+		return
+	}
+	image := strings.TrimSpace(body.Image)
+	if image == "" {
+		writeErr(w, 400, "image required")
+		return
+	}
+	projs, _ := s.Store.ListProjects(room.ID)
+	if len(projs) == 0 {
+		writeErr(w, 400, "no container to update")
+		return
+	}
+	pid := strings.TrimSpace(body.ProjectID)
+	if pid == "" && p0 != nil {
+		pid = p0.ID
+	}
+	if pid == "" {
+		pid = projs[0].ID
+	}
+	found := false
+	for _, p := range projs {
+		if p.ID == pid {
+			found = true
+			break
+		}
+	}
+	if !found {
+		writeErr(w, 404, "project not found")
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-cache")
+	flusher, _ := w.(http.Flusher)
+	logw := &flushWriter{w: w, f: flusher}
+	if err := s.Projects.UpdateImage(pid, image, logw); err != nil {
+		fmt.Fprintf(logw, "error: %v\n", err)
+		return
+	}
+	_ = appendLog(s.Cfg.DataDir, "deploy", "UPDATE project="+pid+" room="+room.ID+" image="+image)
 }
 
 func (s *Server) handleDeployPull(w http.ResponseWriter, r *http.Request) {

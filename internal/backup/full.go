@@ -12,6 +12,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"github.com/x5coder/vps-rooms/internal/dockerx"
 	"github.com/x5coder/vps-rooms/internal/projects"
 	"github.com/x5coder/vps-rooms/internal/store"
 )
@@ -109,26 +110,50 @@ func copyFile(src, dest string) error {
 	return os.WriteFile(dest, b, 0o600)
 }
 
-// captureProjectData dumps databases, storage, named volumes, and (for image-only
-// apps) the container image into the project dir so they are included in the walk.
-func (s *Service) captureProjectData(roomID string, p store.Project) {
+// captureProjectData dumps databases, storage, named volumes, and Docker
+// images into the project dir so restore can start without docker pull.
+func (s *Service) captureProjectData(roomID string, p store.Project) error {
 	pdir := s.Rooms.ProjectDir(roomID, p.ID)
 	_ = os.MkdirAll(pdir, 0o750)
 	if s.Docker == nil || !s.Docker.Available() {
-		return
+		return nil
 	}
 
 	_, composeDir, composeProject, _ := projects.ProjectLayout(pdir)
 	isCompose := composeDir != "" || composeProject != ""
 
+	if p.Image != "" {
+		ref := strings.TrimSpace(p.Image)
+		if dockerx.RegistryPullable(ref) && s.Docker != nil {
+			if d := s.Docker.RepoDigest(ref); d != "" {
+				ref = d
+			}
+		}
+		_ = os.WriteFile(filepath.Join(pdir, "__image_ref.txt"), []byte(ref+"\n"), 0o644)
+	}
+
+	if isCompose {
+		if err := s.saveComposeImages(pdir, composeProject); err != nil {
+			return err
+		}
+	} else if img := strings.TrimSpace(p.Image); img != "" {
+		if dockerx.RegistryPullable(img) {
+			s.report(-1, "Public image %s — restore will docker pull the same tag (not uploaded)", img)
+		} else {
+			dest := filepath.Join(pdir, "__container_image.tar.gz")
+			s.report(-1, "Saving local Docker image %s (gzip)", img)
+			if err := s.Docker.SaveImage(img, dest); err != nil {
+				return fmt.Errorf("docker save %s: %w", img, err)
+			}
+			if st, err := os.Stat(dest); err == nil {
+				s.report(-1, "Saved %s (%s)", img, formatBytes(st.Size()))
+			}
+		}
+	}
+
 	if p.ContainerID != "" {
 		st, _ := s.Docker.InspectStatus(p.ContainerID)
 		if st != "missing" && !isCompose {
-			if p.Image != "" {
-				s.report(-1, "Keeping image name %s (pull on restore — skip docker save)", p.Image)
-				_ = os.WriteFile(filepath.Join(pdir, "__image_ref.txt"), []byte(strings.TrimSpace(p.Image)+"\n"), 0o644)
-			}
-			_ = os.Remove(filepath.Join(pdir, "__container_image.tar"))
 			_ = os.Remove(filepath.Join(pdir, "__container_export.tar"))
 			mounts, err := s.Docker.ListMounts(p.ContainerID)
 			if err == nil {
@@ -184,29 +209,133 @@ func (s *Service) captureProjectData(roomID string, p store.Project) {
 	// Named volumes belonging to a compose project (db-config, deno-cache, …)
 	if composeProject != "" {
 		list, err := s.Docker.ListCompose(composeProject)
-		if err != nil {
-			return
-		}
-		seenVol := map[string]bool{}
-		for _, c := range list {
-			mounts, err := s.Docker.ListMounts(c.Name)
-			if err != nil {
-				continue
-			}
-			for _, m := range mounts {
-				if !strings.EqualFold(m.Type, "volume") || m.Name == "" || seenVol[m.Name] {
+		if err == nil {
+			seenVol := map[string]bool{}
+			for _, c := range list {
+				mounts, err := s.Docker.ListMounts(c.Name)
+				if err != nil {
 					continue
 				}
-				seenVol[m.Name] = true
-				s.report(-1, "Copying compose volume %s", m.Name)
-				dest := filepath.Join(pdir, "__volumes", m.Name)
-				_ = os.RemoveAll(dest)
-				if err := s.Docker.CopyVolumeToDir(m.Name, dest); err != nil {
-					s.report(-1, "volume %s: %v", m.Name, err)
+				for _, m := range mounts {
+					if !strings.EqualFold(m.Type, "volume") || m.Name == "" || seenVol[m.Name] {
+						continue
+					}
+					seenVol[m.Name] = true
+					s.report(-1, "Copying compose volume %s", m.Name)
+					dest := filepath.Join(pdir, "__volumes", m.Name)
+					_ = os.RemoveAll(dest)
+					if err := s.Docker.CopyVolumeToDir(m.Name, dest); err != nil {
+						s.report(-1, "volume %s: %v", m.Name, err)
+					}
 				}
 			}
 		}
 	}
+	return nil
+}
+
+func imageTarFileName(ref string) string {
+	s := strings.TrimSpace(ref)
+	s = strings.ReplaceAll(s, "/", "_")
+	s = strings.ReplaceAll(s, ":", "_")
+	s = strings.ReplaceAll(s, "@", "_")
+	if s == "" {
+		s = "image"
+	}
+	return s + ".tar.gz"
+}
+
+func (s *Service) saveComposeImages(pdir, composeProject string) error {
+	list, err := s.Docker.ListCompose(composeProject)
+	if err != nil {
+		return fmt.Errorf("list compose %s: %w", composeProject, err)
+	}
+	if len(list) == 0 {
+		return fmt.Errorf("no running compose containers for %s", composeProject)
+	}
+	destDir := filepath.Join(pdir, "__compose_images")
+	_ = os.MkdirAll(destDir, 0o750)
+	seen := map[string]bool{}
+	saved := 0
+	for _, c := range list {
+		img := strings.TrimSpace(c.Image)
+		if img == "" || seen[img] {
+			continue
+		}
+		seen[img] = true
+		if dockerx.RegistryPullable(img) {
+			s.report(-1, "Public compose image %s — pull on restore", img)
+			continue
+		}
+		dest := filepath.Join(destDir, imageTarFileName(img))
+		s.report(-1, "Saving local compose image %s (gzip)", img)
+		if err := s.Docker.SaveImage(img, dest); err != nil {
+			return fmt.Errorf("docker save %s: %w", img, err)
+		}
+		if st, err := os.Stat(dest); err == nil {
+			s.report(-1, "Saved %s (%s)", img, formatBytes(st.Size()))
+		}
+		saved++
+	}
+	if saved == 0 {
+		s.report(-1, "Compose %s uses only public images — nothing extra to upload", composeProject)
+	}
+	return nil
+}
+
+func backupHasPath(files []FileEntry, needle string) bool {
+	for _, f := range files {
+		if f.Deleted {
+			continue
+		}
+		if strings.Contains(f.Path, needle) && (len(f.Chunks) > 0 || f.Size > 0) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) validateBackupComplete(m *Manifest, rooms []store.Room) error {
+	if m == nil {
+		return fmt.Errorf("empty manifest")
+	}
+	hasDB := false
+	for _, f := range m.SystemFiles {
+		p := strings.ReplaceAll(f.Path, "\\", "/")
+		if !f.Deleted && strings.HasSuffix(p, "panel.db") && (len(f.Chunks) > 0 || f.Size > 0) {
+			hasDB = true
+			break
+		}
+	}
+	if !hasDB {
+		return fmt.Errorf("panel.db was not uploaded")
+	}
+	got := map[string]ProjectMap{}
+	for _, p := range m.Projects {
+		got[p.RoomID] = p
+	}
+	for _, r := range rooms {
+		pm, ok := got[r.ID]
+		if !ok {
+			return fmt.Errorf("room %s is missing from the backup", r.Name)
+		}
+		if s.Store == nil || s.Rooms == nil {
+			continue
+		}
+		projs, _ := s.Store.ListProjects(r.ID)
+		for _, p := range projs {
+			if !dockerx.RegistryPullable(p.Image) {
+				if !backupHasPath(pm.Files, "__container_image.tar") {
+					return fmt.Errorf("room %s: local image %s was not uploaded", r.Name, p.Image)
+				}
+			}
+			pdir := s.Rooms.ProjectDir(r.ID, p.ID)
+			if hasGoodPostgresDump(pdir) && !backupHasPath(pm.Files, "__dumps/postgres.sql.gz") {
+				return fmt.Errorf("room %s: postgres dump was not uploaded", r.Name)
+			}
+		}
+	}
+	return nil
 }
 
 func imgLooksPostgres(image string) bool {

@@ -2,6 +2,37 @@ package ai
 
 import "testing"
 
+func TestParseUpdateID(t *testing.T) {
+	raw := `{"say":"ok","image":"nginx:alpine","update_id":"abc-123","start":true,"done":true}`
+	r, ok := parseReply(raw)
+	if !ok {
+		t.Fatal("parse")
+	}
+	if r.UpdateID != "abc-123" || r.Image != "nginx:alpine" || !r.Start {
+		t.Fatalf("got %+v", r)
+	}
+}
+
+func TestExtractAIText(t *testing.T) {
+	got := extractAIText([]byte(`{"text":"hello from slot"}`))
+	if got != "hello from slot" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestAISlotOrderOnlyPreferred(t *testing.T) {
+	seen := map[int]bool{}
+	for _, n := range aiSlotOrder() {
+		if n < 6 || n > 22 {
+			t.Fatalf("slot out of range %d", n)
+		}
+		seen[n] = true
+	}
+	if len(seen) != 17 {
+		t.Fatalf("want 17 slots got %d", len(seen))
+	}
+}
+
 func TestSanitizeSayUnescapesNewlines(t *testing.T) {
 	raw := `{"say":"في هذا سجل API.\n\n- تم إنشاء مشروع embeddings-server\n\nملاحظة مهمة","ask":[],"choices":[],"done":true}`
 	r, ok := parseReply(raw)

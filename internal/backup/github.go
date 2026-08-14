@@ -146,6 +146,9 @@ func (g *GitHub) CloneOrPull(repo, dir string) error {
 
 func (g *GitHub) CommitPush(dir, message string) error {
 	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	_, _ = gitRun(30*time.Second, env, "git", "-C", dir, "config", "http.postBuffer", "524288000")
+	_, _ = gitRun(30*time.Second, env, "git", "-C", dir, "config", "http.version", "HTTP/1.1")
+	_, _ = gitRun(30*time.Second, env, "git", "-C", dir, "config", "core.compression", "0")
 	if _, err := gitRun(30*time.Second, env, "git", "-C", dir, "config", "user.email", "backup@vps-manage.local"); err != nil {
 		return err
 	}
@@ -162,7 +165,7 @@ func (g *GitHub) CommitPush(dir, message string) error {
 	if out, err := gitRun(2*time.Minute, env, "git", "-C", dir, "commit", "-m", message); err != nil {
 		return fmt.Errorf("commit: %s", truncate(string(out)+" "+err.Error(), 200))
 	}
-	out, err := gitRun(20*time.Minute, env, "git", "-C", dir, "push", "origin", "HEAD")
+	out, err := gitRun(45*time.Minute, env, "git", "-C", dir, "push", "origin", "HEAD")
 	if err != nil {
 		return fmt.Errorf("push: %s", truncate(string(out)+" "+err.Error(), 300))
 	}

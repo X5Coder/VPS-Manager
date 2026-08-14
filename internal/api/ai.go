@@ -46,15 +46,19 @@ func (s *Server) handleRoomAI(w http.ResponseWriter, r *http.Request, roomID str
 	usage, _ := s.Rooms.UsageBytes(room.ID)
 	usedGB := float64(usage) / (1024 * 1024 * 1024)
 	projs, _ := s.Store.ListProjects(room.ID)
+	ids := room.ID
+	for _, p := range projs {
+		ids += "," + p.ID
+	}
 	var pb strings.Builder
 	fmt.Fprintf(&pb,
-		"Page: Room agent. You are inside room %q (id %s). ANSWER usage from these numbers — do not stall. This room disk used %.2f GB of quota %.1f GB (max allowed %.1f GB). Host CPU %.1f%% cores=%d load1=%.2f RAM %.1f%% disk %.1f%%. NEVER delete this room. NEVER clone/pull a new project.",
-		room.Name, room.ID, usedGB, curGB, maxGB, hm.CPUPercent, hm.CPUCores, hm.Load1, hm.MemPercent, hm.DiskPercent,
+		"Page: Room agent. You are inside room %q. id=%s project_ids=%s. ANSWER usage from these numbers — do not stall. This room disk used %.2f GB of quota %.1f GB (max allowed %.1f GB). Host CPU %.1f%% cores=%d load1=%.2f RAM %.1f%% disk %.1f%%. NEVER delete this room. You MAY docker pull/build then set image+start to publish an update on THIS same id.",
+		room.Name, room.ID, ids, usedGB, curGB, maxGB, hm.CPUPercent, hm.CPUCores, hm.Load1, hm.MemPercent, hm.DiskPercent,
 	)
 	for _, p := range projs {
 		pb.WriteString(fmt.Sprintf(
-			"\nProject %s: id=%s image=%s status=%s host_port=%d container_port=%d domain=%q. Read files only via terminal command (ls then head). Do not guess contents.",
-			p.Name, p.ID, p.Image, p.Status, p.HostPort, p.ContainerPort, p.Domain,
+			"\nProject %s: id=%s room_id=%s image=%s status=%s host_port=%d container_port=%d domain=%q container_id=%s. Read files only via terminal command (ls then head). Do not guess contents.",
+			p.Name, p.ID, p.RoomID, p.Image, p.Status, p.HostPort, p.ContainerPort, p.Domain, p.ContainerID,
 		))
 	}
 	hist := append([]ai.Message{{
@@ -94,8 +98,9 @@ func (s *Server) handleRoomAI(w http.ResponseWriter, r *http.Request, roomID str
 		"ask":       rep.Ask,
 		"choices":   rep.Choices,
 		"quota_gb":  rep.QuotaGB,
-		"image":     "",
-		"start":     false,
+		"image":     strings.TrimSpace(rep.Image),
+		"update_id": room.ID,
+		"start":     rep.Start,
 		"action":    rep.Action,
 		"done":      rep.Done,
 		"type_only": rep.TypeOnly,
@@ -127,11 +132,12 @@ func (s *Server) handleDeployAI(w http.ResponseWriter, r *http.Request) {
 	if maxGB < 0.1 {
 		maxGB = 0.1
 	}
+	catalog := s.projectsCatalogNote()
 	hist := append([]ai.Message{{
 		Role: "system-note",
 		Text: diskSystemNote(st, fmt.Sprintf(
-			"Page: Deploy. Working directory is the deploy workspace on the VPS host. Free disk for new rooms: %.1f GB. After a real docker pull / docker build / git clone, you MUST ask GB with ask+choices before start. You may pause anytime to ask a question. After a real pull/build, set image to that tag. start true only when image + user-chosen quota are ready.",
-			maxGB,
+			"Page: Deploy. Working directory is the deploy workspace on the VPS host. Free disk for NEW rooms: %.1f GB. After a real docker pull / docker build / git clone for a NEW room, ask GB with ask+choices before start. For an UPDATE, set update_id to the existing id from this list (same container, new image, no extra quota unless they asked). After a real pull/build, set image to that tag. start true when image is ready (quota required only for new rooms).\n%s",
+			maxGB, catalog,
 		)),
 	}}, body.Messages...)
 	rep, raw, err := ai.Turn(hist)
@@ -147,10 +153,10 @@ func (s *Server) handleDeployAI(w http.ResponseWriter, r *http.Request) {
 	}
 	cmdLow := strings.ToLower(rep.Command)
 	installCmd := strings.Contains(cmdLow, "docker pull") || strings.Contains(cmdLow, "docker build") || strings.Contains(cmdLow, "git clone")
-	if installCmd {
+	if installCmd && strings.TrimSpace(rep.UpdateID) == "" {
 		rep.Start = false
 	}
-	if rep.Start && rep.QuotaGB <= 0 {
+	if rep.Start && rep.QuotaGB <= 0 && strings.TrimSpace(rep.UpdateID) == "" {
 		rep.Start = false
 		if len(rep.Ask) == 0 {
 			rep.Ask = []string{"How much disk should this project use?"}
@@ -177,6 +183,7 @@ func (s *Server) handleDeployAI(w http.ResponseWriter, r *http.Request) {
 		"choices":   rep.Choices,
 		"quota_gb":  rep.QuotaGB,
 		"image":     rep.Image,
+		"update_id": strings.TrimSpace(rep.UpdateID),
 		"start":     rep.Start,
 		"done":      rep.Done,
 		"type_only": rep.TypeOnly,
@@ -310,15 +317,39 @@ func (s *Server) handleTokensAI(w http.ResponseWriter, r *http.Request) {
 				out["token"] = tok
 				out["secret"] = plain
 				out["prompt"] = s.buildAPIPrompt(base, plain, tok.Mode)
+				out["api"] = s.buildAPISheet(base, plain, tok.Mode)
 				out["say"] = strings.TrimSpace(rep.Say)
 				if out["say"] == "" {
-					out["say"] = "Token created. Copy the secret or the AI prompt from the card — paste the prompt into any assistant so it can drive this API."
+					out["say"] = "Token created. Copy prompt for an AI operator. Copy API for curl and scripts."
 				}
 				out["done"] = true
 			}
 		}
 	}
 	writeJSON(w, 200, out)
+}
+
+func (s *Server) projectsCatalogNote() string {
+	list, err := s.Store.ListRooms()
+	if err != nil || len(list) == 0 {
+		return "Existing projects: none yet. Any start without update_id creates a new room."
+	}
+	var b strings.Builder
+	b.WriteString("Existing projects (copy id to update; GET /api/v1/projects returns the same fields):\n")
+	for _, rm := range list {
+		usage, _ := s.Rooms.UsageBytes(rm.ID)
+		projs, _ := s.Store.ListProjects(rm.ID)
+		if len(projs) == 0 {
+			fmt.Fprintf(&b, "- id=%s name=%q status=empty quota_bytes=%d usage_bytes=%d password_set=%v\n",
+				rm.ID, rm.Name, rm.QuotaBytes, usage, rm.PassPlain != "")
+			continue
+		}
+		for _, p := range projs {
+			fmt.Fprintf(&b, "- id=%s project_id=%s name=%q image=%s status=%s host_port=%d container_port=%d domain=%q quota_bytes=%d usage_bytes=%d container_id=%s\n",
+				rm.ID, p.ID, rm.Name, p.Image, p.Status, p.HostPort, p.ContainerPort, p.Domain, rm.QuotaBytes, usage, p.ContainerID)
+		}
+	}
+	return b.String()
 }
 
 func diskSystemNote(st map[string]any, extra string) string {

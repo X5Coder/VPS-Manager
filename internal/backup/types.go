@@ -16,7 +16,7 @@ const (
 	FormatMagic   = "VPS-MANAGE-BACKUP-v1"
 	IndexRepo     = "vps-manage-map"
 	SystemRepo    = "vps-manage-system"
-	ChunkSize     = 45 * 1024 * 1024
+	ChunkSize     = 90 * 1024 * 1024
 	MaxRepoBytes  = 900 * 1024 * 1024
 	IntervalHours = 24
 )

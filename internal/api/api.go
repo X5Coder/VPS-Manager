@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/x5coder/vps-rooms/internal/auth"
@@ -24,17 +26,24 @@ import (
 )
 
 type Server struct {
-	Cfg      config.Config
-	Store    *store.Store
-	Rooms    *rooms.Service
-	Projects *projects.Service
-	Docker   *dockerx.Client
-	Metrics  *metrics.Hub
-	Gate     *telegram.Gate
-	Notify   *telegram.Notifier
-	Proxy    *proxy.Manager
-	Backup   *backup.Service
-	Mux      *http.ServeMux
+	Cfg            config.Config
+	Store          *store.Store
+	Rooms          *rooms.Service
+	Projects       *projects.Service
+	Docker         *dockerx.Client
+	Metrics        *metrics.Hub
+	Gate           *telegram.Gate
+	Notify         *telegram.Notifier
+	Proxy          *proxy.Manager
+	Backup         *backup.Service
+	Mux            *http.ServeMux
+	jobsMu         sync.Mutex
+	jobs           map[string]string // projectID → deploy|build
+	liveMu         sync.Mutex
+	livePorts      []int
+	liveUsage      map[string]int64
+	liveStatus     map[string]string // projectID → running|stopped|...
+	liveRefreshing atomic.Bool
 }
 
 func New(cfg config.Config, st *store.Store, docker *dockerx.Client, hub *metrics.Hub) *Server {
@@ -58,6 +67,7 @@ func New(cfg config.Config, st *store.Store, docker *dockerx.Client, hub *metric
 	s.routes()
 	bs.StartScheduler()
 	_ = s.syncProxy()
+	s.startLiveCache()
 	return s
 }
 
@@ -638,17 +648,20 @@ func (s *Server) handleRooms(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		type roomOut struct {
-			ID         string `json:"id"`
-			Name       string `json:"name"`
-			Password   string `json:"password"`
-			QuotaBytes int64  `json:"quota_bytes"`
-			UsageBytes int64  `json:"usage_bytes"`
-			Projects   int    `json:"projects"`
-			HostPort   int    `json:"host_port"`
-			Image      string `json:"image"`
-			Status     string `json:"status"`
-			CreatedAt  string `json:"created_at"`
-			Locked     bool   `json:"locked"`
+			ID            string `json:"id"`
+			ProjectID     string `json:"project_id"`
+			Name          string `json:"name"`
+			Password      string `json:"password"`
+			QuotaBytes    int64  `json:"quota_bytes"`
+			UsageBytes    int64  `json:"usage_bytes"`
+			Projects      int    `json:"projects"`
+			HostPort      int    `json:"host_port"`
+			ContainerPort int    `json:"container_port"`
+			Image         string `json:"image"`
+			Domain        string `json:"domain"`
+			Status        string `json:"status"`
+			CreatedAt     string `json:"created_at"`
+			Locked        bool   `json:"locked"`
 		}
 		out := make([]roomOut, 0, len(list))
 		for _, rm := range list {
@@ -656,11 +669,17 @@ func (s *Server) handleRooms(w http.ResponseWriter, r *http.Request) {
 			projs, _ := s.Projects.List(rm.ID)
 			st := "empty"
 			hostPort := 0
+			cPort := 0
 			image := ""
+			projectID := ""
+			domain := ""
 			if len(projs) > 0 {
 				st = "stopped"
 				hostPort = projs[0].HostPort
+				cPort = projs[0].ContainerPort
 				image = projs[0].Image
+				projectID = projs[0].ID
+				domain = projs[0].Domain
 				for _, p := range projs {
 					if p.Status == "running" {
 						st = "running"
@@ -669,11 +688,12 @@ func (s *Server) handleRooms(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			out = append(out, roomOut{
-				ID: rm.ID, Name: rm.Name, Password: rm.PassPlain,
+				ID: rm.ID, ProjectID: projectID, Name: rm.Name, Password: rm.PassPlain,
 				QuotaBytes: rm.QuotaBytes,
-				UsageBytes: usage, Projects: len(projs), HostPort: hostPort, Image: image, Status: st,
+				UsageBytes: usage, Projects: len(projs), HostPort: hostPort, ContainerPort: cPort,
+				Image: image, Domain: domain, Status: st,
 				CreatedAt: rm.CreatedAt.UTC().Format(time.RFC3339),
-				Locked:    false, // admin vault shows all room passwords
+				Locked:    false,
 			})
 		}
 		writeJSON(w, 200, out)
@@ -782,6 +802,9 @@ func (s *Server) handleRoomByID(w http.ResponseWriter, r *http.Request) {
 			return
 		case "name":
 			s.handleRoomName(w, r, id)
+			return
+		case "update":
+			s.handleRoomUpdate(w, r, id)
 			return
 		case "pause":
 			if r.Method != http.MethodPost {
@@ -1002,10 +1025,6 @@ func (s *Server) handleUploadDeploy(w http.ResponseWriter, r *http.Request, room
 }
 
 func (s *Server) handleProjectByID(w http.ResponseWriter, r *http.Request) {
-	sess := s.requireRoom(w, r)
-	if sess == nil {
-		return
-	}
 	path := strings.TrimPrefix(r.URL.Path, "/api/projects/")
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) == 0 || parts[0] == "" {
@@ -1014,8 +1033,11 @@ func (s *Server) handleProjectByID(w http.ResponseWriter, r *http.Request) {
 	}
 	id := parts[0]
 	p, err := s.Projects.Get(id)
-	if err != nil || p == nil || p.RoomID != sess.RoomID {
+	if err != nil || p == nil {
 		writeErr(w, 404, "المشروع غير موجود")
+		return
+	}
+	if _, room := s.canControlRoom(w, r, p.RoomID); room == nil {
 		return
 	}
 	if len(parts) == 1 {
@@ -1131,6 +1153,25 @@ func (s *Server) handleProjectByID(w http.ResponseWriter, r *http.Request) {
 		}
 		p.ExternalURL = strings.TrimSpace(body.URL)
 		writeJSON(w, 200, map[string]any{"ok": "1", "links": s.projectLinks(r, p)})
+	case "image":
+		if r.Method != http.MethodPost {
+			writeErr(w, 405, "method")
+			return
+		}
+		var body struct {
+			Image string `json:"image"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Image) == "" {
+			writeErr(w, 400, "image required")
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		flusher, _ := w.(http.Flusher)
+		logw := &flushWriter{w: w, f: flusher}
+		if err := s.Projects.UpdateImage(id, strings.TrimSpace(body.Image), logw); err != nil {
+			fmt.Fprintf(logw, "error: %v\n", err)
+		}
+		return
 	case "env":
 		if r.Method == http.MethodGet {
 			text, err := s.Projects.ReadEnv(id)

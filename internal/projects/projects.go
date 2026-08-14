@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/x5coder/vps-rooms/internal/diskcap"
 	"github.com/x5coder/vps-rooms/internal/dockerx"
 	"github.com/x5coder/vps-rooms/internal/rooms"
 	"github.com/x5coder/vps-rooms/internal/store"
@@ -162,6 +163,7 @@ func (s *Service) DeployImage(in DeployImageInput) (*store.Project, error) {
 		ContainerPort: cPort,
 		Env:           envPairs,
 		Binds:         binds,
+		StorageBytes:  room.QuotaBytes,
 		Labels: map[string]string{
 			"vps-rooms.room":    in.RoomID,
 			"vps-rooms.project": id,
@@ -254,6 +256,7 @@ func (s *Service) DeployBuild(in DeployBuildInput) (*store.Project, error) {
 		ContainerPort: cPort,
 		Env:           envPairs,
 		Binds:         []string{pdir + ":/data"},
+		StorageBytes:  room.QuotaBytes,
 		Labels: map[string]string{
 			"vps-rooms.room":    in.RoomID,
 			"vps-rooms.project": id,
@@ -362,6 +365,7 @@ func (s *Service) SetPort(id string, hostPort int) error {
 		ContainerPort: p.ContainerPort,
 		Env:           envPairs,
 		Binds:         binds,
+		StorageBytes:  room.QuotaBytes,
 		Labels: map[string]string{
 			"vps-rooms.room":    p.RoomID,
 			"vps-rooms.project": p.ID,
@@ -428,6 +432,7 @@ func (s *Service) ClearPort(id string) error {
 		ContainerPort: p.ContainerPort,
 		Env:           envPairs,
 		Binds:         binds,
+		StorageBytes:  room.QuotaBytes,
 		Labels: map[string]string{
 			"vps-rooms.room":    p.RoomID,
 			"vps-rooms.project": p.ID,
@@ -453,6 +458,208 @@ func (s *Service) SetExternalURL(id, url string) error {
 	}
 	p.ExternalURL = strings.TrimSpace(url)
 	return s.Store.UpdateProject(*p)
+}
+
+type RedeployInput struct {
+	ID       string
+	Image    string
+	Pull     bool
+	Recreate bool
+	Log      io.Writer
+}
+
+// UpdateImage replaces the running container with a new image, keeping the same
+// project id, ports, env, binds, and room.
+func (s *Service) UpdateImage(id, image string, log io.Writer) error {
+	return s.RedeployImage(RedeployInput{ID: id, Image: image, Pull: true, Recreate: true, Log: log})
+}
+
+func (s *Service) RedeployImage(in RedeployInput) error {
+	if log := in.Log; log == nil {
+		in.Log = io.Discard
+	}
+	log := in.Log
+	image := strings.TrimSpace(in.Image)
+	p, err := s.Store.GetProject(in.ID)
+	if err != nil || p == nil {
+		return fmt.Errorf("project not found")
+	}
+	if image == "" {
+		image = strings.TrimSpace(p.Image)
+	}
+	if image == "" {
+		return fmt.Errorf("image required")
+	}
+	room, err := s.Store.GetRoom(p.RoomID)
+	if err != nil || room == nil {
+		return fmt.Errorf("room not found")
+	}
+	if err := s.prepareRoom(p.RoomID); err != nil {
+		return err
+	}
+	if err := s.Docker.EnsureNetwork(room.NetworkName); err != nil {
+		return err
+	}
+	s.markDeploying(p.RoomID, p.ID, image, "deploy")
+	fmt.Fprintf(log, "Redeploy project %s (%s) → %s\n", p.Name, p.ID, image)
+	if in.Pull {
+		fmt.Fprintf(log, "Pulling %s...\n", image)
+		if err := s.Docker.PullImage(image, log); err != nil {
+			if !s.Docker.ImageExists(image) {
+				s.markDeployResult(p.RoomID, p.ID, p.Image, "", false, err.Error())
+				return err
+			}
+			fmt.Fprintf(log, "pull skipped — using local image %s\n", image)
+		}
+	} else if !s.Docker.ImageExists(image) {
+		err := fmt.Errorf("image %s not found locally (pull=false)", image)
+		s.markDeployResult(p.RoomID, p.ID, p.Image, "", false, err.Error())
+		return err
+	}
+	if !in.Recreate {
+		p.Image = image
+		p.Status = "running"
+		_ = s.Store.UpdateProject(*p)
+		digest := s.Docker.RepoDigest(image)
+		if digest == "" {
+			digest = s.Docker.ImageID(image)
+		}
+		s.markDeployResult(p.RoomID, p.ID, image, digest, true, "")
+		fmt.Fprintf(log, "OK project=%s image=%s (not recreated)\n", p.ID, image)
+		return nil
+	}
+	if err := s.recreateKeep(p, room, image, room.QuotaBytes, log); err != nil {
+		s.markDeployResult(p.RoomID, p.ID, p.Image, "", false, err.Error())
+		return err
+	}
+	digest := s.Docker.RepoDigest(image)
+	if digest == "" {
+		digest = s.Docker.ImageID(image)
+	}
+	s.markDeployResult(p.RoomID, p.ID, image, digest, true, "")
+	fmt.Fprintf(log, "OK project=%s image=%s status=running\n", p.ID, image)
+	return nil
+}
+
+// ApplyQuota stores the room quota and recreates containers so the size cap is live.
+func (s *Service) ApplyQuota(roomID string, quotaBytes int64) error {
+	if quotaBytes <= 0 {
+		return fmt.Errorf("quota_gb is required and must be > 0")
+	}
+	if err := s.Rooms.SetQuota(roomID, quotaBytes); err != nil {
+		return err
+	}
+	room, err := s.Store.GetRoom(roomID)
+	if err != nil || room == nil {
+		return fmt.Errorf("room not found")
+	}
+	_ = s.prepareRoom(roomID)
+	list, _ := s.Store.ListProjects(roomID)
+	volRoot := s.volumesDir()
+	for i := range list {
+		p := list[i]
+		vol := filepath.Join(volRoot, p.ID)
+		if st, err := os.Stat(vol); err == nil && st.IsDir() {
+			_ = s.Docker.Stop(p.ContainerID)
+			_ = diskcap.Ensure(vol, quotaBytes)
+		}
+		if err := s.recreate(&p, room, p.Image, quotaBytes, io.Discard); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) recreate(p *store.Project, room *store.Room, image string, storageBytes int64, log io.Writer) error {
+	return s.recreateKeep(p, room, image, storageBytes, log)
+}
+
+func (s *Service) projectBinds(p *store.Project, pdir, envPath string) []string {
+	meta := readMountsMeta(pdir)
+	if len(meta.Binds) > 0 {
+		return append([]string{}, meta.Binds...)
+	}
+	if _, err := os.Stat(envPath); err == nil {
+		return []string{envPath + ":/app/.env:ro"}
+	}
+	return nil
+}
+
+func (s *Service) recreateKeep(p *store.Project, room *store.Room, image string, storageBytes int64, log io.Writer) error {
+	if s.Docker == nil || !s.Docker.Available() {
+		return fmt.Errorf("Docker unavailable")
+	}
+	if log == nil {
+		log = io.Discard
+	}
+	if image == "" {
+		image = p.Image
+	}
+	pdir := s.Rooms.ProjectDir(p.RoomID, p.ID)
+	envPath := filepath.Join(pdir, ".env")
+	envPairs, _ := readEnvPairs(envPath)
+	meta := readMountsMeta(pdir)
+	binds := s.projectBinds(p, pdir, envPath)
+	cname := containerName(p.RoomID, p.ID)
+	prevName := cname + "-prev"
+	oldID := p.ContainerID
+	rolled := false
+	if oldID != "" {
+		_ = s.Docker.Stop(oldID)
+		_ = s.Docker.RemoveByName(prevName)
+		if err := s.Docker.Rename(oldID, prevName); err != nil {
+			_ = s.Docker.Remove(oldID, true)
+			oldID = ""
+		} else {
+			rolled = true
+			oldID = prevName
+		}
+	}
+	_ = s.Docker.RemoveByName(cname)
+	fmt.Fprintf(log, "Starting container with image %s...\n", image)
+	cid, err := s.Docker.Run(dockerx.RunOpts{
+		Name:          cname,
+		Image:         image,
+		Network:       room.NetworkName,
+		HostIP:        meta.HostIP,
+		HostPort:      p.HostPort,
+		ContainerPort: p.ContainerPort,
+		Env:           envPairs,
+		Binds:         binds,
+		StorageBytes:  storageBytes,
+		Labels: map[string]string{
+			"vps-rooms.room":    p.RoomID,
+			"vps-rooms.project": p.ID,
+		},
+	})
+	if err != nil {
+		if rolled {
+			_ = s.Docker.RemoveByName(cname)
+			_ = s.Docker.Rename(oldID, cname)
+			_ = s.Docker.Start(cname)
+			if restored, e := s.Store.GetProject(p.ID); e == nil && restored != nil {
+				restored.ContainerID = cname
+				restored.Status = "running"
+				_ = s.Store.UpdateProject(*restored)
+				p.ContainerID = restored.ContainerID
+				p.Status = restored.Status
+			}
+			fmt.Fprintf(log, "rollback: restored previous container\n")
+		}
+		return err
+	}
+	if rolled {
+		_ = s.Docker.Remove(oldID, true)
+	}
+	p.ContainerID = cid
+	p.Image = image
+	p.Status = "running"
+	if err := s.Store.UpdateProject(*p); err != nil {
+		return err
+	}
+	s.SyncRoomFilesVisibility(p.RoomID)
+	s.persistRoom(p.RoomID)
+	return nil
 }
 
 func (s *Service) ReadEnv(id string) (string, error) {
@@ -792,14 +999,7 @@ func DetectDeployKind(p store.Project, pdir string) string {
 }
 
 func pullableImage(image string) bool {
-	image = strings.TrimSpace(image)
-	if image == "" {
-		return false
-	}
-	if strings.HasPrefix(image, "vpsrooms-bak/") || strings.HasPrefix(image, "vpsrooms-restore/") {
-		return false
-	}
-	return true
+	return dockerx.RegistryPullable(image)
 }
 
 // Redeploy recreates the container from restored files (full backup restore).
@@ -851,38 +1051,47 @@ func (s *Service) Redeploy(id string) error {
 	meta := readMountsMeta(pdir)
 	var binds []string
 	hostIP := meta.HostIP
-	if kind == "build" {
-		tag := image
-		if !strings.HasPrefix(tag, "vpsrooms/") {
-			tag = fmt.Sprintf("vpsrooms/%s:latest", p.ID[:8])
+
+	imgTar := filepath.Join(pdir, "__container_image.tar.gz")
+	if st, err := os.Stat(imgTar); err != nil || st.Size() == 0 {
+		imgTar = filepath.Join(pdir, "__container_image.tar")
+	}
+	exportTar := filepath.Join(pdir, "__container_export.tar")
+	loaded := false
+	if st, err := os.Stat(imgTar); err == nil && st.Size() > 0 {
+		tag, err := s.Docker.LoadImageTag(imgTar)
+		if err != nil {
+			return fmt.Errorf("load saved image: %w", err)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-		defer cancel()
-		if _, err := os.Stat(filepath.Join(pdir, "Dockerfile")); err == nil {
-			if err := s.Docker.BuildImage(ctx, pdir, tag, io.Discard); err != nil {
-				return fmt.Errorf("rebuild on this VPS: %w", err)
-			}
-		} else if pullableImage(image) {
-			if err := s.Docker.PullImage(image, io.Discard); err != nil {
-				return fmt.Errorf("pull %s on this VPS: %w", image, err)
-			}
-			tag = image
+		if tag != "" {
+			image = tag
 		}
-		image = tag
-		binds = []string{pdir + ":/data"}
-	} else {
-		imgTar := filepath.Join(pdir, "__container_image.tar")
-		exportTar := filepath.Join(pdir, "__container_export.tar")
-		bakTag := fmt.Sprintf("vpsrooms-bak/%s:latest", p.ID[:8])
-		if st, err := os.Stat(imgTar); err == nil && st.Size() > 0 {
-			if err := s.Docker.LoadImage(imgTar); err != nil {
-				return err
+		loaded = true
+	} else if st, err := os.Stat(exportTar); err == nil && st.Size() > 0 {
+		image = fmt.Sprintf("vpsrooms-restore/%s:latest", p.ID[:8])
+		if err := s.Docker.ImportFilesystem(exportTar, image); err != nil {
+			return err
+		}
+		loaded = true
+	}
+
+	if !loaded {
+		if kind == "build" {
+			tag := image
+			if !strings.HasPrefix(tag, "vpsrooms/") {
+				tag = fmt.Sprintf("vpsrooms/%s:latest", p.ID[:8])
 			}
-			image = bakTag
-		} else if st, err := os.Stat(exportTar); err == nil && st.Size() > 0 {
-			image = fmt.Sprintf("vpsrooms-restore/%s:latest", p.ID[:8])
-			if err := s.Docker.ImportFilesystem(exportTar, image); err != nil {
-				return err
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+			defer cancel()
+			if _, err := os.Stat(filepath.Join(pdir, "Dockerfile")); err == nil {
+				if err := s.Docker.BuildImage(ctx, pdir, tag, io.Discard); err != nil {
+					return fmt.Errorf("rebuild on this VPS: %w", err)
+				}
+				image = tag
+			} else if pullableImage(image) {
+				if err := s.Docker.PullImage(image, io.Discard); err != nil {
+					return fmt.Errorf("pull %s on this VPS: %w", image, err)
+				}
 			}
 		} else {
 			if !pullableImage(image) {
@@ -905,11 +1114,14 @@ func (s *Service) Redeploy(id string) error {
 				}
 			}
 		}
-		if len(meta.Binds) > 0 {
-			binds = append([]string{}, meta.Binds...)
-		} else if _, err := os.Stat(envPath); err == nil {
-			binds = []string{envPath + ":/app/.env:ro"}
-		}
+	}
+
+	if len(meta.Binds) > 0 {
+		binds = append([]string{}, meta.Binds...)
+	} else if kind == "build" {
+		binds = []string{pdir + ":/data"}
+	} else if _, err := os.Stat(envPath); err == nil {
+		binds = []string{envPath + ":/app/.env:ro"}
 	}
 	if image == "" {
 		return fmt.Errorf("no image to redeploy")
@@ -923,6 +1135,7 @@ func (s *Service) Redeploy(id string) error {
 		ContainerPort: p.ContainerPort,
 		Env:           envPairs,
 		Binds:         binds,
+		StorageBytes:  room.QuotaBytes,
 		Labels: map[string]string{
 			"vps-rooms.room":    p.RoomID,
 			"vps-rooms.project": p.ID,

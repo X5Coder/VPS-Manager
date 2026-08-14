@@ -171,9 +171,9 @@ func (s *Service) Status() map[string]any {
 			"owner password",
 			"room vaults + runtime files + project data (.env, sqlite, dumps)",
 			"Postgres dumps (Supabase auth/db + any Postgres in a project)",
-			"object storage files (bind-mounted data, not model caches)",
-			"docker named volumes (not image tars)",
-			"image names so a new VPS can docker pull/build",
+			"object storage files and model caches",
+			"docker named volumes",
+			"docker images for local vpsrooms/* (gzipped tars); public images pulled on restore",
 			"proxy Caddyfile",
 			"panel logs",
 		},
@@ -473,8 +473,10 @@ func (s *Service) executeBackup(label, description string, scheduled bool) (*Sna
 		_ = s.Rooms.EnsureUnlocked(room.ID)
 		if projs, err := s.Store.ListProjects(room.ID); err == nil {
 			for _, p := range projs {
-				s.report(-1, "Capturing %s (files, database, storage)", p.Name)
-				s.captureProjectData(room.ID, p)
+				s.report(-1, "Capturing %s (image, files, database, storage)", p.Name)
+				if err := s.captureProjectData(room.ID, p); err != nil {
+					return nil, fmt.Errorf("room %s capture: %w", room.Name, err)
+				}
 			}
 		}
 		pm, err := s.backupRoom(gh, work, room)
@@ -488,6 +490,12 @@ func (s *Service) executeBackup(label, description string, scheduled bool) (*Sna
 		cp.Projects = append(cp.Projects, *pm)
 		s.saveCheckpoint(cp)
 		s.report(base+span/max(len(roomsList), 1), "Uploaded room %s", room.Name)
+	}
+
+	s.report(90, "Checking backup is complete")
+	if err := s.validateBackupComplete(manifest, roomsList); err != nil {
+		_ = s.Store.SetMeta("backup_last_error", err.Error())
+		return nil, fmt.Errorf("backup incomplete: %w", err)
 	}
 
 	s.report(92, "Writing backup map")
@@ -1110,12 +1118,13 @@ func (s *Service) executeRestore(token, snapshotID string) error {
 		s.saveCheckpoint(cp)
 	}
 
-	// Recreate everything on this VPS: pull/build images here (not stored on GitHub).
+	// Recreate everything from restored files + saved Docker images.
 	if s.Projects != nil {
-		s.report(88, "Recreating projects on this VPS (pull/build images, then start)")
+		s.report(88, "Starting restored projects from saved images")
 		all, _ := s.Store.ListAllProjects()
 		for _, p := range all {
 			pdir := s.Rooms.ProjectDir(p.RoomID, p.ID)
+			s.loadSavedDockerImages(pdir)
 			_, composeDir, composeProject, _ := projects.ProjectLayout(pdir)
 			if composeDir == "" {
 				if dockerx.ComposeFile(pdir) != "" {
@@ -1123,7 +1132,7 @@ func (s *Service) executeRestore(token, snapshotID string) error {
 				}
 			}
 			if composeDir != "" {
-				s.report(-1, "Compose %s: pulling images on this VPS then starting", p.Name)
+				s.report(-1, "Compose %s: docker pull (same public tags) then start", p.Name)
 				if err := s.Docker.ComposePullUp(composeDir, composeProject, nil); err != nil {
 					s.report(-1, "compose %s: %v", p.Name, err)
 				} else {
@@ -1132,11 +1141,11 @@ func (s *Service) executeRestore(token, snapshotID string) error {
 				s.waitAndRestorePostgres(p, composeProject)
 				continue
 			}
-			s.report(-1, "Starting %s — image/models download on this VPS", p.Name)
+			s.report(-1, "Starting %s from backup image", p.Name)
 			if err := s.Projects.Redeploy(p.ID); err != nil {
 				s.report(-1, "redeploy %s: %v", p.Name, err)
 			} else {
-				s.report(-1, "Running %s (caches like models fill in after start)", p.Name)
+				s.report(-1, "Running %s", p.Name)
 			}
 		}
 	}
@@ -1370,21 +1379,15 @@ func skipBackupRel(rel string) bool {
 	for _, p := range parts {
 		switch p {
 		case ".git", "lost+found", "pg_wal", "pg_stat_tmp",
-			"node_modules", "__pycache__", ".cache", ".npm",
-			"venv", ".venv", "site-packages", "dist", "build",
-			"huggingface", ".huggingface", "transformers", "torch",
-			"optimization_guide_model_store", "component_crx_cache",
+			"__pycache__", "huggingface", ".huggingface",
+			"component_crx_cache",
 			"wasmttsengine", "ondeviceheadsuggestmodel", "safe browsing",
 			"gpucache", "shadercache", "code cache", "blob_storage",
-			"service worker", "cache":
+			"service worker":
 			return true
 		}
 	}
-	base := parts[len(parts)-1]
-	if strings.HasPrefix(base, "__container_image") || strings.HasPrefix(base, "__container_export") {
-		return true
-	}
-	if strings.Contains(n, "/volumes/db/data") || strings.HasPrefix(n, "volumes/db/data") {
+	if strings.Contains(n, "huggingface") || strings.Contains(n, "/volumes/db/data") || strings.HasPrefix(n, "volumes/db/data") {
 		return true
 	}
 	return false
@@ -1396,43 +1399,40 @@ func skipBackupFile(rel string, size int64) bool {
 	if i := strings.LastIndex(n, "/"); i >= 0 {
 		base = n[i+1:]
 	}
-	if strings.HasPrefix(base, "__container_image") || strings.HasPrefix(base, "__container_export") {
-		return true
-	}
-	switch {
-	case strings.HasSuffix(base, ".safetensors"), strings.HasSuffix(base, ".tflite"),
-		strings.HasSuffix(base, ".onnx"), strings.HasSuffix(base, ".gguf"),
-		strings.HasSuffix(base, ".ggml"), strings.HasSuffix(base, ".ckpt"),
-		strings.HasSuffix(base, ".pt"), strings.HasSuffix(base, ".pth"),
-		strings.HasSuffix(base, ".h5"), strings.HasSuffix(base, ".ot"),
-		strings.HasSuffix(base, ".msgpack"):
-		return true
-	}
-	if strings.Contains(base, "model.safetensors") || strings.Contains(base, "pytorch_model") {
-		return true
-	}
 	if strings.HasSuffix(base, ".log") && size >= 2*1024*1024 {
-		return true
-	}
-	if isRestoreableDump(n) {
-		return false
-	}
-	if strings.HasSuffix(base, ".sqlite") || strings.HasSuffix(base, ".sqlite3") ||
-		strings.HasSuffix(base, ".db") || strings.HasSuffix(base, ".env") {
-		return false
-	}
-	// Models and image tars belong on the VPS (pull/download on restore), not GitHub.
-	if size >= 32*1024*1024 {
 		return true
 	}
 	return false
 }
 
-func isRestoreableDump(n string) bool {
-	if strings.Contains(n, "/__dumps/") {
-		return true
+func (s *Service) loadSavedDockerImages(pdir string) {
+	if s.Docker == nil || !s.Docker.Available() || pdir == "" {
+		return
 	}
-	return strings.HasSuffix(n, ".sql") || strings.HasSuffix(n, ".sql.gz") || strings.HasSuffix(n, ".dump")
+	var tars []string
+	for _, name := range []string{"__container_image.tar.gz", "__container_image.tar"} {
+		img := filepath.Join(pdir, name)
+		if st, err := os.Stat(img); err == nil && st.Size() > 32 {
+			tars = append(tars, img)
+			break
+		}
+	}
+	dir := filepath.Join(pdir, "__compose_images")
+	if entries, err := os.ReadDir(dir); err == nil {
+		for _, e := range entries {
+			n := strings.ToLower(e.Name())
+			if e.IsDir() || !(strings.HasSuffix(n, ".tar") || strings.HasSuffix(n, ".tar.gz") || strings.HasSuffix(n, ".tgz")) {
+				continue
+			}
+			tars = append(tars, filepath.Join(dir, e.Name()))
+		}
+	}
+	for _, tar := range tars {
+		s.report(-1, "Loading Docker image %s", filepath.Base(tar))
+		if err := s.Docker.LoadImage(tar); err != nil {
+			s.report(-1, "docker load %s: %v", filepath.Base(tar), err)
+		}
+	}
 }
 
 // walkFollowSymlinks walks root and follows directory symlinks (needed for
