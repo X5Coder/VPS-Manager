@@ -270,9 +270,9 @@ func (s *Server) handleTokensAI(w http.ResponseWriter, r *http.Request) {
 		n, strings.Join(names, "; "), base,
 	)
 	if n == 0 {
-		note += " User has ZERO tokens — creating the first one is the first step. Both read and write modes are allowed."
+		note += " User has ZERO tokens — first step is create one."
 	}
-	note += " Token modes: read, write, or both (creates two tokens). Let the user pick; they may select more than one."
+	note += " Modes for ONE token: read (GET only), write (GET+mutate), both (that same token can read and write). Never create two tokens for both. Do not repeat questions. Name questions have empty choices."
 	hist := append([]ai.Message{{Role: "system-note", Text: note}}, body.Messages...)
 	rep, raw, err := ai.TurnWith(ai.TokenPrompt, hist)
 	if err != nil {
@@ -281,12 +281,9 @@ func (s *Server) handleTokensAI(w http.ResponseWriter, r *http.Request) {
 	}
 	rep.Command = ""
 	rep.Start = false
-	// Always offer both modes when asking for permission style.
-	askJoined := strings.ToLower(strings.Join(rep.Ask, " ") + " " + rep.Say)
-	if len(rep.Ask) > 0 && len(rep.Choices) == 0 &&
-		(strings.Contains(askJoined, "read") || strings.Contains(askJoined, "write") ||
-			strings.Contains(askJoined, "both") || strings.Contains(askJoined, "قراء") || strings.Contains(askJoined, "كتاب")) {
-		rep.Choices = []string{"read", "write", "both"}
+	askJoined := strings.ToLower(strings.Join(rep.Ask, " "))
+	if looksLikeNameAsk(askJoined) && onlyModeChoices(rep.Choices) {
+		rep.Choices = nil
 	}
 	out := map[string]any{
 		"say":          rep.Say,
@@ -306,42 +303,14 @@ func (s *Server) handleTokensAI(w http.ResponseWriter, r *http.Request) {
 		if name == "" {
 			name = "API token"
 		}
-		modes := []string{rep.TokenMode}
-		if rep.TokenMode == "both" {
-			modes = []string{"read", "write"}
-		}
-		type created struct {
-			Token  any    `json:"token"`
-			Secret string `json:"secret"`
-			Mode   string `json:"mode"`
-		}
-		var made []created
-		var firstTok any
-		var firstSecret string
-		okAll := true
-		for _, mode := range modes {
-			tokName := name
-			if len(modes) > 1 {
-				tokName = name + " (" + mode + ")"
-			}
-			tok, plain, err := s.Store.CreateAPIToken(tokName, mode)
-			if err != nil {
-				out["say"] = strings.TrimSpace(rep.Say + " Could not create the token: " + err.Error())
-				okAll = false
-				break
-			}
-			made = append(made, created{Token: tok, Secret: plain, Mode: mode})
-			if firstTok == nil {
-				firstTok = tok
-				firstSecret = plain
-			}
-		}
-		if okAll && len(made) > 0 {
+		tok, plain, err := s.Store.CreateAPIToken(name, rep.TokenMode)
+		if err != nil {
+			out["say"] = strings.TrimSpace(rep.Say + " Could not create the token: " + err.Error())
+		} else {
 			out["create_token"] = true
-			out["token"] = firstTok
-			out["secret"] = firstSecret
-			out["tokens"] = made
-			out["prompt"] = s.buildAPIPrompt(base, firstSecret, modes[0])
+			out["token"] = tok
+			out["secret"] = plain
+			out["prompt"] = s.buildAPIPrompt(base, plain, tok.Mode)
 			out["say"] = strings.TrimSpace(rep.Say)
 			if out["say"] == "" {
 				out["say"] = "Token created. Copy it from the card above — it stays saved here."
@@ -565,6 +534,25 @@ func (s *Server) usageSnapshot() string {
 		float64(usedSum)/(1024*1024*1024), gb(m.DiskUsed), gb(m.DiskTotal))
 	b.WriteString("CPU is 1s sampled then smoothed — jumps are usually normal. Judge safe / watch / danger.")
 	return b.String()
+}
+
+func looksLikeNameAsk(ask string) bool {
+	a := strings.ToLower(ask)
+	return strings.Contains(a, "name") || strings.Contains(a, "اسم") || strings.Contains(a, "سمي")
+}
+
+func onlyModeChoices(choices []string) bool {
+	if len(choices) == 0 {
+		return false
+	}
+	ok := map[string]bool{"read": true, "write": true, "both": true, "قراءة": true, "كتابة": true}
+	for _, c := range choices {
+		k := strings.ToLower(strings.TrimSpace(c))
+		if !ok[k] {
+			return false
+		}
+	}
+	return true
 }
 
 func slugTag(name string) string {

@@ -1,7 +1,9 @@
 # Install VPS Manager
 
 **Repository:** [https://github.com/X5Coder/VPS-Manager](https://github.com/X5Coder/VPS-Manager)  
-**Developer:** X5Coder
+**Developer:** X5Coder  
+**Docs:** [README.md](../README.md) — full product documentation.  
+**License:** MIT with attribution — see [LICENSE](../LICENSE).
 
 ## Supported
 

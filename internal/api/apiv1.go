@@ -171,10 +171,10 @@ func (s *Server) handleAPITokenByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) buildAPIPrompt(base, secret, mode string) string {
-	return fmt.Sprintf(`You are controlling VPS MANAGE via its HTTP API.
+	return fmt.Sprintf(`You are controlling VPS Manager via its HTTP API.
 Base URL: %s
 Auth header: Authorization: Bearer %s
-Permission mode: %s (delete project/room is NEVER allowed)
+Permission mode: %s — read = GET only; write = GET + create/update/exec; both = read and write on this one token. Delete is NEVER allowed.
 
 Important: each room = one project. Use room id as the project id in most calls.
 
@@ -227,7 +227,7 @@ func (s *Server) requireAPIToken(w http.ResponseWriter, r *http.Request, writeNe
 		writeErr(w, 401, "invalid api token")
 		return nil
 	}
-	if writeNeeded && tok.Mode != "write" {
+	if writeNeeded && !store.TokenCanWrite(tok.Mode) {
 		writeErr(w, 403, "token is read-only")
 		return nil
 	}

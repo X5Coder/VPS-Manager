@@ -182,7 +182,7 @@
   }
 
   const AGENT_HELLO = "Hello — write me a command and I’ll run it in the terminal.";
-  const TOKEN_HELLO = "Hello — I can create an API token (read, write, or both) or explain how to use one.";
+  const TOKEN_HELLO = "Hello — I can create an API token with read, write, or both on the same key.";
   const ROOM_HELLO = "Hello — I’m inside this project. Ask me to inspect or edit files, run commands, analyze this room’s usage, change disk, or pause/resume. I won’t delete the project.";
   const LOGS_HELLO = "Hello — I analyze panel logs. Ask me to analyze, then pick which log.";
   const USAGE_HELLO = "Hello — I analyze this server’s live usage: CPU, RAM, disk, load, room names, and each room’s disk vs the host total.";
@@ -291,10 +291,7 @@
         <div class="ai-qcard-label">Question</div>
         <div class="ai-qcard-q">${esc(q)}</div>
         ${chips ? `<div class="ai-choices" dir="auto">${chips}</div>` : `<p class="ai-qcard-hint">Type your answer below</p>`}
-        <p class="ai-qcard-hint">${chips ? "Select one or more, then continue." : ""}</p>
-        <div class="ai-qcard-actions">
-          <button type="button" class="btn primary sm" data-ai-choose-go ${picked.size ? "" : "disabled"}>Continue</button>
-        </div>
+        ${chips ? `<div class="ai-qcard-actions"><button type="button" class="btn primary sm" data-ai-choose-go ${picked.size ? "" : "disabled"}>Continue</button></div>` : ""}
       </div>`);
     } else if (!pack.busy && pack.pendingChoices && pack.pendingChoices.length) {
       const picked = new Set(pack.pendingPicked || []);
@@ -1038,17 +1035,23 @@
             }
           }
           if (cmd) pack.awaitFile = "";
-          const msgs = collectBotMessages(res);
+          const msgs = collectBotMessages(res).filter((m) => {
+            if (!ask.length) return true;
+            const q = ask[0].toLowerCase();
+            const t = String(m || "").toLowerCase();
+            if (!t || t === q) return false;
+            const n = Math.min(22, q.length, t.length);
+            return n < 12 || !(t.includes(q.slice(0, n)) || q.includes(t.slice(0, n)));
+          });
           if (msgs.length || say) await pushBot(pack, msgs.length ? msgs.join("\n\n") : say, aiLog);
           else await releaseTyping(pack, aiLog);
           if (ask.length) {
             const q = ask[0];
-            const inSay = msgs.join("\n").toLowerCase().includes(q.slice(0, Math.min(18, q.length)).toLowerCase());
-            if (!inSay) await pushBot(pack, q, aiLog);
-            if (!choices.length && /read|write|both|قراء|كتاب/i.test(q + " " + say)) {
-              choices = ["read", "write", "both"];
+            const nameQ = /name|اسم|سمي|سمّ/i.test(q);
+            if (nameQ && choices.length && choices.every((c) => /^(read|write|both)$/i.test(c))) {
+              choices = [];
             }
-            if (!choices.length && logMode) {
+            if (!choices.length && logMode && !nameQ) {
               choices = ["Panel", "API", "Deploy", "Host events"];
             }
             pack.pendingAsk = [q];
@@ -3040,7 +3043,7 @@ docker save -o myapp.tar myapp:latest`;
       <div class="tok-card-top">
         <div>
           <strong>${esc(t.name)}</strong>
-          <span class="badge ${t.mode === "write" ? "ok" : "stop"}">${esc(t.mode)}</span>
+          <span class="badge ${t.mode === "read" ? "stop" : "ok"}">${esc(t.mode)}</span>
         </div>
         <div class="row-actions">
           <button class="btn sm action" data-copy-btn="${esc(copyVal)}" ${copyVal ? "" : "disabled"}>Copy</button>
@@ -3126,8 +3129,8 @@ docker save -o myapp.tar myapp:latest`;
     document.querySelector("#tok-new")?.addEventListener("click", () => {
       if (agent.pack.busy) return;
       const text = agent.pack.rtl
-        ? "اعمل توكن جديد. اسألني read ولا write ولا both، وبعدين الاسم."
-        : "Create a new API token. Ask me read, write, or both, then a name.";
+        ? "اعمل توكن جديد. اسألني مرة واحدة عن الصلاحية (read أو write أو both في نفس التوكن) وبعدين الاسم."
+        : "Create a new API token. Ask once for mode (read, write, or both on the same token), then the name.";
       agent.pack.pendingAsk = null;
       agent.pack.bubbles.push({ role: "user", text, enter: true });
       agent.pack.messages.push({ role: "user", text });
@@ -3137,7 +3140,7 @@ docker save -o myapp.tar myapp:latest`;
     if (!list.length && agent.pack.messages.length === 0) {
       agent.pack.messages.push({
         role: "user",
-        text: "I opened Tokens. I have none yet. Start first-token setup: ask read, write, or both, then a name, then create it.",
+        text: "I opened Tokens. I have none yet. Help me create the first token. One question at a time, in your own words. both = one token that can read and write.",
       });
       agent.run();
     }

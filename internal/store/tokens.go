@@ -17,9 +17,27 @@ type APIToken struct {
 	TokenHash   string `json:"-"`
 	TokenPlain  string `json:"secret,omitempty"`
 	TokenPrefix string `json:"token_prefix"`
-	Mode        string `json:"mode"` // read | write
+	Mode        string `json:"mode"` // read | write | both
 	CreatedAt   string `json:"created_at"`
 	LastUsedAt  string `json:"last_used_at,omitempty"`
+}
+
+func NormalizeTokenMode(mode string) string {
+	m := strings.ToLower(strings.TrimSpace(mode))
+	m = strings.ReplaceAll(m, " ", "")
+	switch {
+	case m == "both" || (strings.Contains(m, "read") && strings.Contains(m, "write")):
+		return "both"
+	case m == "write":
+		return "write"
+	default:
+		return "read"
+	}
+}
+
+func TokenCanWrite(mode string) bool {
+	m := NormalizeTokenMode(mode)
+	return m == "write" || m == "both"
 }
 
 func HashAPIToken(plain string) string {
@@ -40,9 +58,7 @@ func (s *Store) CreateAPIToken(name, mode string) (*APIToken, string, error) {
 	if name == "" {
 		name = "API token"
 	}
-	if mode != "write" {
-		mode = "read"
-	}
+	mode = NormalizeTokenMode(mode)
 	plain, err := NewAPITokenPlain()
 	if err != nil {
 		return nil, "", err
@@ -107,9 +123,7 @@ func (s *Store) UpsertAPIToken(t APIToken) error {
 	if t.TokenPrefix == "" && len(t.TokenPlain) >= 10 {
 		t.TokenPrefix = t.TokenPlain[:10] + "…"
 	}
-	if t.Mode != "write" {
-		t.Mode = "read"
-	}
+	t.Mode = NormalizeTokenMode(t.Mode)
 	if t.CreatedAt == "" {
 		t.CreatedAt = time.Now().UTC().Format(time.RFC3339)
 	}
