@@ -1863,7 +1863,9 @@ button, input, textarea, select { font: inherit; color: inherit; }
 }
 .prompt-box {
   width: 100%;
-  min-height: 220px;
+  min-height: 160px;
+  max-height: 280px;
+  overflow: auto;
   background: #0a0a0a;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1872,6 +1874,17 @@ button, input, textarea, select { font: inherit; color: inherit; }
   font-size: 0.78rem;
   color: #d8d8d8;
   white-space: pre-wrap;
+  margin: 0;
+}
+.tok-prompt-wrap { margin-top: 12px; }
+.tok-prompt-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 0.75rem;
+  color: var(--muted);
 }
 
 .link-list { display: flex; flex-direction: column; gap: 8px; }

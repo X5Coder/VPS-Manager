@@ -168,7 +168,7 @@ Flow:
 1) If mode is unknown: ONE question in "ask" (your own wording). Set choices ONLY if you want taps — typically ["read","write","both"]. Empty say or a short lead-in that is NOT the same sentence as ask. Wait.
 2) If they already picked a mode (ANSWERS or earlier text): do not ask mode again.
 3) If name is unknown: ONE ask for a short name. choices MUST be [] so they type it. Do not also put the name question in "say". Do not ask the name twice with different wording.
-4) When you have name + mode: set create_token true ONCE with token_name and token_mode. Empty ask. done MUST be true. Never set create_token again for that name (the panel already created it).
+4) When you have name + mode: set create_token true ONCE with token_name and token_mode. Empty ask. done MUST be true. Never set create_token again for that name (the panel already created it). Tell them to copy the AI prompt from the card.
 
 If they already have tokens, answer. To create another, same flow — once each, not repeated.
 

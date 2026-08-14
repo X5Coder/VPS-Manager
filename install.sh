@@ -153,6 +153,8 @@ test -f "${SRC_DIR}/deploy/docker-compose.yml"
 
 OWNER_ENV="${PANEL_DIR}/data/secrets/owner.env"
 # Password and Telegram id are collected after a successful start — never skipped on first run.
+# shellcheck disable=SC1091
+. "${SRC_DIR}/deploy/first-setup.sh"
 
 if command -v ufw >/dev/null 2>&1; then
   ufw allow 22/tcp comment "ssh" || true
@@ -168,92 +170,15 @@ compose_up() {
 retry 5 compose_up
 
 read_tty() {
-  local silent="${1:-0}" prompt="$2" value=""
-  if [[ ! -r /dev/tty ]]; then
-    echo
-    echo "No interactive terminal. Download the script and run it as root:"
-    echo "  bash ${SRC_DIR}/install.sh"
-    echo "or:  curl -fsSL https://raw.githubusercontent.com/X5Coder/VPS-Manager/main/install.sh | bash"
-    echo "from an SSH session (not a pipe without /dev/tty)."
-    exit 1
-  fi
-  if [[ "$silent" == "1" ]]; then
-    IFS= read -r -s -p "$prompt" value </dev/tty || true
-    echo >/dev/tty
-  else
-    IFS= read -r -p "$prompt" value </dev/tty || true
-  fi
-  printf '%s' "$value"
+  vps_read_tty "$@"
 }
 
 need_first_setup() {
-  if [[ ! -f "${OWNER_ENV}" ]] || ! grep -q '^VPS_ROOMS_OWNER_PASS=.' "${OWNER_ENV}" 2>/dev/null; then
-    return 0
-  fi
-  if [[ ! -f "${PANEL_DIR}/data/secrets/telegram.env" ]] || ! grep -qE '^TELEGRAM_CHAT_ID=-?[0-9]+' "${PANEL_DIR}/data/secrets/telegram.env" 2>/dev/null; then
-    return 0
-  fi
-  return 1
+  vps_need_first_setup
 }
 
 ask_admin_setup() {
-  local pass pass2 chat
-  echo
-  echo "=============================================="
-  echo "  First-time setup (required)"
-  echo "=============================================="
-  echo "  These are saved on this VPS and used to sign in."
-  echo
-
-  echo "-- Step 1 of 2 · Panel password --"
-  echo "    This is the admin password for the web panel. Minimum 8 characters."
-  echo
-  while true; do
-    pass="$(read_tty 1 "Create panel password: ")"
-    if [[ ${#pass} -lt 8 ]]; then
-      echo "    Password must be at least 8 characters. Try again."
-      continue
-    fi
-    pass2="$(read_tty 1 "Confirm password: ")"
-    if [[ "$pass" != "$pass2" ]]; then
-      echo "    Passwords do not match. Try again."
-      continue
-    fi
-    break
-  done
-
-  echo
-  echo "-- Step 2 of 2 · Telegram user id --"
-  echo "    Open Telegram → search @userinfobot → tap Start → copy the Id number."
-  echo
-  while true; do
-    chat="$(read_tty 0 "Telegram user id: ")"
-    chat="${chat//[[:space:]]/}"
-    if [[ "$chat" =~ ^-?[0-9]+$ ]] && [[ -n "$chat" ]]; then
-      break
-    fi
-    echo "    Required. Use the numeric id from @userinfobot (digits only)."
-  done
-
-  umask 077
-  printf 'VPS_ROOMS_OWNER_PASS=%s\n' "$pass" > "${OWNER_ENV}"
-  chmod 600 "${OWNER_ENV}"
-  local tok=""
-  if [[ -f "${PANEL_DIR}/data/secrets/telegram.env" ]]; then
-    tok="$(grep '^TELEGRAM_BOT_TOKEN=' "${PANEL_DIR}/data/secrets/telegram.env" | head -1 | cut -d= -f2- || true)"
-  fi
-  cat > "${PANEL_DIR}/data/secrets/telegram.env" <<EOF
-# Locked at install. Do not edit.
-TELEGRAM_CHAT_ID=${chat}
-TELEGRAM_CHAT_LOCKED=1
-TELEGRAM_BOT_TOKEN=${tok}
-EOF
-  chmod 600 "${PANEL_DIR}/data/secrets/telegram.env"
-  chmod 700 "${PANEL_DIR}/data/secrets"
-  echo
-  echo "    Saved. Restarting the panel to load them…"
-  docker restart vps-manager >/dev/null 2>&1 || true
-  sleep 2
+  vps_ask_admin_setup
 }
 
 ok=0
@@ -287,15 +212,4 @@ else
   echo "Panel password and Telegram id are already saved — keeping them."
 fi
 
-IP="$(curl -fsS --max-time 4 https://api.ipify.org 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || echo YOUR_VPS_IP)"
-
-echo
-echo "=============================================="
-echo "  Panel is ready"
-echo "=============================================="
-echo
-echo "  Panel URL:  http://${IP}:9090"
-echo
-echo "  Open that link."
-echo "  Unlock with a Telegram bot token, then sign in with the panel password."
-echo
+vps_print_panel_ready

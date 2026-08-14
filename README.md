@@ -169,6 +169,8 @@ Create keys in **Tokens**. Three modes, **one secret each**:
 
 Delete via API is never allowed.
 
+Each token card has a **Copy prompt** button. That text is a full system prompt for another AI: how to authenticate, which URLs to call, and what that mode is allowed to do (`read`, `write`, or `both`). Paste it into any assistant so it can drive the API.
+
 ```bash
 curl -sS -H "Authorization: Bearer YOUR_SECRET" http://YOUR_VPS_IP:9090/api/v1/storage
 ```

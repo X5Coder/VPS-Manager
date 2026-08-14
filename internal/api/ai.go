@@ -252,21 +252,13 @@ func (s *Server) handleTokensAI(w http.ResponseWriter, r *http.Request) {
 	if list != nil {
 		n = len(list)
 	}
-	host := r.Host
-	if host == "" {
-		host = "YOUR_VPS_IP:9090"
-	}
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	base := scheme + "://" + host
+	base := requestBaseURL(r)
 	names := make([]string, 0, n)
 	for _, t := range list {
 		names = append(names, fmt.Sprintf("%s (%s)", t.Name, t.Mode))
 	}
 	note := fmt.Sprintf(
-		"Page: Tokens. Existing tokens: %d. %s Base URL: %s. Never print a guessed secret. If you set create_token, the panel creates the real secret and shows it to the user.",
+		"Page: Tokens. Existing tokens: %d. %s Base URL: %s. Never print a guessed secret. If you set create_token, the panel creates the real secret and a copyable AI prompt on the card (read, write, or both — matching that token).",
 		n, strings.Join(names, "; "), base,
 	)
 	if n == 0 {
@@ -320,7 +312,7 @@ func (s *Server) handleTokensAI(w http.ResponseWriter, r *http.Request) {
 				out["prompt"] = s.buildAPIPrompt(base, plain, tok.Mode)
 				out["say"] = strings.TrimSpace(rep.Say)
 				if out["say"] == "" {
-					out["say"] = "Token created. Copy it from the card above — it stays saved here."
+					out["say"] = "Token created. Copy the secret or the AI prompt from the card — paste the prompt into any assistant so it can drive this API."
 				}
 				out["done"] = true
 			}

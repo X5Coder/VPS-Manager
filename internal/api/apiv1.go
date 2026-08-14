@@ -90,7 +90,23 @@ func (s *Server) handleAPITokens(w http.ResponseWriter, r *http.Request) {
 		if list == nil {
 			list = []store.APIToken{}
 		}
-		writeJSON(w, 200, list)
+		base := requestBaseURL(r)
+		out := make([]map[string]any, 0, len(list))
+		for i := range list {
+			t := list[i]
+			item := map[string]any{
+				"id":           t.ID,
+				"name":         t.Name,
+				"token_prefix": t.TokenPrefix,
+				"mode":         t.Mode,
+				"created_at":   t.CreatedAt,
+				"last_used_at": t.LastUsedAt,
+				"secret":       t.TokenPlain,
+				"prompt":       s.buildAPIPrompt(base, t.TokenPlain, t.Mode),
+			}
+			out = append(out, item)
+		}
+		writeJSON(w, 200, out)
 	case http.MethodPost:
 		var body struct {
 			Name string `json:"name"`
@@ -105,15 +121,7 @@ func (s *Server) handleAPITokens(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, err.Error())
 			return
 		}
-		host := r.Host
-		if host == "" {
-			host = "YOUR_VPS_IP:9090"
-		}
-		scheme := "http"
-		if r.TLS != nil {
-			scheme = "https"
-		}
-		base := scheme + "://" + host
+		base := requestBaseURL(r)
 		writeJSON(w, 200, map[string]any{
 			"token":  tok,
 			"secret": plain,
@@ -141,15 +149,7 @@ func (s *Server) handleAPITokenByID(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 404, "not found")
 			return
 		}
-		host := r.Host
-		if host == "" {
-			host = "YOUR_VPS_IP:9090"
-		}
-		scheme := "http"
-		if r.TLS != nil {
-			scheme = "https"
-		}
-		base := scheme + "://" + host
+		base := requestBaseURL(r)
 		prompt := ""
 		if tok.TokenPlain != "" {
 			prompt = s.buildAPIPrompt(base, tok.TokenPlain, tok.Mode)
@@ -168,42 +168,6 @@ func (s *Server) handleAPITokenByID(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeErr(w, 405, "method")
 	}
-}
-
-func (s *Server) buildAPIPrompt(base, secret, mode string) string {
-	return fmt.Sprintf(`You are controlling VPS Manager via its HTTP API.
-Base URL: %s
-Auth header: Authorization: Bearer %s
-Permission mode: %s — read = GET only; write = GET + create/update/exec; both = read and write on this one token. Delete is NEVER allowed.
-
-Important: each room = one project. Use room id as the project id in most calls.
-
-Endpoints:
-- GET  /api/v1/projects                 — list all projects/rooms
-- GET  /api/v1/projects/{id}            — get one project (room id or project id)
-- POST /api/v1/projects                 — create/deploy a project (JSON, write mode)
-  {
-    "name": "my-app",
-    "image": "nginx:alpine",
-    "quota_gb": 2,
-    "host_port": 0,
-    "container_port": 80,
-    "env": "KEY=value\nOTHER=1"
-  }
-  quota_gb is REQUIRED and must fit in available disk (check /api/v1/storage first).
-- PATCH /api/v1/projects/{id}           — update project (write mode)
-  Fields (any subset): name, domain, env, quota_gb, action ("pause"|"resume")
-- POST /api/v1/projects/{id}/exec       — run command (write mode)
-  Body: {"command":"ls -la"}
-- GET  /api/v1/storage                  — disk free / reserved / available
-- GET  /api/v1/ports                    — used host ports
-
-Rules:
-1. Always GET /api/v1/storage before create; pick quota_gb <= quota_available_gb.
-2. Never attempt delete.
-3. Content-Type: application/json
-4. Errors look like {"error":"..."}.
-`, base, secret, mode)
 }
 
 func (s *Server) apiTokenFromRequest(r *http.Request) (*store.APIToken, error) {

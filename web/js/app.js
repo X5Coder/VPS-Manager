@@ -3040,8 +3040,17 @@ bash install.sh`;
 
   function tokenCardHTML(t, opts = {}) {
     const secret = t.secret || opts.secret || "";
+    const prompt = t.prompt || opts.prompt || "";
     const fresh = opts.fresh ? " tok-fresh" : "";
     const copyVal = secret || "";
+    const promptBlock = prompt ? `
+      <div class="tok-prompt-wrap">
+        <div class="tok-prompt-head">
+          <span>AI prompt · ${esc(t.mode || "read")}</span>
+          <button class="btn sm action" type="button" data-copy-prompt>Copy prompt</button>
+        </div>
+        <pre class="prompt-box tok-prompt" tabindex="0">${esc(prompt)}</pre>
+      </div>` : "";
     return `<div class="tok-card${fresh}" data-tok-id="${esc(t.id)}">
       <div class="tok-card-top">
         <div>
@@ -3049,13 +3058,14 @@ bash install.sh`;
           <span class="badge ${t.mode === "read" ? "stop" : "ok"}">${esc(t.mode)}</span>
         </div>
         <div class="row-actions">
-          <button class="btn sm action" data-copy-btn="${esc(copyVal)}" ${copyVal ? "" : "disabled"}>Copy</button>
+          <button class="btn sm action" data-copy-btn="${esc(copyVal)}" ${copyVal ? "" : "disabled"}>Copy token</button>
           <button class="btn sm danger action" data-del-tok="${esc(t.id)}">Revoke</button>
         </div>
       </div>
       <div class="secret-row tok-secret-row">
         <span class="secret-mask">${copyVal ? "••••••••••••••••••••" : (esc(t.token_prefix || "••••") + "…")}</span>
       </div>
+      ${promptBlock}
       <div class="muted" style="font-size:0.75rem;margin-top:6px">created ${esc(t.created_at || "")}${t.last_used_at ? " · last used " + esc(t.last_used_at) : ""}</div>
     </div>`;
   }
@@ -3097,12 +3107,18 @@ bash install.sh`;
       box.innerHTML = rest.map((t) => tokenCardHTML(t)).join("") || (freshId ? "" : `<p class="muted">No tokens yet.</p>`);
       const top = document.querySelector("#tok-fresh");
       if (top) {
-        top.innerHTML = freshTok ? tokenCardHTML(freshTok, { secret: fresh.secret || freshTok.secret, fresh: true }) : "";
+        top.innerHTML = freshTok ? tokenCardHTML(freshTok, { secret: fresh.secret || freshTok.secret, prompt: fresh.prompt || freshTok.prompt, fresh: true }) : "";
       }
       bindCopyables();
       document.querySelectorAll("[data-copy-btn]").forEach((b) => {
         if (!b.dataset.copyBtn) return;
-        b.onclick = async () => { await copyText(b.dataset.copyBtn); toast("Copied"); };
+        b.onclick = async () => { await copyText(b.dataset.copyBtn); };
+      });
+      document.querySelectorAll("[data-copy-prompt]").forEach((b) => {
+        b.onclick = async () => {
+          const pre = b.closest(".tok-card")?.querySelector(".tok-prompt");
+          await copyText(pre ? pre.textContent : "");
+        };
       });
       document.querySelectorAll("[data-del-tok]").forEach((btn) => bindAction(btn, async () => {
         if (!confirm("Revoke this API token?")) return;
@@ -3118,10 +3134,10 @@ bash install.sh`;
       aiPath: "/api/tokens/ai",
       hello: TOKEN_HELLO,
       onToken: (res) => {
-        const tok = Object.assign({}, res.token || {}, { secret: res.secret });
+        const tok = Object.assign({}, res.token || {}, { secret: res.secret, prompt: res.prompt });
         if (!tok.id) return;
         list = [tok, ...list.filter((t) => t.id !== tok.id && String(t.name || "").toLowerCase() !== String(tok.name || "").toLowerCase())];
-        paintList(list, { token: tok, secret: tok.secret });
+        paintList(list, { token: tok, secret: tok.secret, prompt: res.prompt || tok.prompt });
       },
     });
     document.querySelector("#tok-new")?.addEventListener("click", () => {
