@@ -2572,6 +2572,8 @@
 cd VPS-Manager
 bash install.sh`;
     const changeTg = `/opt/vps-rooms/bin/vps-rooms set-telegram-id`;
+    const saveImg = `docker build -t myapp:latest .
+docker save -o myapp.tar myapp:latest`;
     const step = (n, title, sub, extra, code) => `<div class="docs-step">
       <div class="docs-n">${n}</div>
       <div class="docs-step-body">
