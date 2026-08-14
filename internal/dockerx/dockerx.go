@@ -181,6 +181,25 @@ func (c *Client) InspectBinds(id string) ([]string, error) {
 	return binds, nil
 }
 
+func (c *Client) InspectEnv(id string) ([]string, error) {
+	if id == "" {
+		return nil, fmt.Errorf("missing container")
+	}
+	out, err := c.output("inspect", "-f", "{{json .Config.Env}}", id)
+	if err != nil {
+		return nil, err
+	}
+	out = strings.TrimSpace(out)
+	if out == "" || out == "null" {
+		return nil, nil
+	}
+	var env []string
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		return nil, err
+	}
+	return env, nil
+}
+
 func (c *Client) Logs(id string, tail int) (string, error) {
 	if id == "" {
 		return "", fmt.Errorf("missing container")
@@ -288,6 +307,26 @@ func (c *Client) ExportFilesystem(id, destTar string) error {
 	b, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("docker export: %s: %w", strings.TrimSpace(string(b)), err)
+	}
+	return nil
+}
+
+// SaveImage runs docker save -o destTar imageTag.
+func (c *Client) SaveImage(imageTag, destTar string) error {
+	if strings.TrimSpace(imageTag) == "" {
+		return fmt.Errorf("missing image")
+	}
+	if err := os.MkdirAll(filepath.Dir(destTar), 0o750); err != nil {
+		return err
+	}
+	cmd := exec.Command(c.bin, "save", "-o", destTar, imageTag)
+	b, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("docker save: %s: %w", strings.TrimSpace(string(b)), err)
+	}
+	st, _ := os.Stat(destTar)
+	if st == nil || st.Size() < 32 {
+		return fmt.Errorf("docker save produced empty archive")
 	}
 	return nil
 }
@@ -432,42 +471,72 @@ func (c *Client) DumpPostgresGzip(container, user, dest string) error {
 	if err := os.MkdirAll(filepath.Dir(dest), 0o750); err != nil {
 		return err
 	}
+	_ = os.Remove(dest)
 	out, err := os.Create(dest)
 	if err != nil {
 		return err
 	}
 	defer out.Close()
-	dump := exec.Command(c.bin, "exec", container, "pg_dumpall", "-U", user, "--clean", "--if-exists")
-	gz := exec.Command("gzip", "-c")
-	pipe, err := dump.StdoutPipe()
-	if err != nil {
-		return err
+
+	try := func(args []string) error {
+		dump := exec.Command(c.bin, args...)
+		gz := exec.Command("gzip", "-c")
+		pipe, err := dump.StdoutPipe()
+		if err != nil {
+			return err
+		}
+		var errDump, errGz bytes.Buffer
+		dump.Stderr = &errDump
+		gz.Stdin = pipe
+		gz.Stdout = out
+		gz.Stderr = &errGz
+		if err := dump.Start(); err != nil {
+			return err
+		}
+		if err := gz.Start(); err != nil {
+			_ = dump.Process.Kill()
+			return err
+		}
+		waitDump := dump.Wait()
+		waitGz := gz.Wait()
+		if waitDump != nil {
+			msg := strings.TrimSpace(errDump.String())
+			if msg == "" {
+				msg = waitDump.Error()
+			}
+			return fmt.Errorf("pg_dumpall: %s", msg)
+		}
+		if waitGz != nil {
+			return fmt.Errorf("gzip: %s: %w", strings.TrimSpace(errGz.String()), waitGz)
+		}
+		return nil
 	}
-	dump.Stderr = io.Discard
-	gz.Stdin = pipe
-	gz.Stdout = out
-	var errBuf bytes.Buffer
-	gz.Stderr = &errBuf
-	if err := dump.Start(); err != nil {
-		return err
+
+	// Prefer explicit binary paths used by official Postgres / Supabase images.
+	attempts := [][]string{
+		{"exec", "-u", user, container, "pg_dumpall", "-U", user, "--clean", "--if-exists"},
+		{"exec", container, "pg_dumpall", "-U", user, "--clean", "--if-exists"},
+		{"exec", container, "bash", "-lc", "command -v pg_dumpall >/dev/null && pg_dumpall -U " + user + " --clean --if-exists || /usr/lib/postgresql/*/bin/pg_dumpall -U " + user + " --clean --if-exists"},
 	}
-	if err := gz.Start(); err != nil {
-		_ = dump.Process.Kill()
-		return err
+	var last error
+	for _, args := range attempts {
+		_ = out.Truncate(0)
+		_, _ = out.Seek(0, 0)
+		if err := try(args); err != nil {
+			last = err
+			continue
+		}
+		st, _ := out.Stat()
+		if st != nil && st.Size() > 32 {
+			return nil
+		}
+		last = fmt.Errorf("empty postgres dump")
 	}
-	waitDump := dump.Wait()
-	waitGz := gz.Wait()
-	if waitDump != nil {
-		return fmt.Errorf("pg_dumpall: %w", waitDump)
+	_ = os.Remove(dest)
+	if last != nil {
+		return last
 	}
-	if waitGz != nil {
-		return fmt.Errorf("gzip: %s: %w", strings.TrimSpace(errBuf.String()), waitGz)
-	}
-	st, _ := out.Stat()
-	if st != nil && st.Size() < 32 {
-		return fmt.Errorf("empty postgres dump")
-	}
-	return nil
+	return fmt.Errorf("empty postgres dump")
 }
 
 // RestorePostgresGzip loads a .sql.gz dump into a running postgres container.

@@ -25,3 +25,7 @@ services:
       - /opt/vps-rooms/volumes:/opt/vps-rooms/volumes
       - /opt/vps-rooms/proxy:/opt/vps-rooms/proxy
     # Panel only — does not stop or remove other containers.
+    labels:
+      org.opencontainers.image.title: "VPS Manager"
+      org.opencontainers.image.source: "https://github.com/X5Coder/VPS-Manager"
+      org.opencontainers.image.vendor: "X5Coder"

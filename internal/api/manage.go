@@ -218,7 +218,7 @@ func appendLog(dataDir, kind, line string) error {
 	}
 	defer f.Close()
 	_, err = fmt.Fprintf(f, "%s %s\n", time.Now().UTC().Format(time.RFC3339), line)
-	_ = rotateLog(path, 512*1024) // keep ~512KB
+	_ = rotateLog(path, 256*1024) // keep ~256KB per stream for AI-friendly size
 	return err
 }
 
@@ -240,6 +240,24 @@ func rotateLog(path string, max int64) error {
 		keep = keep[i+1:]
 	}
 	return os.WriteFile(path, keep, 0o600)
+}
+
+// PruneLogsDir trims every *.log under data/logs to maxBytes (periodic cleanup).
+func PruneLogsDir(dataDir string, maxBytes int64) {
+	if maxBytes <= 0 {
+		maxBytes = 256 * 1024
+	}
+	dir := filepath.Join(dataDir, "logs")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".log") {
+			continue
+		}
+		_ = rotateLog(filepath.Join(dir, e.Name()), maxBytes)
+	}
 }
 
 func tailFile(path string, maxBytes int64) (string, error) {

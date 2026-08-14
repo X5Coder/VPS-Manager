@@ -42,7 +42,7 @@
   function quotaSliderHTML({ name, id, maxGB, valueGB, required }) {
     const max = Math.max(0.1, Number(maxGB) || 0.1);
     let val = Number(valueGB);
-    if (!(val > 0)) val = Math.min(1, max);
+    if (!(val > 0)) val = 0.1;
     if (val > max) val = max;
     val = Math.round(val * 10) / 10;
     const step = max >= 5 ? 0.5 : 0.1;
@@ -76,7 +76,10 @@
   }
 
   async function animateQuotaSlider(root, gbVal) {
-    const wrap = (root || document).querySelector("[data-quota-wrap]");
+    const scope = root || document;
+    const wrap = scope.matches && scope.matches("[data-quota-wrap]")
+      ? scope
+      : scope.querySelector("[data-quota-wrap]");
     if (!wrap) return 0;
     const range = wrap.querySelector("[data-quota-range]");
     const input = wrap.querySelector("[data-quota-input]");
@@ -126,10 +129,13 @@
   const gb = (bytes) => (Number(bytes) || 0) / (1024 * 1024 * 1024);
 
   function brandMarkHTML() {
-    return `<span class="brand-mark" aria-hidden="true"><span>V</span></span>`;
+    return `<img class="brand-mark-img" src="/favicon.svg" width="36" height="36" alt="" />`;
+  }
+  function projectIconHTML(extra = "") {
+    return `<img class="proj-ico ${extra}" src="/project.svg" width="44" height="44" alt="" />`;
   }
   function brandWordmarkHTML(roleId, roleText) {
-    return `${brandMarkHTML()}<div class="brand-text"><strong class="brand-name">VPS MANAGE</strong><span class="brand-role" id="${roleId}">${esc(roleText)}</span></div>`;
+    return `${brandMarkHTML()}<div class="brand-text"><strong class="brand-name">VPS Manager</strong><span class="brand-role" id="${roleId}">${esc(roleText)}</span></div>`;
   }
   function navIco(k) {
     const p = 'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"';
@@ -141,64 +147,1202 @@
       logs: `<svg ${p}><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></svg>`,
       docs: `<svg ${p}><path d="M7 3h8l5 5v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M15 3v5h5M9 13h6M9 17h4"/></svg>`,
       settings: `<svg ${p}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9c.3.7.9 1.2 1.6 1.4H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>`,
+      tokens: `<svg ${p}><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`,
       room: `<svg ${p}><path d="M4 10.5L12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1z"/></svg>`,
     };
     return icons[k] || "";
   }
 
   function roomAIState(id) {
-    if (!state.aiByRoom[id]) state.aiByRoom[id] = { messages: [], bubbles: [], busy: false, run: 0 };
+    if (!state.aiByRoom[id]) state.aiByRoom[id] = { messages: [], bubbles: [], busy: false, run: 0, rtl: false };
     return state.aiByRoom[id];
+  }
+
+  function isRTLText(s) {
+    let ar = 0, lat = 0;
+    for (const ch of String(s || "")) {
+      const c = ch.codePointAt(0);
+      if (c >= 0x0600 && c <= 0x06FF) ar++;
+      else if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122)) lat++;
+    }
+    if (!ar && !lat) return false;
+    return ar >= lat;
+  }
+
+  function agentStatus(_pack, key) {
+    const en = {
+      think: "typing now…",
+      read: "typing now…",
+      quota: "Setting disk quota…",
+      type: "Typing in the terminal…",
+      run: "Running…",
+      start: "Starting the room…",
+    };
+    return en[key] || en.think;
+  }
+
+  const AGENT_HELLO = "Hello — write me a command and I’ll run it in the terminal.";
+  const TOKEN_HELLO = "Hello — I can create an API token (read, write, or both) or explain how to use one.";
+  const ROOM_HELLO = "Hello — I’m inside this project. Ask me to inspect or edit files, run commands, analyze this room’s usage, change disk, or pause/resume. I won’t delete the project.";
+  const LOGS_HELLO = "Hello — I analyze panel logs. Ask me to analyze, then pick which log.";
+  const USAGE_HELLO = "Hello — I analyze this server’s live usage: CPU, RAM, disk, load, room names, and each room’s disk vs the host total.";
+
+  function sendIconHTML() {
+    return `<button class="ai-send" id="ai-send" type="submit" aria-label="Send">${planeIconSVG()}</button>`;
+  }
+  function planeIconSVG() {
+    return `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3.4 20.6 21 12 3.4 3.4 3 10.2 15 12 3 13.8z"/></svg>`;
+  }
+  function stopIconSVG() {
+    return `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>`;
+  }
+
+  function agentDeskHTML({
+    title = "Agent",
+    prompt = "root@vps-manager:~#",
+    termLines = "ready\n",
+    showTerm = true,
+    placeholder = "Message…",
+    hints = "",
+    hiddenQuotaId = "",
+  } = {}) {
+    const p = String(prompt || "root@vps-manager:~#").replace(/\s+$/, "");
+    const hiddenQ = hiddenQuotaId
+      ? `<input type="hidden" id="${esc(hiddenQuotaId)}" name="quota_gb" value="0" data-quota-input />`
+      : "";
+    const term = showTerm
+      ? `<div class="agent-term">
+          <div class="agent-term-head"><span class="agent-dot" aria-hidden="true"></span><span class="mono">${esc(p)}</span></div>
+          <div class="term-out" id="term-out">${esc(termLines)}</div>
+          <form class="term-in" id="term-form">
+            <span class="prompt">${esc(p)}</span>
+            <input id="term-cmd" autocomplete="off" spellcheck="false" placeholder="command" />
+          </form>
+          ${hints ? `<div class="cmd-hints">${hints}</div>` : ""}
+        </div>`
+      : "";
+    return `<div class="agent-desk${showTerm ? "" : " agent-desk-chat"}" dir="ltr">
+      ${term}
+      <section class="ai-sheet ai-sheet-embed" id="ai-chat">
+        <header class="ai-sheet-bar"><span class="ai-live"></span>${esc(title)}</header>
+        ${hiddenQ}
+        <div class="ai-chat-log" id="ai-log"></div>
+        <form class="ai-compose" id="ai-form" dir="ltr">
+          <div class="ai-compose-box">
+            <textarea id="ai-q" rows="1" maxlength="8000" dir="auto" placeholder="${esc(placeholder)}"></textarea>
+            ${sendIconHTML()}
+          </div>
+        </form>
+      </section>
+    </div>`;
+  }
+
+  function syncAgentComposer(pack) {
+    const form = document.querySelector("#ai-form");
+    const inp = document.querySelector("#ai-q");
+    const btn = document.querySelector("#ai-send");
+    if (inp) {
+      inp.setAttribute("dir", "auto");
+      if (inp.tagName === "TEXTAREA") {
+        inp.style.height = "auto";
+        inp.style.height = Math.min(140, Math.max(24, inp.scrollHeight)) + "px";
+      }
+    }
+    if (btn) {
+      const stop = !!pack.busy;
+      btn.disabled = false;
+      btn.classList.toggle("is-busy", stop);
+      btn.classList.toggle("is-stop", stop);
+      btn.setAttribute("aria-label", stop ? "Stop" : "Send");
+      btn.innerHTML = stop ? stopIconSVG() : planeIconSVG();
+    }
+    form?.classList.toggle("is-busy", !!pack.busy);
   }
 
   function paintAIChat(box, pack) {
     if (!box) return;
+    syncAgentComposer(pack);
     const bits = [];
-    (pack.bubbles || []).forEach((b) => {
-      bits.push(`<div class="ai-bubble ${esc(b.role)}">${esc(b.text)}</div>`);
+    (pack.bubbles || []).forEach((b, idx) => {
+      const enter = b.enter ? (b.role === "user" ? " ai-in ai-send-in" : " ai-in ai-recv-in") : "";
+      if (b.enter) b.enter = false;
+      const display = b.role === "bot" ? normalizeBotText(b.text) : unescapeChatEscapes(String(b.text || ""));
+      const hasCode = b.role === "bot" && /```/.test(display);
+      const dir = isRTLText(display) ? "rtl" : "ltr";
+      const copy = b.role === "bot" && !hasCode && String(display).length > 90
+        ? `<button type="button" class="ai-copy" data-copy-bubble="${idx}" aria-label="Copy message">Copy</button>`
+        : "";
+      bits.push(`<div class="ai-bubble-wrap ${esc(b.role)}" data-bubble-idx="${idx}">
+        <div class="ai-bubble ${esc(b.role)}${enter}${hasCode ? " has-code" : ""}" dir="${dir}">${formatChat(display, idx)}</div>
+        ${copy}
+      </div>`);
     });
-    if (pack.pendingAsk && pack.pendingAsk.length) {
-      bits.push(`<form class="ai-ask" id="ai-ask">${pack.pendingAsk.map((q, i) =>
-        `<label>${esc(q)}<input name="a${i}" required autocomplete="off" /></label>`).join("")}
-        <button class="btn sm primary" type="submit">Send answers</button></form>`);
+    if (pack.busy && pack.typing !== false && !(pack.pendingAsk && pack.pendingAsk.length)) {
+      bits.push(`<div class="ai-bubble bot status ai-typing${pack.typingOut ? " is-leaving" : ""}" dir="ltr"><span class="ai-dots" aria-hidden="true"></span><span>typing now…</span></div>`);
     }
-    if (pack.busy && !(pack.pendingAsk && pack.pendingAsk.length)) {
-      bits.push(`<div class="ai-bubble bot muted">Working…</div>`);
+    if (!pack.busy && pack.pendingAsk && pack.pendingAsk.length) {
+      const q = pack.pendingAsk[0];
+      const qdir = isRTLText(q) ? "rtl" : "ltr";
+      const picked = new Set(pack.pendingPicked || []);
+      const chips = (pack.pendingChoices || []).map((c) =>
+        `<button type="button" class="ai-choice${picked.has(c) ? " is-on" : ""}" data-ai-choice="${esc(c)}" aria-pressed="${picked.has(c) ? "true" : "false"}">${esc(c)}</button>`
+      ).join("");
+      bits.push(`<div class="ai-qcard" dir="${qdir}">
+        <div class="ai-qcard-label">Question</div>
+        <div class="ai-qcard-q">${esc(q)}</div>
+        ${chips ? `<div class="ai-choices" dir="auto">${chips}</div>` : `<p class="ai-qcard-hint">Type your answer below</p>`}
+        <p class="ai-qcard-hint">${chips ? "Select one or more, then continue." : ""}</p>
+        <div class="ai-qcard-actions">
+          <button type="button" class="btn primary sm" data-ai-choose-go ${picked.size ? "" : "disabled"}>Continue</button>
+        </div>
+      </div>`);
+    } else if (!pack.busy && pack.pendingChoices && pack.pendingChoices.length) {
+      const picked = new Set(pack.pendingPicked || []);
+      bits.push(`<div class="ai-qcard" dir="auto">
+        <div class="ai-qcard-label">Choose</div>
+        <div class="ai-choices" dir="auto">${pack.pendingChoices.map((c) =>
+          `<button type="button" class="ai-choice${picked.has(c) ? " is-on" : ""}" data-ai-choice="${esc(c)}" aria-pressed="${picked.has(c) ? "true" : "false"}">${esc(c)}</button>`
+        ).join("")}</div>
+        <p class="ai-qcard-hint">Select one or more, then continue.</p>
+        <div class="ai-qcard-actions">
+          <button type="button" class="btn primary sm" data-ai-choose-go ${picked.size ? "" : "disabled"}>Continue</button>
+        </div>
+      </div>`);
     }
-    box.innerHTML = bits.join("") || `<div class="ai-empty">Ask to clone a repo, dockerize it, or run a task. Commands type in the terminal.</div>`;
+    box.innerHTML = bits.join("");
+    colorCodeBlocks(box);
     box.scrollTop = box.scrollHeight;
   }
+
+  function colorCodeBlocks(root) {
+    root.querySelectorAll("pre.ai-codeblock code").forEach((el) => {
+      if (el.querySelector("[class^='tok-']")) return;
+      const lang = el.closest(".ai-codewrap")?.getAttribute("data-lang")
+        || el.closest(".ai-codewrap")?.querySelector(".ai-codelang")?.textContent
+        || "";
+      el.innerHTML = highlightCode(lang, el.textContent || "");
+    });
+  }
+
+  function extractSayFromRaw(text) {
+    const s = String(text || "").trim();
+    if (!s.includes('"say"')) return "";
+    const m = s.match(/"say"\s*:\s*"/);
+    if (!m) {
+      const i = s.search(/"say"\s*:\s*/);
+      if (i < 0) return "";
+      let rest = s.slice(i).replace(/^"say"\s*:\s*/, "");
+      if (rest.startsWith('"')) rest = rest.slice(1);
+      const stop = rest.search(/"\s*,\s*"(?:ask|says|command|choices|done|create_token|token_name|quota_gb|action|log_kind|image|start)"/);
+      let val = stop >= 0 ? rest.slice(0, stop) : rest;
+      val = val.replace(/"\s*}\s*$/, "").trim();
+      return unescapeChatEscapes(val);
+    }
+    let i = m.index + m[0].length;
+    let out = "";
+    let esc = false;
+    for (; i < s.length; i++) {
+      const c = s[i];
+      if (esc) {
+        if (c === "n") out += "\n";
+        else if (c === "t") out += "\t";
+        else if (c === "r") out += "\r";
+        else out += c;
+        esc = false;
+        continue;
+      }
+      if (c === "\\") { esc = true; continue; }
+      if (c === '"') break;
+      out += c;
+    }
+    return unescapeChatEscapes(out.trim());
+  }
+
+  function unescapeChatEscapes(text) {
+    let s = String(text || "");
+    s = s.replace(/\\r\\n/g, "\n").replace(/\\r/g, "\n");
+    s = s.replace(/\\n/g, "\n").replace(/\\t/g, "\t");
+    s = s.replace(/\\"/g, '"');
+    return s;
+  }
+
+  function looksLikeCode(text) {
+    const t = String(text || "").trim();
+    if (!t || t.length < 24) return false;
+    const lines = t.split(/\n/).filter((l) => l.trim());
+    if (lines.length < 2) return false;
+    const hits = [
+      /^(import |from |def |class |with |async |await |function |const |let |var |#include|package |fn |pub )/m,
+      /:\s*$/m,
+      /[{};]\s*$/m,
+      /^(print|console\.|curl |docker |git )/m,
+      /^\s{2,}\S/m,
+    ].filter((re) => re.test(t)).length;
+    return hits >= 2;
+  }
+
+  function guessCodeLang(text) {
+    const t = String(text || "");
+    if (/^\s*(import |from |def |with open|print\()/m.test(t)) return "python";
+    if (/^\s*(const |let |var |function |import |export )/m.test(t)) return "javascript";
+    if (/^\s*(package |func |fmt\.)/m.test(t)) return "go";
+    if (/^\s*(#!\/bin\/|curl |docker |git |apt |sudo )/m.test(t)) return "bash";
+    return "";
+  }
+
+  function normalizeBotText(text) {
+    let t = String(text || "").trim();
+    const extracted = extractSayFromRaw(t);
+    if (extracted) t = extracted;
+    t = unescapeChatEscapes(t);
+    t = t.replace(/\r\n/g, "\n");
+    if (t.startsWith("{") && /"say"\s*:/.test(t)) {
+      const again = extractSayFromRaw(t);
+      if (again) t = unescapeChatEscapes(again);
+    }
+    if (!/```/.test(t) && looksLikeCode(t)) {
+      const lang = guessCodeLang(t);
+      t = "```" + lang + "\n" + t.trim() + "\n```";
+    } else if (!/```/.test(t)) {
+      const parts = t.split(/\n\n+/);
+      if (parts.length >= 2) {
+        const last = parts[parts.length - 1];
+        if (looksLikeCode(last) || (/^(with open|import |def |function |curl )/m.test(last) && last.includes("\n"))) {
+          const head = parts.slice(0, -1).join("\n\n").trim();
+          const lang = guessCodeLang(last);
+          t = head + "\n\n```" + lang + "\n" + last.trim() + "\n```";
+        }
+      }
+    }
+    return t.trim();
+  }
+
+  function splitBotBubbles(text) {
+    const t = normalizeBotText(text);
+    if (!t) return [];
+    if (/```/.test(t)) return [t];
+    const parts = t.split(/\n{2,}/).map((s) => s.trim()).filter(Boolean);
+    if (parts.length <= 1) return [t];
+    return parts.slice(0, 6);
+  }
+
+  function collectBotMessages(res) {
+    const out = [];
+    const seen = [];
+    const similar = (a, b) => {
+      if (!a || !b) return false;
+      if (a === b) return true;
+      if (a.includes(b) || b.includes(a)) return true;
+      const n = Math.min(28, a.length, b.length);
+      return n >= 16 && a.slice(0, n) === b.slice(0, n);
+    };
+    const addOne = (raw) => {
+      const t = normalizeBotText(raw);
+      if (!t) return;
+      if (seen.some((x) => similar(x, t))) return;
+      seen.push(t);
+      out.push(t);
+    };
+    addOne(res?.say || "");
+    const says = Array.isArray(res?.says) ? res.says : [];
+    for (const s of says) {
+      addOne(s);
+      if (out.length >= 2) break;
+    }
+    return out;
+  }
+
+  const HL_KW = {
+    python: "and as assert async await break class continue def del elif else except False finally for from global if import in is lambda None nonlocal not or pass raise return True try while with yield self cls".split(" "),
+    javascript: "async await break case catch class const continue debugger default delete do else export extends false finally for from function if import in instanceof let new null of return static super switch this throw true try typeof var void while with yield".split(" "),
+    typescript: "async await break case catch class const continue debugger default delete do else export extends false finally for from function if import in instanceof let new null of return static super switch this throw true try typeof var void while with yield type interface enum implements readonly public private protected abstract as satisfies namespace declare any never unknown".split(" "),
+    go: "break case chan const continue default defer else fallthrough for func go goto if import interface map package range return select struct switch type var true false nil iota".split(" "),
+    bash: "if then else elif fi for in do done while until case esac function return exit export local declare set unset test true false echo cd pwd source alias".split(" "),
+    sql: "select from where and or not insert into values update set delete join left right inner outer on group by order limit as create table index distinct having union all null is like in exists".split(" "),
+    rust: "as async await break const continue crate dyn else enum extern false fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait true type unsafe use where while".split(" "),
+    java: "abstract assert boolean break byte case catch char class const continue default do double else enum extends final finally float for goto if implements import instanceof int interface long native new package private protected public return short static strictfp super switch synchronized this throw throws transient try void volatile while true false null".split(" "),
+    php: "and or xor array as break case continue declare default die do echo else elseif empty enddeclare endfor endforeach endif endswitch endwhile eval exit extends for foreach function global if include include_once isset list new print require require_once return static switch unset use var while trait interface implements public protected private abstract final class namespace".split(" "),
+    ruby: "BEGIN END alias and begin break case class def defined do else elsif end ensure false for if in module next nil not or redo rescue retry return self super then true undef unless until when while yield".split(" "),
+    c: "auto break case char const continue default do double else enum extern float for goto if inline int long register restrict return short signed sizeof static struct switch typedef union unsigned void volatile while".split(" "),
+    cpp: "alignas alignof and and_eq asm auto bitand bitor bool break case catch char class compl concept const consteval constexpr constinit continue co_await co_return co_yield decltype default delete do double else enum explicit export extern false float for friend goto if inline int long mutable namespace new noexcept not nullptr operator or private protected public register reinterpret_cast return short signed sizeof static static_assert static_cast struct switch template this thread_local throw true try typedef typeid typename union unsigned using virtual void volatile while xor".split(" "),
+    csharp: "abstract as base bool break byte case catch char checked class const continue decimal default delegate do double else enum event explicit extern false finally fixed float for foreach goto if implicit in int interface internal is lock long namespace new null object operator out override params private protected public readonly ref return sbyte sealed short sizeof stackalloc static string struct switch this throw true try typeof uint ulong unchecked unsafe ushort using virtual void volatile while".split(" "),
+    kotlin: "as break class continue do else false for fun if in interface is null object package return super this throw true try typealias typeof val var when while by catch constructor delegate dynamic field file finally get import init param property receiver set setparam where actual abstract annotation companion const crossinline data enum expect external final infix inline inner internal lateinit noinline open operator out override private protected public reified sealed suspend tailrec vararg".split(" "),
+    swift: "associatedtype class deinit enum extension fileprivate func import init inout internal let open operator private protocol public rethrows static struct subscript typealias var break case continue default defer do else fallthrough for guard if in repeat return switch where while as Any catch false is nil super self Self throw throws true try".split(" "),
+    html: "html head body div span script style link meta title h1 h2 h3 h4 h5 h6 p a ul ol li img table tr td th form input button label section article nav header footer main".split(" "),
+    css: "important media charset import supports from to".split(" "),
+    docker: "FROM RUN CMD LABEL MAINTAINER EXPOSE ENV ADD COPY ENTRYPOINT VOLUME USER WORKDIR ARG ONBUILD STOPSIGNAL HEALTHCHECK SHELL AS".split(" "),
+    yaml: "true false null yes no on off".split(" "),
+    json: "true false null".split(" "),
+  };
+  Object.keys(HL_KW).forEach((k) => { HL_KW[k] = new Set(HL_KW[k]); });
+
+  function normLang(lang) {
+    const l = String(lang || "").toLowerCase();
+    const map = {
+      js: "javascript", jsx: "javascript", mjs: "javascript", cjs: "javascript",
+      ts: "typescript", tsx: "typescript",
+      py: "python", python3: "python",
+      sh: "bash", shell: "bash", zsh: "bash", bash: "bash",
+      golang: "go",
+      yml: "yaml",
+      dockerfile: "docker",
+      "c++": "cpp", cc: "cpp", cxx: "cpp", hpp: "cpp",
+      cs: "csharp", "c#": "csharp",
+      rs: "rust", rb: "ruby", kt: "kotlin",
+      htm: "html", xml: "html",
+      text: "code", txt: "code",
+    };
+    return map[l] || l || "code";
+  }
+
+  function highlightCode(lang, src) {
+    const code = String(src || "");
+    const L = normLang(lang) || guessCodeLang(code) || "python";
+    try {
+      if (L === "json") return hlJSON(code);
+      if (L === "html") return hlMarkup(code);
+      if (L === "css") return hlCSS(code);
+      if (L === "yaml") return hlYAML(code);
+      if (L === "docker") return hlDocker(code);
+      return hlGeneric(code, L === "code" ? (guessCodeLang(code) || "python") : L);
+    } catch {
+      return esc(code);
+    }
+  }
+
+  function hlJSON(src) {
+    let out = "";
+    let i = 0;
+    while (i < src.length) {
+      const c = src[i];
+      if (c === '"' ) {
+        let j = i + 1, escb = false;
+        while (j < src.length) {
+          if (escb) { escb = false; j++; continue; }
+          if (src[j] === "\\") { escb = true; j++; continue; }
+          if (src[j] === '"') { j++; break; }
+          j++;
+        }
+        const chunk = src.slice(i, j);
+        let k = j;
+        while (k < src.length && /\s/.test(src[k])) k++;
+        const isKey = src[k] === ":";
+        out += `<span class="${isKey ? "tok-key" : "tok-str"}">${esc(chunk)}</span>`;
+        i = j;
+        continue;
+      }
+      if (c === "/" && src[i + 1] === "/") {
+        const end = src.indexOf("\n", i);
+        const j = end < 0 ? src.length : end;
+        out += `<span class="tok-cmt">${esc(src.slice(i, j))}</span>`;
+        i = j;
+        continue;
+      }
+      if (/[0-9\-]/.test(c) && (c !== "-" || /[0-9]/.test(src[i + 1] || ""))) {
+        let j = i + 1;
+        while (j < src.length && /[0-9.eE+\-]/.test(src[j])) j++;
+        out += `<span class="tok-num">${esc(src.slice(i, j))}</span>`;
+        i = j;
+        continue;
+      }
+      const word = src.slice(i).match(/^(true|false|null)\b/);
+      if (word) {
+        out += `<span class="tok-kw">${word[0]}</span>`;
+        i += word[0].length;
+        continue;
+      }
+      out += esc(c);
+      i++;
+    }
+    return out;
+  }
+
+  function hlGeneric(src, lang) {
+    const kw = HL_KW[lang] || new Set();
+    const hashCmt = lang === "python" || lang === "bash" || lang === "ruby" || lang === "yaml";
+    const slashCmt = lang !== "python" && lang !== "bash" && lang !== "ruby";
+    const types = lang === "go"
+      ? new Set("string int int64 int32 uint uint64 float64 bool byte error any".split(" "))
+      : new Set();
+    let out = "";
+    let i = 0;
+    while (i < src.length) {
+      const c = src[i];
+      if (c === "#" && hashCmt) {
+        const j = src.indexOf("\n", i);
+        const end = j < 0 ? src.length : j;
+        out += `<span class="tok-cmt">${esc(src.slice(i, end))}</span>`;
+        i = end;
+        continue;
+      }
+      if (slashCmt && c === "/" && src[i + 1] === "/") {
+        const j = src.indexOf("\n", i);
+        const end = j < 0 ? src.length : j;
+        out += `<span class="tok-cmt">${esc(src.slice(i, end))}</span>`;
+        i = end;
+        continue;
+      }
+      if (slashCmt && c === "/" && src[i + 1] === "*") {
+        const j = src.indexOf("*/", i + 2);
+        const end = j < 0 ? src.length : j + 2;
+        out += `<span class="tok-cmt">${esc(src.slice(i, end))}</span>`;
+        i = end;
+        continue;
+      }
+      if ((c === '"' || c === "'" || c === "`") && !(lang === "python" && false)) {
+        const q = c;
+        let j = i + 1, escb = false;
+        if (lang === "python" && src.slice(i, i + 3) === q + q + q) {
+          const close = src.indexOf(q + q + q, i + 3);
+          const end = close < 0 ? src.length : close + 3;
+          out += `<span class="tok-str">${esc(src.slice(i, end))}</span>`;
+          i = end;
+          continue;
+        }
+        while (j < src.length) {
+          if (escb) { escb = false; j++; continue; }
+          if (src[j] === "\\") { escb = true; j++; continue; }
+          if (src[j] === q) { j++; break; }
+          if (q !== "`" && src[j] === "\n") break;
+          j++;
+        }
+        out += `<span class="tok-str">${esc(src.slice(i, j))}</span>`;
+        i = j;
+        continue;
+      }
+      if (c === "/" && (lang === "javascript" || lang === "typescript")) {
+        // regex after = ( [ , : ! & |
+        const prev = out.replace(/<[^>]+>/g, "").slice(-1);
+        if ("=([,:!&|;?".includes(prev) || prev === "") {
+          let j = i + 1, escb = false;
+          while (j < src.length) {
+            if (escb) { escb = false; j++; continue; }
+            if (src[j] === "\\") { escb = true; j++; continue; }
+            if (src[j] === "\n") break;
+            if (src[j] === "/") { j++; while (j < src.length && /[gimsuy]/.test(src[j])) j++; break; }
+            j++;
+          }
+          out += `<span class="tok-str">${esc(src.slice(i, j))}</span>`;
+          i = j;
+          continue;
+        }
+      }
+      if (/[0-9]/.test(c)) {
+        let j = i + 1;
+        while (j < src.length && /[0-9xa-fA-F_.]/.test(src[j])) j++;
+        out += `<span class="tok-num">${esc(src.slice(i, j))}</span>`;
+        i = j;
+        continue;
+      }
+      if (/[A-Za-z_$@]/.test(c)) {
+        let j = i + 1;
+        while (j < src.length && /[A-Za-z0-9_$@]/.test(src[j])) j++;
+        const w = src.slice(i, j);
+        let k = j;
+        while (k < src.length && /\s/.test(src[k])) k++;
+        const call = src[k] === "(";
+        if (kw.has(w)) out += `<span class="tok-kw">${esc(w)}</span>`;
+        else if (types.has(w) || (/^[A-Z]/.test(w) && lang !== "bash")) out += `<span class="tok-type">${esc(w)}</span>`;
+        else if (call) out += `<span class="tok-fn">${esc(w)}</span>`;
+        else out += esc(w);
+        i = j;
+        continue;
+      }
+      out += esc(c);
+      i++;
+    }
+    return out;
+  }
+
+  function hlMarkup(src) {
+    let out = "";
+    let i = 0;
+    while (i < src.length) {
+      if (src.startsWith("<!--", i)) {
+        const j = src.indexOf("-->", i + 4);
+        const end = j < 0 ? src.length : j + 3;
+        out += `<span class="tok-cmt">${esc(src.slice(i, end))}</span>`;
+        i = end;
+        continue;
+      }
+      if (src[i] === "<") {
+        const gt = src.indexOf(">", i + 1);
+        if (gt < 0) { out += esc(src.slice(i)); break; }
+        const inner = src.slice(i + 1, gt);
+        const close = inner.startsWith("/");
+        const bang = inner.startsWith("!");
+        const body = close ? inner.slice(1) : inner;
+        const nm = body.match(/^[A-Za-z][\w:-]*/);
+        const name = nm ? nm[0] : "";
+        let attrs = name ? body.slice(name.length) : body;
+        let aout = "";
+        for (let k = 0; k < attrs.length; k++) {
+          if (attrs[k] === '"' || attrs[k] === "'") {
+            const q = attrs[k];
+            let j = k + 1;
+            while (j < attrs.length && attrs[j] !== q) j++;
+            aout += `<span class="tok-str">${esc(attrs.slice(k, Math.min(attrs.length, j + 1)))}</span>`;
+            k = j;
+            continue;
+          }
+          if (attrs[k] === "=") { aout += `<span class="tok-op">=</span>`; continue; }
+          aout += esc(attrs[k]);
+        }
+        const open = close ? "&lt;/" : "&lt;";
+        if (bang) out += `<span class="tok-cmt">${esc(src.slice(i, gt + 1))}</span>`;
+        else out += `${open}<span class="tok-kw">${esc(name)}</span>${aout}&gt;`;
+        i = gt + 1;
+        continue;
+      }
+      out += esc(src[i]);
+      i++;
+    }
+    return out;
+  }
+
+  function hlCSS(src) {
+    return hlGeneric(src, "css");
+  }
+
+  function hlYAML(src) {
+    return src.split("\n").map((line) => {
+      const cmt = line.match(/^(\s*)(#.*)$/);
+      if (cmt) return esc(cmt[1]) + `<span class="tok-cmt">${esc(cmt[2])}</span>`;
+      const kv = line.match(/^(\s*)([^:#\n][^:]*)(:)(\s*)(.*)$/);
+      if (kv) {
+        const rest = kv[5];
+        const val = /^(true|false|null|yes|no)\b/i.test(rest)
+          ? `<span class="tok-kw">${esc(rest)}</span>`
+          : /^["']/.test(rest) ? `<span class="tok-str">${esc(rest)}</span>`
+          : /^-?\d/.test(rest) ? `<span class="tok-num">${esc(rest)}</span>`
+          : esc(rest);
+        return `${esc(kv[1])}<span class="tok-key">${esc(kv[2])}</span><span class="tok-op">${kv[3]}</span>${esc(kv[4])}${val}`;
+      }
+      return esc(line);
+    }).join("\n");
+  }
+
+  function hlDocker(src) {
+    return src.split("\n").map((line) => {
+      if (/^\s*#/.test(line)) return `<span class="tok-cmt">${esc(line)}</span>`;
+      const m = line.match(/^(\s*)([A-Z]+)(\s*)([\s\S]*)$/);
+      if (m && HL_KW.docker.has(m[2])) {
+        return `${esc(m[1])}<span class="tok-kw">${m[2]}</span>${esc(m[3])}<span class="tok-str">${esc(m[4])}</span>`;
+      }
+      return esc(line);
+    }).join("\n");
+  }
+
+  function formatChat(text, bubbleIdx = 0) {
+    const raw = String(text || "");
+    const parts = [];
+    const fence = /```([a-zA-Z0-9_+-]*)\n?([\s\S]*?)```/g;
+    let last = 0;
+    let m;
+    let codeN = 0;
+    while ((m = fence.exec(raw))) {
+      if (m.index > last) parts.push({ type: "text", value: raw.slice(last, m.index).replace(/\s+$/, "") });
+      parts.push({ type: "code", lang: m[1] || "", value: m[2].replace(/\n$/, ""), id: codeN++ });
+      last = m.index + m[0].length;
+    }
+    if (last < raw.length) parts.push({ type: "text", value: raw.slice(last) });
+    if (!parts.length) parts.push({ type: "text", value: raw });
+    return parts.map((p) => {
+      if (p.type === "code") {
+        const lang = (p.lang || guessCodeLang(p.value) || "code").toLowerCase();
+        const label = lang && lang !== "code" ? lang : (guessCodeLang(p.value) || "code");
+        const hl = highlightCode(label, p.value);
+        return `<div class="ai-codewrap" data-lang="${esc(label)}" data-code-bubble="${bubbleIdx}" data-code-id="${p.id}">
+          <div class="ai-codehead">
+            <span class="ai-code-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span class="ai-codelang">${esc(label)}</span>
+            <button type="button" class="ai-codecopy" data-copy-code="${bubbleIdx}:${p.id}" aria-label="Copy code">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              <span class="ai-codecopy-lab">Copy</span>
+            </button>
+          </div>
+          <pre class="ai-codeblock"><code class="language-${esc(label)}">${hl}</code></pre>
+        </div>`;
+      }
+      let s = esc(p.value);
+      s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+      s = s.replace(/`([^`\n]+)`/g, "<code class=\"ai-code\">$1</code>");
+      s = s.replace(/^[-•] (.+)$/gm, "<span class=\"ai-li\">$1</span>");
+      s = s.replace(/\n{3,}/g, "\n\n");
+      return `<div class="ai-md">${s}</div>`;
+    }).join("");
+  }
+
+  function codeFromBubble(pack, bubbleIdx, codeId) {
+    const b = pack.bubbles?.[bubbleIdx];
+    if (!b) return "";
+    const display = normalizeBotText(b.text);
+    const fence = /```([a-zA-Z0-9_+-]*)\n?([\s\S]*?)```/g;
+    let m;
+    let n = 0;
+    while ((m = fence.exec(display))) {
+      if (n === Number(codeId)) return m[2].replace(/\n$/, "");
+      n++;
+    }
+    return "";
+  }
+
+  function parseQuotaAnswer(text) {
+    const s = String(text || "").trim().toLowerCase().replace(",", ".");
+    const m = s.match(/(\d+(?:\.\d+)?)\s*(gb|g)?\b/);
+    if (!m) return 0;
+    const n = Number(m[1]);
+    return n > 0 ? n : 0;
+  }
+
+  async function releaseTyping(pack, aiLog) {
+    if (pack.typing === false && !pack.typingOut) return;
+    pack.typing = true;
+    pack.typingOut = true;
+    if (aiLog) paintAIChat(aiLog, pack);
+    await sleep(320);
+    pack.typing = false;
+    pack.typingOut = false;
+    if (aiLog) paintAIChat(aiLog, pack);
+    await sleep(1000);
+  }
+
+  async function pushBot(pack, text, aiLog) {
+    const parts = splitBotBubbles(text);
+    await releaseTyping(pack, aiLog);
+    for (const t of parts) {
+      if (!t) continue;
+      pack.bubbles.push({ role: "bot", text: t, enter: true });
+      if (aiLog) paintAIChat(aiLog, pack);
+      await sleep(220);
+    }
+  }
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   async function typeCommand(tout, prompt, cmd) {
     if (!tout) return;
     tout.textContent += prompt;
-    const delay = cmd.length > 100 ? 3 : 12;
-    for (const ch of String(cmd)) {
-      tout.textContent += ch;
+    tout.scrollTop = tout.scrollHeight;
+    await sleep(320);
+    const s = String(cmd);
+    const base = s.length > 140 ? 7 : 18;
+    for (let i = 0; i < s.length; i++) {
+      tout.textContent += s[i];
       tout.scrollTop = tout.scrollHeight;
-      await new Promise((r) => setTimeout(r, delay));
+      let d = base + Math.random() * (base + 8);
+      if (s[i] === " ") d += 40;
+      if ("/;|&".includes(s[i])) d += 55;
+      await sleep(d);
     }
+    await sleep(220);
     tout.textContent += "\n";
     tout.scrollTop = tout.scrollHeight;
   }
 
-  async function api(path, opts = {}) {
-    const res = await fetch(path, {
-      credentials: "same-origin",
-      headers: opts.body && !(opts.body instanceof FormData)
-        ? { "Content-Type": "application/json", ...(opts.headers || {}) }
-        : opts.headers,
-      ...opts,
-    });
-    const ct = res.headers.get("content-type") || "";
-    if (ct.includes("application/json")) {
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Request failed");
-      return data;
+  async function typeDraftCommand(cmd, alive) {
+    const inp = document.querySelector("#term-cmd");
+    if (!inp) return;
+    inp.value = "";
+    inp.focus();
+    const s = String(cmd || "");
+    const base = s.length > 80 ? 8 : 16;
+    for (let i = 0; i < s.length; i++) {
+      if (alive && !alive()) return;
+      inp.value += s[i];
+      let d = base + Math.random() * (base + 6);
+      if (s[i] === " ") d += 30;
+      await sleep(d);
     }
-    const text = await res.text();
-    if (!res.ok) throw new Error(text || "Request failed");
-    return text;
+  }
+
+  function bindAgentChat({ key, stillHere, aiPath, execFn, quotaRoot, termOut, prompt, onImage, onStart, onToken, onQuota, onTermLine, onAction, hello, logMode, seedContext }) {
+    const pack = roomAIState(key);
+    if (!pack.welcomed) {
+      pack.welcomed = true;
+      if (!(pack.bubbles || []).length) {
+        pack.bubbles.push({ role: "bot", text: hello || AGENT_HELLO, enter: true });
+      }
+    }
+    if (seedContext && !pack.contextSeeded) {
+      pack.contextSeeded = true;
+      pack.messages.push({ role: "user", text: seedContext });
+    }
+    const aiLog = document.querySelector("#ai-log");
+    const mapLogKind = (text) => {
+      const t = String(text || "").trim().toLowerCase();
+      if (t === "panel" || t === "panel events") return "panel";
+      if (t === "api") return "api";
+      if (t === "deploy") return "deploy";
+      if (t === "host" || t === "host events") return "host";
+      return "";
+    };
+    const applyQuotaValue = async (gb) => {
+      const n = Number(gb);
+      if (!(n > 0)) return 0;
+      pack.quotaGB = n;
+      const hidden = document.querySelector("#pull-quota") || document.querySelector("[data-quota-input]");
+      if (hidden) hidden.value = String(n);
+      if (quotaRoot?.matches?.("[data-quota-input]")) quotaRoot.value = String(n);
+      else if (quotaRoot?.querySelector) {
+        const el = quotaRoot.querySelector("[data-quota-input]");
+        if (el) el.value = String(n);
+      }
+      if (onQuota) await onQuota(n);
+      return n;
+    };
+    const looksLikeFilename = (s) => {
+      const t = String(s || "").trim();
+      if (!t || t.length > 120 || /\n/.test(t)) return false;
+      if (/^(yes|no|ok|read|write|panel|api|deploy|host)$/i.test(t)) return false;
+      return /(\.|\/|Dockerfile|Makefile|README|package\.json|requirements|compose|\.py$|\.js$|\.go$|\.env$|\.yml$|\.yaml$|\.json$|\.md$)/i.test(t);
+    };
+    const wantsFiles = (s) => /اقرا الملفات|اقرأ الملفات|اعرض الملفات|list files|read files|show files|inspect files|الملفات|اقرأ ملف|اقرا ملف/i.test(s)
+      || (/(file|files|ملف|ملفات|كود)/i.test(s) && /(list|read|show|inspect|اقرا|اقرأ|اعرض)/i.test(s));
+    const sendUserText = async (text) => {
+      const t = String(text || "").trim();
+      if (!t || pack.busy) return;
+      pack.rtl = isRTLText(t);
+      const answering = !!(pack.pendingAsk && pack.pendingAsk.length);
+      pack.pendingAsk = null;
+      pack.pendingChoices = null;
+      pack.pendingPicked = [];
+      const maybeQ = parseQuotaAnswer(t);
+      if (maybeQ > 0) await applyQuotaValue(maybeQ);
+      if (logMode) {
+        const lk = mapLogKind(t);
+        if (lk) pack.attachLogKind = lk;
+      }
+      if (execFn && answering && looksLikeFilename(t)) pack.awaitFile = t;
+      if (execFn && wantsFiles(t)) pack.nudgedLs = false;
+      pack.bubbles.push({ role: "user", text: t, enter: true });
+      pack.messages.push({ role: answering ? "answers" : "user", text: t });
+      paintAIChat(aiLog, pack);
+      await runAILoop();
+    };
+    paintAIChat(aiLog, pack);
+    const looksLikeRead = (cmd) => /\b(cat|head|tail|sed\s+-n|awk)\b/.test(String(cmd || ""));
+    const runExec = async (cmd, typed) => {
+      const head = (prompt || "") + cmd + "\n";
+      if (!typed && termOut) {
+        termOut.textContent += head;
+        termOut.scrollTop = termOut.scrollHeight;
+      }
+      if (onTermLine) onTermLine(head);
+      let lastEx;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          if (attempt > 0) await sleep(350 * attempt);
+          const res = await execFn(cmd);
+          const where = res.where ? `[${res.where}] ` : "";
+          let out = where + (res.output || "") + (res.error ? `\n${res.error}` : "");
+          const empty = !String(res.output || "").trim() && !String(res.error || "").trim();
+          if (empty && looksLikeRead(cmd)) {
+            out = `FILE EMPTY: the file has no content at all.`;
+          }
+          const line = out + (out.endsWith("\n") ? "" : "\n");
+          if (termOut) {
+            termOut.textContent += (attempt ? `(retry ${attempt}) ` : "") + line;
+            termOut.scrollTop = termOut.scrollHeight;
+          }
+          if (onTermLine) onTermLine(line);
+          return { exit: empty && looksLikeRead(cmd) ? 0 : (res.exit ?? (res.error ? 1 : 0)), output: out, empty: empty && looksLikeRead(cmd) };
+        } catch (ex) {
+          lastEx = ex;
+          const msg = String(ex.message || ex);
+          if (!/Failed to fetch|NetworkError|network|timeout|502|503|504/i.test(msg) || attempt === 2) {
+            break;
+          }
+        }
+      }
+      const err = (lastEx?.message || lastEx || "exec failed") + "\n";
+      if (termOut) termOut.textContent += err;
+      if (onTermLine) onTermLine(err);
+      return { exit: 1, output: String(lastEx?.message || lastEx || "exec failed") };
+    };
+    const stopLoop = async () => {
+      if (!pack.busy) return;
+      try { pack.abort?.abort(); } catch {}
+      pack.run += 1;
+      pack.busy = false;
+      pack.typing = false;
+      pack.typingOut = false;
+      pack.status = "";
+      pack.abort = null;
+      pack.bubbles.push({ role: "bot", text: "Stopped.", enter: true });
+      paintAIChat(aiLog, pack);
+    };
+    const runAILoop = async () => {
+      if (pack.busy) return;
+      pack.busy = true;
+      pack.typing = true;
+      pack.pendingAsk = null;
+      pack.pendingChoices = null;
+      pack.status = agentStatus(pack, "think");
+      const run = ++pack.run;
+      pack.abort = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const alive = () => pack.run === run && pack.busy;
+      paintAIChat(aiLog, pack);
+      try {
+        for (let i = 0; i < 40; i++) {
+          if (!alive() || (stillHere && !stillHere())) return;
+          if (pack.messages.length > 40) pack.messages = pack.messages.slice(-40);
+          pack.typing = true;
+          pack.status = agentStatus(pack, i === 0 ? "think" : "read");
+          paintAIChat(aiLog, pack);
+          const payload = { messages: pack.messages };
+          if (logMode && pack.attachLogKind) payload.log_kind = pack.attachLogKind;
+          const res = await api(aiPath, {
+            method: "POST",
+            body: JSON.stringify(payload),
+            signal: pack.abort?.signal,
+          });
+          if (!alive()) return;
+          const say = String(res.say || "").trim();
+          const cmd = String(res.command || "").trim();
+          const img = String(res.image || "").trim();
+          const ask = Array.isArray(res.ask) ? res.ask.map((x) => String(x || "").trim()).filter(Boolean).slice(0, 1) : [];
+          let choices = Array.isArray(res.choices) ? res.choices.map((x) => String(x || "").trim()).filter(Boolean).slice(0, 8) : [];
+          const action = String(res.action || "").trim().toLowerCase();
+          const logKind = String(res.log_kind || "").trim().toLowerCase();
+          pack.messages.push({
+            role: "assistant",
+            text: JSON.stringify({
+              say, says: res.says || [], command: cmd, type_only: !!res.type_only, ask, choices, quota_gb: Number(res.quota_gb || 0),
+              image: img, start: !!res.start, action, log_kind: logKind, done: !!res.done,
+            }),
+          });
+          pack.status = "";
+          if (execFn && pack.awaitFile && !cmd) {
+            const f = pack.awaitFile;
+            pack.awaitFile = "";
+            pack.messages.push({
+              role: "terminal",
+              text: `SYSTEM: User chose file ${f}. You MUST set command to print it with the terminal tool, e.g. head -n 200 -- ${f}   Empty ask. Do not invent contents.`,
+            });
+            pack.typing = true;
+            paintAIChat(aiLog, pack);
+            continue;
+          }
+          if (execFn && !cmd && !ask.length && !choices.length && !pack.nudgedLs) {
+            const lastU = [...pack.messages].reverse().find((m) => m.role === "user" || m.role === "answers");
+            if (lastU && wantsFiles(lastU.text)) {
+              pack.nudgedLs = true;
+              pack.messages.push({
+                role: "terminal",
+                text: "SYSTEM: Use the terminal tool. Set command to list files (ls -la or find . -maxdepth 2 -type f). Next turn put names in choices. Do not invent names or contents.",
+              });
+              pack.typing = true;
+              paintAIChat(aiLog, pack);
+              continue;
+            }
+          }
+          if (cmd) pack.awaitFile = "";
+          const msgs = collectBotMessages(res);
+          if (msgs.length || say) await pushBot(pack, msgs.length ? msgs.join("\n\n") : say, aiLog);
+          else await releaseTyping(pack, aiLog);
+          if (ask.length) {
+            const q = ask[0];
+            const inSay = msgs.join("\n").toLowerCase().includes(q.slice(0, Math.min(18, q.length)).toLowerCase());
+            if (!inSay) await pushBot(pack, q, aiLog);
+            if (!choices.length && /read|write|both|قراء|كتاب/i.test(q + " " + say)) {
+              choices = ["read", "write", "both"];
+            }
+            if (!choices.length && logMode) {
+              choices = ["Panel", "API", "Deploy", "Host events"];
+            }
+            pack.pendingAsk = [q];
+            pack.pendingChoices = choices.length ? choices : null;
+            pack.pendingPicked = [];
+            paintAIChat(aiLog, pack);
+            break;
+          }
+          if (!ask.length && choices.length) {
+            pack.pendingAsk = [say || "Choose:"];
+            pack.pendingChoices = choices;
+            pack.pendingPicked = [];
+            paintAIChat(aiLog, pack);
+            break;
+          }
+          paintAIChat(aiLog, pack);
+          if (logMode && logKind && pack.attachLogKind !== logKind) {
+            pack.attachLogKind = logKind;
+            pack.messages.push({ role: "answers", text: logKind });
+            pack.typing = true;
+            continue;
+          }
+          if (logMode) pack.attachLogKind = "";
+          const wantQ = Number(res.quota_gb || 0);
+          if (wantQ > 0) {
+            pack.status = agentStatus(pack, "quota");
+            pack.typing = true;
+            paintAIChat(aiLog, pack);
+            try {
+              const saved = await applyQuotaValue(wantQ);
+              pack.messages.push({ role: "terminal", text: `QUOTA set: ${saved.toFixed(1)} GB` });
+            } catch (ex) {
+              pack.messages.push({ role: "terminal", text: `QUOTA save failed: ${ex.message}` });
+              await pushBot(pack, "Could not save disk quota: " + (ex.message || ""), aiLog);
+            }
+            pack.status = "";
+            pack.typing = false;
+            paintAIChat(aiLog, pack);
+          }
+          if ((action === "pause" || action === "resume") && onAction) {
+            if (action === "pause") {
+              const ok = await confirmAction({
+                title: "Pause this project?",
+                body: "The container will stop. You can resume it later. The room is not deleted.",
+                ok: "Pause",
+                danger: true,
+              });
+              if (!ok) {
+                pack.status = "";
+                pack.typing = false;
+                await pushBot(pack, "Pause cancelled.", aiLog);
+                paintAIChat(aiLog, pack);
+                continue;
+              }
+            }
+            try {
+              pack.status = action === "pause" ? "Pausing…" : "Starting…";
+              pack.typing = true;
+              paintAIChat(aiLog, pack);
+              await onAction(action);
+              pack.messages.push({ role: "terminal", text: `ACTION ${action} ok` });
+              pack.status = "";
+              pack.typing = false;
+              await pushBot(pack, action === "pause" ? "Paused." : "Running again.", aiLog);
+              paintAIChat(aiLog, pack);
+            } catch (ex) {
+              pack.status = "";
+              pack.typing = false;
+              await pushBot(pack, ex.message || "Action failed", aiLog);
+              pack.messages.push({ role: "terminal", text: `ACTION failed: ${ex.message || ex}` });
+              paintAIChat(aiLog, pack);
+              continue;
+            }
+          }
+          if (img && onImage) onImage(img);
+          if (res.token && onToken) onToken(res);
+          const typeOnly = !!(res.type_only || res.draft);
+          const draftCmd = cmd || String(res.draft || "").trim();
+          if (typeOnly && draftCmd && execFn) {
+            pack.status = agentStatus(pack, "type");
+            pack.typing = false;
+            paintAIChat(aiLog, pack);
+            await typeDraftCommand(draftCmd, alive);
+            if (!alive()) return;
+            pack.messages.push({ role: "terminal", text: `TYPED (not sent): ${draftCmd}` });
+            await pushBot(pack, "Typed in the terminal — send it yourself when you want.", aiLog);
+            break;
+          }
+          if (draftCmd && execFn) {
+            pack.status = agentStatus(pack, "type");
+            pack.typing = false;
+            paintAIChat(aiLog, pack);
+            await typeCommand(termOut, prompt, draftCmd);
+            if (!alive()) return;
+            pack.status = agentStatus(pack, "run");
+            paintAIChat(aiLog, pack);
+            const execRes = await runExec(draftCmd, true);
+            if (!alive()) return;
+            let termText = `exit ${execRes.exit}\n${execRes.output}`.slice(0, 12000);
+            if (execRes.empty) {
+              termText = `FILE EMPTY: the file has no content at all.\nCommand: ${draftCmd}`;
+            }
+            pack.messages.push({
+              role: "terminal",
+              text: termText,
+            });
+            if (onStart && /docker\s+(pull|build)|git\s+clone/i.test(draftCmd) && !(pack.quotaGB > 0)) {
+              pack.messages.push({
+                role: "terminal",
+                text: "SYSTEM: Install command finished. You MUST now ask how many GB for this project using ask + choices (0.5 GB, 1 GB, 2 GB, 5 GB, 10 GB). Empty command. Do not start until quota_gb is set.",
+              });
+            }
+            if (res.done) break;
+            pack.typing = true;
+            continue;
+          }
+          if (res.start && onStart) {
+            const imgUse = img || String(document.querySelector("#pull-image")?.value || "").trim();
+            const q = Number(pack.quotaGB || document.querySelector("#pull-quota")?.value || 0);
+            if (!(q > 0)) {
+              pack.messages.push({
+                role: "terminal",
+                text: "SYSTEM: start blocked — quota_gb is missing. Ask the user disk size with ask+choices, wait, then set quota_gb. Do not start yet.",
+              });
+              pack.typing = true;
+              continue;
+            }
+            if (imgUse) {
+              try {
+                pack.status = agentStatus(pack, "start");
+                pack.typing = true;
+                paintAIChat(aiLog, pack);
+                await onStart(imgUse, q);
+                pack.status = "";
+                pack.messages.push({ role: "terminal", text: `START requested for ${imgUse}` });
+              } catch (ex) {
+                pack.status = "";
+                pack.typing = false;
+                await pushBot(pack, ex.message || "Start failed", aiLog);
+                pack.messages.push({ role: "terminal", text: `START failed: ${ex.message || ex}` });
+                paintAIChat(aiLog, pack);
+                continue;
+              }
+            }
+            if (!res.done) {
+              pack.typing = true;
+              continue;
+            }
+          }
+          if (wantQ > 0 && !res.done) {
+            pack.typing = true;
+            continue;
+          }
+          if ((action === "pause" || action === "resume") && onAction && !res.done) {
+            pack.typing = true;
+            continue;
+          }
+          break;
+        }
+      } catch (ex) {
+        if (!(ex?.name === "AbortError" || /abort/i.test(String(ex.message || "")))) {
+          pack.typing = false;
+          await pushBot(pack, ex.message || "Agent failed", aiLog);
+        }
+      } finally {
+        if (pack.run === run) {
+          pack.busy = false;
+          pack.typing = false;
+          pack.status = "";
+        }
+        paintAIChat(aiLog, pack);
+      }
+    };
+    document.querySelector("#ai-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (pack.busy) {
+        await stopLoop();
+        return;
+      }
+      const inp = document.querySelector("#ai-q");
+      const text = String(inp?.value || "").trim();
+      if (!text) return;
+      inp.value = "";
+      if (inp.tagName === "TEXTAREA") {
+        inp.style.height = "auto";
+      }
+      const btn = document.querySelector("#ai-send");
+      btn?.classList.add("is-press");
+      setTimeout(() => btn?.classList.remove("is-press"), 180);
+      await sendUserText(text);
+    });
+    const aiInp = document.querySelector("#ai-q");
+    aiInp?.addEventListener("input", () => syncAgentComposer(pack));
+    aiInp?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        document.querySelector("#ai-form")?.requestSubmit();
+      }
+    });
+    aiLog?.addEventListener("click", async (e) => {
+      const codeBtn = e.target.closest("[data-copy-code]");
+      if (codeBtn) {
+        const [bi, ci] = String(codeBtn.dataset.copyCode || "").split(":");
+        const code = codeFromBubble(pack, Number(bi), Number(ci));
+        if (code) {
+          await copyText(code);
+          codeBtn.querySelector(".ai-codecopy-lab")?.replaceChildren(document.createTextNode("Copied"));
+          if (!codeBtn.querySelector(".ai-codecopy-lab")) codeBtn.textContent = "Copied";
+          codeBtn.classList.add("is-copied");
+          setTimeout(() => {
+            const lab = codeBtn.querySelector(".ai-codecopy-lab");
+            if (lab) lab.textContent = "Copy";
+            else codeBtn.textContent = "Copy";
+            codeBtn.classList.remove("is-copied");
+          }, 1200);
+        }
+        return;
+      }
+      const copyBtn = e.target.closest("[data-copy-bubble]");
+      if (copyBtn) {
+        const idx = Number(copyBtn.dataset.copyBubble);
+        const bubble = pack.bubbles[idx];
+        if (bubble?.text) {
+          await copyText(normalizeBotText(bubble.text));
+          copyBtn.textContent = "Copied";
+          setTimeout(() => { copyBtn.textContent = "Copy"; }, 1200);
+        }
+        return;
+      }
+      const choice = e.target.closest("[data-ai-choice]");
+      if (choice && !pack.busy) {
+        const val = choice.dataset.aiChoice;
+        const cur = new Set(pack.pendingPicked || []);
+        if (cur.has(val)) cur.delete(val);
+        else cur.add(val);
+        pack.pendingPicked = [...cur];
+        paintAIChat(aiLog, pack);
+        return;
+      }
+      const go = e.target.closest("[data-ai-choose-go]");
+      if (go && !pack.busy) {
+        const picked = pack.pendingPicked || [];
+        if (!picked.length) return;
+        let answer = picked.join(", ");
+        const low = picked.map((x) => String(x).toLowerCase());
+        if (low.includes("both") || (low.includes("read") && low.includes("write"))) {
+          answer = "both";
+        }
+        pack.pendingPicked = [];
+        await sendUserText(answer);
+      }
+    });
+    return { run: runAILoop, pack, send: sendUserText, stop: stopLoop };
+  }
+
+  async function api(path, opts = {}) {
+    const tries = 3;
+    let last;
+    for (let i = 0; i < tries; i++) {
+      try {
+        const res = await fetch(path, {
+          credentials: "same-origin",
+          headers: opts.body && !(opts.body instanceof FormData)
+            ? { "Content-Type": "application/json", ...(opts.headers || {}) }
+            : opts.headers,
+          ...opts,
+        });
+        const ct = res.headers.get("content-type") || "";
+        if (ct.includes("application/json")) {
+          const data = await res.json();
+          if (!res.ok) {
+            const err = new Error(data.error || "Request failed");
+            if ((res.status >= 500 || res.status === 429) && i < tries - 1) {
+              last = err;
+              await sleep(400 * (i + 1));
+              continue;
+            }
+            throw err;
+          }
+          return data;
+        }
+        const text = await res.text();
+        if (!res.ok) throw new Error(text || "Request failed");
+        return text;
+      } catch (ex) {
+        last = ex;
+        if (ex?.name === "AbortError" || /abort/i.test(String(ex.message || ""))) throw ex;
+        const msg = String(ex.message || ex);
+        const retryable = /Failed to fetch|NetworkError|network|timeout|502|503|504|load failed/i.test(msg);
+        if (!retryable || i === tries - 1) throw ex;
+        await sleep(400 * (i + 1));
+      }
+    }
+    throw last || new Error("Request failed");
   }
 
   function el(html) {
@@ -219,6 +1363,31 @@
     t.classList.add("show");
     clearTimeout(t._tm);
     t._tm = setTimeout(() => t.classList.remove("show"), 1600);
+  }
+
+  function confirmAction({ title, body, ok = "Confirm", danger = false } = {}) {
+    return new Promise((resolve) => {
+      const modal = el(`<div class="modal-back logout-modal show">
+        <div class="modal-card logout-card">
+          <h3>${esc(title || "Confirm")}</h3>
+          <p class="muted">${esc(body || "")}</p>
+          <div class="row-actions" style="margin-top:16px">
+            <button class="btn ghost" type="button" data-no>Cancel</button>
+            <button class="btn ${danger ? "danger" : "primary"} action" type="button" data-yes>${esc(ok)}</button>
+          </div>
+        </div>
+      </div>`);
+      const done = (v) => {
+        modal.classList.remove("show");
+        modal.classList.add("hide");
+        setTimeout(() => modal.remove(), 220);
+        resolve(v);
+      };
+      modal.querySelector("[data-no]").onclick = () => done(false);
+      modal.querySelector("[data-yes]").onclick = () => done(true);
+      modal.addEventListener("click", (e) => { if (e.target === modal) done(false); });
+      document.body.appendChild(modal);
+    });
   }
 
   function copyText(text) {
@@ -281,6 +1450,7 @@
       case "server": return "/server";
       case "deploy": return "/deploy";
       case "restore": return "/restore";
+      case "tokens": return "/tokens";
       case "logs": return "/logs";
       case "settings": return "/settings";
       case "docs": return "/docs";
@@ -296,6 +1466,7 @@
     if (room) return { view: "room", roomId: room[1], roomTab: room[2] || "overview" };
     if (p === "/projects") return { view: "rooms" };
     if (p === "/docs" || p === "/guide") return { view: "docs" };
+    if (p === "/tokens" || p === "/api") return { view: "tokens" };
     if (p === "/deploy") return { view: "deploy" };
     if (p === "/restore") return { view: "restore" };
     if (p === "/logs") return { view: "logs" };
@@ -440,6 +1611,15 @@
     scope.querySelectorAll("[data-power]").forEach((b) => bindAction(b, async () => {
       const id = b.dataset.power;
       const next = b.dataset.next;
+      if (next === "pause") {
+        const ok = await confirmAction({
+          title: "Pause this project?",
+          body: "The container will stop. You can resume it later. The room is not deleted.",
+          ok: "Pause",
+          danger: true,
+        });
+        if (!ok) return;
+      }
       await api(`/api/rooms/${id}/${next}`, { method: "POST" });
       const card = b.closest(".room-card") || b.closest(".topbar") || b.parentElement;
       const badge = card?.querySelector?.("[data-badge]");
@@ -463,7 +1643,7 @@
     app.innerHTML = "";
     if (state.gateStep === "code") {
       const card = el(`<div class="auth-wrap"><div class="auth-card">
-        <p class="auth-kicker">${brandMarkHTML()}VPS MANAGE</p>
+        <p class="auth-kicker">${brandMarkHTML()}VPS Manager</p>
         <h1>Enter the code</h1>
         <p class="lead">Sent to your Telegram · valid ${state.expiresIn} seconds</p>
         <form id="f">
@@ -485,7 +1665,7 @@
       return;
     }
     const card = el(`<div class="auth-wrap"><div class="auth-card">
-      <p class="auth-kicker">${brandMarkHTML()}VPS MANAGE</p>
+      <p class="auth-kicker">${brandMarkHTML()}VPS Manager</p>
       <h1>Unlock the panel</h1>
       <p class="lead">Paste your Telegram bot token. A one-time code is sent to the owner chat set at install.</p>
       <form id="f">
@@ -542,7 +1722,7 @@
         <button class="btn" style="width:100%" type="submit">Open</button>
       </form>` : "";
     const card = el(`<div class="auth-wrap"><div class="auth-card">
-      <p class="auth-kicker">${brandMarkHTML()}VPS MANAGE</p>
+      <p class="auth-kicker">${brandMarkHTML()}VPS Manager</p>
       <h1>Sign in</h1>
       <p class="lead">Use the panel password you set during install.</p>
       <form id="own">
@@ -619,13 +1799,34 @@
       app.appendChild(root);
       state.shellBuilt = true;
 
-      root.querySelector("#logout").onclick = async () => {
-        await api("/api/auth/logout", { method: "POST" });
-        state.me = null; state.gated = false; state.gateStep = "token"; state.shellBuilt = false;
-        state.sidebarOpen = false;
-        document.body.classList.remove("nav-open");
-        if (state.ws) { try { state.ws.close(); } catch {} state.ws = null; }
-        render();
+      root.querySelector("#logout").onclick = () => {
+        const modal = el(`<div class="modal-back logout-modal show" id="logout-modal">
+          <div class="modal-card logout-card">
+            <h3>Sign out?</h3>
+            <p class="muted">You will need to unlock the panel again.</p>
+            <div class="row-actions" style="margin-top:16px">
+              <button class="btn ghost" type="button" id="logout-cancel">Cancel</button>
+              <button class="btn danger action" type="button" id="logout-yes">Sign out</button>
+            </div>
+          </div>
+        </div>`);
+        document.body.appendChild(modal);
+        const close = () => {
+          modal.classList.remove("show");
+          modal.classList.add("hide");
+          setTimeout(() => modal.remove(), 220);
+        };
+        modal.querySelector("#logout-cancel").onclick = close;
+        modal.addEventListener("click", (e) => { if (e.target === modal) close(); });
+        modal.querySelector("#logout-yes").onclick = async () => {
+          close();
+          await api("/api/auth/logout", { method: "POST" });
+          state.me = null; state.gated = false; state.gateStep = "token"; state.shellBuilt = false;
+          state.sidebarOpen = false;
+          document.body.classList.remove("nav-open");
+          if (state.ws) { try { state.ws.close(); } catch {} state.ws = null; }
+          render();
+        };
       };
       const syncDrawer = () => {
         root.querySelector("#sidebar")?.classList.toggle("open", state.sidebarOpen);
@@ -647,12 +1848,11 @@
 
     const nav = root.querySelector("#nav");
     const items = isOwner
-      ? [["server", "Server"], ["rooms", "Projects"], ["deploy", "Deploy"], ["restore", "Restore"], ["logs", "Logs"], ["docs", "Docs"], ["settings", "Settings"]]
+      ? [["server", "Server"], ["rooms", "Projects"], ["deploy", "Deploy"], ["restore", "Backup"], ["logs", "Logs"], ["docs", "Docs"], ["tokens", "Tokens"], ["settings", "Settings"]]
       : [["room", "Room"], ["rooms", "All rooms"]];
     const highlight = navHighlight(active || state.view);
     nav.innerHTML = items.map(([k, label]) => {
-      const locked = k === "restore" && !state.backupReady;
-      return `<button data-go="${k}" class="${highlight === k ? "active" : ""} ${locked ? "nav-locked" : ""}" ${locked ? "title=\"Add & validate GitHub PAT first\"" : ""}><span class="nav-ico">${navIco(k)}</span><span>${label}</span>${locked ? "<span class=\"nav-lock\">Locked</span>" : ""}</button>`;
+      return `<button data-go="${k}" class="${highlight === k ? "active" : ""}"><span class="nav-ico">${navIco(k)}</span><span>${label}</span></button>`;
     }).join("");
     nav.querySelectorAll("[data-go]").forEach((b) => {
       b.onclick = async () => {
@@ -660,11 +1860,6 @@
         root.querySelector("#sidebar")?.classList.remove("open");
         root.querySelector("#backdrop")?.classList.remove("show");
         document.body.classList.remove("nav-open");
-        if (b.dataset.go === "restore" && !state.backupReady) {
-          alert("Restore is locked until you save and validate a GitHub PAT (classic) with repo scope.");
-          setView("settings");
-          return;
-        }
         if (b.dataset.go === "rooms" && !isOwner) {
           try {
             await unlockOwner();
@@ -727,7 +1922,7 @@
 
   async function renderServer() {
     const gen = state._gen;
-    const paint = (host) => {
+    const paint = (host, ready = false) => {
       if (!host) {
         shell(`<div class="topbar"><div><h2>Server</h2><div class="sub">Loading…</div></div></div>${skel(4)}`, "server");
         return;
@@ -796,22 +1991,36 @@
           ])}
           ${group("Platform", [
             fact("Docker", dockerLabel),
-            fact("Panel", "VPS MANAGE · :9090"),
+            fact("Panel", "VPS Manager · :9090"),
           ])}
         </div>
-      </div>`, "server");
+      </div>
+      ${ready ? agentDeskHTML({
+        title: "Ai Agent | Usage",
+        showTerm: false,
+        placeholder: "Ask about CPU, RAM, disk, load…",
+      }) : ""}`, "server");
       bindCopyables();
       updateMetricsDOM();
+      if (ready) {
+        bindAgentChat({
+          key: "usage",
+          stillHere: () => state.view === "server",
+          aiPath: "/api/usage/ai",
+          hello: USAGE_HELLO,
+        });
+      }
     };
-    paint(state.cache.host || null);
+    paint(state.cache.host || null, false);
     try {
       const host = await api("/api/host");
       if (!alive("server", gen)) return;
       state.cache.host = host;
-      paint(host);
+      paint(host, true);
     } catch (e) {
       if (!alive("server", gen)) return;
       if (!state.cache.host) shell(`<p class="error">${esc(e.message)}</p>`, "server");
+      else paint(state.cache.host, true);
     }
   }
 
@@ -832,43 +2041,48 @@
         const fill = quotaN > 0 ? Math.min(100, Math.round((usedN / quotaN) * 100)) : 0;
         const heat = fill >= 90 ? "hot" : fill >= 70 ? "warm" : "";
         const pw = r.password || "";
-        const initial = String(r.name || "?").trim().slice(0, 1).toUpperCase() || "P";
-        return `<article class="room-card" data-room="${r.id}">
-          <div class="room-card-top">
-            <div class="room-ident">
-              <span class="room-avatar" aria-hidden="true">${esc(initial)}</span>
-              <div>
-                <h4>${esc(r.name)}</h4>
-                <div class="room-card-meta">Room</div>
-              </div>
+        const img = r.image || "";
+        const port = Number(r.host_port) || 0;
+        return `<article class="proj-card" data-room="${r.id}">
+          <div class="proj-card-head">
+            ${projectIconHTML(st)}
+            <div class="proj-ident">
+              <h4>${esc(r.name)}</h4>
+              <p class="proj-meta">${img ? `<span class="mono">${esc(img)}</span>` : "Room"}${port ? ` · :${port}` : ""}</p>
             </div>
             <span class="badge ${st}" data-badge>${esc(r.status)}</span>
           </div>
-          <div class="room-disk ${heat}">
-            <div class="room-disk-row"><span>Disk</span><span class="mono">${esc(used)}</span></div>
-            <div class="room-disk-bar"><i style="width:${fill}%"></i></div>
+          <div class="proj-stats">
+            <div class="proj-stat">
+              <span>Disk</span>
+              <strong class="mono">${esc(used)}</strong>
+              <div class="room-disk ${heat}"><div class="room-disk-bar"><i style="width:${fill}%"></i></div></div>
+            </div>
+            <div class="proj-stat">
+              <span>Password</span>
+              <div class="secret-row">
+                <span class="secret-mask" aria-hidden="true">••••••••</span>
+                <button type="button" class="btn sm action" data-copy="${esc(pw)}" ${pw ? "" : "disabled"}>Copy</button>
+              </div>
+            </div>
           </div>
-          <div class="room-pass">
-            <span>Password</span>
-            <code class="mono copyable" data-copy="${esc(pw)}">${pw ? esc(pw) : "—"}</code>
-          </div>
-          <div class="row-actions room-card-actions">
+          <div class="proj-actions">
             <button class="btn sm primary action" data-enter="${r.id}" data-name="${esc(r.name)}" data-pass="${esc(pw)}">Open</button>
             ${powerToggleHTML(r.id, r.status)}
             <button class="btn sm danger action" data-del="${r.id}">Delete</button>
           </div>
         </article>`;
       }).join("") || `<div class="empty-projects">
-          <span class="brand-mark" aria-hidden="true"><span>V</span></span>
-          <h3>No projects yet</h3>
-          <p class="muted">Deploy an image, set a disk quota, and start a room.</p>
+          ${brandMarkHTML()}
+          <h3>No projects</h3>
+          <p class="muted">Deploy an image, set disk quota, and start a room.</p>
           <button class="btn primary action" id="empty-deploy">Deploy new</button>
         </div>`;
 
       shell(`
         <div class="topbar"><div>
           <h2>Projects</h2>
-          <div class="sub">${(rooms || []).length ? `${rooms.length} room${rooms.length === 1 ? "" : "s"} on this VPS` : "Create a room with Deploy"}</div>
+          <div class="sub">${(rooms || []).length ? `${rooms.length} on this VPS` : "Nothing deployed yet"}</div>
         </div>
         <button class="btn primary action" id="go-deploy">Deploy new</button>
         </div>
@@ -899,9 +2113,14 @@
       }));
       bindPowerToggles();
       document.querySelectorAll("[data-del]").forEach((b) => bindAction(b, async () => {
-        if (!confirm("Delete this project/room?")) return;
+        if (!await confirmAction({
+          title: "Delete this project?",
+          body: "This removes the room and its data. This cannot be undone.",
+          ok: "Delete",
+          danger: true,
+        })) return;
         await api(`/api/rooms/${b.dataset.del}`, { method: "DELETE" });
-        b.closest(".room-card")?.remove();
+        b.closest(".proj-card")?.remove();
       }));
     };
     paint(state.cache.rooms || null);
@@ -990,25 +2209,18 @@
     shell(`
       <div class="topbar"><div>
         <h2>Deploy</h2>
-        <div class="sub">Upload one Docker image, set disk quota, start</div>
+        <div class="sub">Agent in the terminal · no presets · live disk</div>
       </div></div>
       <div class="deploy-layout">
         <div class="panel deploy-card">
           <h3>Pull image</h3>
-          <div class="term term-deploy">
-            <div class="term-out" id="term-out">root@vps-manage:~# ready
-Type: docker pull nginx:alpine
-</div>
-            <form class="term-in" id="term-form">
-              <span class="prompt">root@vps-manage:~#</span>
-              <input id="term-cmd" autocomplete="off" spellcheck="false" placeholder="docker pull nginx:alpine" />
-            </form>
-          </div>
-          <div class="cmd-hints">
-            <button type="button" class="hint" data-hint="docker pull nginx:alpine">docker pull nginx:alpine</button>
-            <button type="button" class="hint" data-hint="docker pull redis:alpine">docker pull redis:alpine</button>
-          </div>
-          <div class="field full" style="margin-top:12px">${quotaSliderHTML({ name: "quota_gb", id: "pull-quota", maxGB, valueGB: Math.min(1, maxGB), required: true })}</div>
+          ${agentDeskHTML({
+            title: "Agent",
+            prompt: "root@vps-manager:~#",
+            termLines: "ready\n",
+            showTerm: true,
+            hiddenQuotaId: "pull-quota",
+          })}
           <div id="pull-setup" class="deploy-setup hidden">
             <p class="ok-text" id="pull-ready">Image ready</p>
             <form id="pull-finish" class="form-grid">
@@ -1031,7 +2243,7 @@ Type: docker pull nginx:alpine
               <div class="dz-sub">One file · drop or click · then set quota</div>
               <div class="dz-file hidden" id="dz-name"></div>
             </label>
-            <div class="field full" style="margin-top:12px">${quotaSliderHTML({ name: "quota_gb", maxGB, valueGB: Math.min(1, maxGB), required: true })}</div>
+            <div class="field full" style="margin-top:12px">${quotaSliderHTML({ name: "quota_gb", maxGB, valueGB: 0.1, required: true })}</div>
             <div id="up-setup" class="deploy-setup hidden">
               <div class="form-grid">
                 <div class="field"><label>Host port</label><input name="host_port" type="number" min="1" max="65535" placeholder="auto" /></div>
@@ -1065,10 +2277,41 @@ Type: docker pull nginx:alpine
     };
 
     bindQuotaSliders();
-    document.querySelectorAll("[data-hint]").forEach((b) => {
-      b.onclick = () => { termCmd.value = b.dataset.hint; termCmd.focus(); };
+    bindAgentChat({
+      key: "deploy",
+      stillHere: () => state.view === "deploy",
+      aiPath: "/api/deploy/ai",
+      execFn: (cmd) => api("/api/deploy/exec", {
+        method: "POST",
+        body: JSON.stringify({ command: cmd, timeout_sec: 600 }),
+      }),
+      quotaRoot: document.querySelector("#pull-quota"),
+      termOut,
+      prompt: "root@vps-manager:~# ",
+      onImage: (image) => {
+        const el = document.querySelector("#pull-image");
+        const ready = document.querySelector("#pull-ready");
+        const setup = document.querySelector("#pull-setup");
+        if (el) el.value = image;
+        if (ready) ready.textContent = `Image ready · ${image}`;
+        setup?.classList.remove("hidden");
+      },
+      onStart: async (image, quota) => {
+        const name = suggestName(image);
+        appendTerm(termOut, `\nStarting ${name}...\n`);
+        const text = await streamFetch("/api/deploy", {
+          method: "POST",
+          body: JSON.stringify({
+            image,
+            name,
+            quota_gb: quota,
+            host_port: Number(document.querySelector("#pull-port")?.value || 0) || 0,
+            container_port: Number(document.querySelector("#pull-cport")?.value || 80) || 80,
+          }),
+        }, (chunk) => appendTerm(termOut, chunk));
+        showResult(document.querySelector("#pull-done"), parseDeployOK(text));
+      },
     });
-
     const dz = document.querySelector("#dz");
     const dzInput = document.querySelector("#dz-input");
     const dzName = document.querySelector("#dz-name");
@@ -1221,10 +2464,23 @@ Type: docker pull nginx:alpine
           </div>
           <div class="logs-body" id="logbox">${formatLogHTML(raw)}</div>
         </div>
-      </div>`, "logs");
+      </div>
+      ${agentDeskHTML({
+        title: "Logs agent",
+        showTerm: false,
+        placeholder: "Ask to analyze logs…",
+      })}`, "logs");
 
     const box = document.querySelector("#logbox");
     pinLogBottom(box);
+
+    bindAgentChat({
+      key: "logs",
+      stillHere: () => state.view === "logs",
+      aiPath: "/api/logs/ai",
+      hello: LOGS_HELLO,
+      logMode: true,
+    });
 
     const refreshLive = async () => {
       if (state.view !== "logs") { stopLogLive(); return; }
@@ -1327,14 +2583,11 @@ docker save -o myapp.tar myapp:latest`;
         <div class="sub">Install on a new Ubuntu VPS</div>
       </div></div>
       <p class="docs-lead">Paste one command on the VPS. When Docker is ready the script stops and requires a panel password and your Telegram user id. Only after those are saved does it print the panel URL.</p>
+      <p class="docs-repo">Repository: <a href="https://github.com/X5Coder/VPS-Manager" target="_blank" rel="noopener">github.com/X5Coder/VPS-Manager</a> · Developer <strong>X5Coder</strong></p>
       <div class="docs-os">
         <div class="panel">
           <h3>Supported</h3>
           <p><strong>Ubuntu 20.04, 22.04, or 24.04</strong> · root access · x86_64 or ARM64.</p>
-        </div>
-        <div class="panel">
-          <h3>Not supported</h3>
-          <p>Windows VPS · other Linux distros · shared hosting without root.</p>
         </div>
       </div>
       ${step("1", "SSH into the VPS", "On your computer, replace YOUR_VPS_IP with the address from your provider.", "", ssh)}
@@ -1349,41 +2602,20 @@ docker save -o myapp.tar myapp:latest`;
 
   async function renderSettings() {
     const gen = state._gen;
-    shell(`<div class="topbar"><div><h2>Settings</h2><div class="sub">Root SSH · Admin vault · API tokens</div></div></div>${skel(4)}`, "settings");
-    let tokens = [], st = {};
+    shell(`<div class="topbar"><div><h2>Settings</h2><div class="sub">Root SSH · Admin vault · Alerts</div></div></div>${skel(4)}`, "settings");
+    let st = {};
     try {
-      [tokens, st] = await Promise.all([api("/api/settings/tokens"), api("/api/storage")]);
+      st = await api("/api/storage");
     } catch (e) {
       if (!alive("settings", gen)) return;
       shell(`<p class="error">${esc(e.message)}</p>`, "settings"); return;
     }
     if (!alive("settings", gen)) return;
 
-    const tokenCards = (tokens || []).map((t) => {
-      const secret = t.secret || "";
-      const canCopy = !!secret;
-      return `<div class="tok-card" data-tok-id="${esc(t.id)}">
-        <div class="head-row">
-          <div>
-            <strong>${esc(t.name)}</strong>
-            <span class="badge ${t.mode === "write" ? "ok" : "stop"}" style="margin-left:8px">${esc(t.mode)}</span>
-          </div>
-          <div class="row-actions">
-            <button class="btn sm action" data-copy-btn="${esc(secret)}" ${canCopy ? "" : "disabled"} title="Copy secret">Copy key</button>
-            <button class="btn sm action" data-prompt="${esc(t.id)}" ${canCopy ? "" : "disabled"}>Copy prompt</button>
-            <button class="btn sm danger action" data-del-tok="${esc(t.id)}">Revoke</button>
-          </div>
-        </div>
-        <div class="field" style="margin-top:10px"><label>Secret</label>
-          <input class="mono" readonly value="${esc(secret || "(not stored — revoke and create a new token)")}" /></div>
-        <div class="muted" style="font-size:0.75rem;margin-top:6px">created ${esc(t.created_at || "")}${t.last_used_at ? " · last used " + esc(t.last_used_at) : ""}</div>
-      </div>`;
-    }).join("") || `<p class="muted">No API tokens yet</p>`;
-
     shell(`
       <div class="topbar"><div>
         <h2>Settings</h2>
-        <div class="sub">Root SSH · Admin vault · API tokens</div>
+        <div class="sub">Root SSH · Admin vault · Alerts</div>
       </div></div>
       <div class="grid-2">
         <div class="panel">
@@ -1403,7 +2635,6 @@ docker save -o myapp.tar myapp:latest`;
           </form>
           <p class="error" id="adminerr"></p>
           <p class="ok-text hidden" id="adminok">Admin password updated.</p>
-          <p class="muted" style="margin-top:8px">Variable <span class="mono">VPS_ROOMS_OWNER_PASS</span> — never shown. Gate owner chat id is fixed.</p>
         </div>
       </div>
       <div class="panel" style="margin-top:12px">
@@ -1414,22 +2645,6 @@ docker save -o myapp.tar myapp:latest`;
             <div><span class="muted">Available</span><strong class="ok-text">${(st.quota_available_gb || 0).toFixed(2)} GB</strong></div>
           </div>
         </div>
-      <div class="panel" style="margin-top:12px">
-        <h3>API access</h3>
-        <p class="muted">Secrets stay visible here so you can copy anytime. Scope: all projects. Delete via API is disabled.</p>
-        <form id="tok-form" class="form-grid" style="margin-top:12px">
-          <div class="field"><label>Token name</label><input name="name" placeholder="Cursor / Claude" required /></div>
-          <div class="field"><label>Permission</label>
-            <select name="mode">
-              <option value="read">Read only</option>
-              <option value="write" selected>Read + write</option>
-            </select>
-          </div>
-          <div class="full"><button class="btn primary action" type="submit">Generate token</button></div>
-        </form>
-        <p class="error" id="tokerr"></p>
-        <div id="tok-list" style="margin-top:14px;display:flex;flex-direction:column;gap:10px">${tokenCards}</div>
-      </div>
       <div class="panel" style="margin-top:12px">
         <h3>Access alert bot (optional)</h3>
         <p class="muted">Separate Telegram bot for access notifications. Leave empty to disable. Gate owner chat id stays fixed.</p>
@@ -1443,55 +2658,9 @@ docker save -o myapp.tar myapp:latest`;
         </form>
         <p class="error" id="notifyerr"></p>
         <p class="muted" id="notifystatus" style="margin-top:8px"></p>
-      </div>
-      <div class="panel" style="margin-top:12px">
-        <h3>GitHub backup (full)</h3>
-        <p class="muted">Saved on this VPS — you only paste the token once. Backup includes panel settings, project files,
-          Postgres (Supabase auth/db and any other Postgres), and storage files. Needs a <strong>classic PAT</strong> with
-          <span class="mono">repo</span> scope.</p>
-        <p class="ok-text" id="ghsaved"></p>
-        <form id="gh-form" class="form-grid" style="margin-top:12px">
-          <div class="field full"><label>GitHub PAT (classic)</label>
-            <input name="token" type="password" placeholder="ghp_…" autocomplete="off" /></div>
-          <div class="full" style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="btn primary action" type="submit" id="gh-save">Save token</button>
-            <button class="btn action" type="button" id="bak-now-settings">Backup now</button>
-          </div>
-        </form>
-        <p class="error" id="gherr"></p>
-        <p class="muted" id="ghstatus" style="margin-top:8px"></p>
-        <div id="job-live-settings"></div>
-        <button class="btn sm danger action" id="gh-clear" type="button">Remove GitHub token</button>
       </div>`, "settings");
 
     bindCopyables();
-
-    document.querySelectorAll("[data-prompt]").forEach((b) => bindAction(b, async () => {
-      const res = await api(`/api/settings/tokens/${b.dataset.prompt}`);
-      if (!res.prompt) throw new Error("No secret stored for this token — create a new one");
-      await copyText(res.prompt);
-    }));
-
-    // load backup status
-    api("/api/backup/status").then((bk) => {
-      const el = document.querySelector("#ghstatus");
-      const saved = document.querySelector("#ghsaved");
-      const inp = document.querySelector("#gh-form [name=token]");
-      if (!el) return;
-      state.backupReady = !!bk.configured;
-      if (bk.configured) {
-        if (saved) saved.textContent = `Token saved on this VPS (${bk.token_hint || "••••"}) for @${bk.github_user || "?"} — you do not need to paste it again.`;
-        if (inp) inp.placeholder = "Leave blank — already saved. Paste a new token only to replace.";
-        el.textContent = `Enabled for @${bk.github_user || "?"} · last ${bk.last_backup_at || "never"} · next ${bk.next_backup_at || "—"}`;
-        const bakBtn = document.querySelector("#bak-now-settings");
-        if (bakBtn && bk.can_resume && bk.resume_kind === "backup") bakBtn.textContent = "Resume backup";
-      } else {
-        if (saved) saved.textContent = "";
-        el.textContent = "Not configured — backups are disabled until a PAT is saved.";
-      }
-      if (bk.job) paintJob(bk.job, "#job-live-settings");
-      if (bk.job && bk.job.status === "running") startJobPoll("settings");
-    }).catch(() => {});
 
     api("/api/settings/notify").then((n) => {
       const el = document.querySelector("#notifystatus");
@@ -1526,42 +2695,6 @@ docker save -o myapp.tar myapp:latest`;
       toast("Alerts disabled");
     });
 
-    document.querySelector("#gh-form").onsubmit = async (e) => {
-      e.preventDefault();
-      const err = document.querySelector("#gherr");
-      err.textContent = "";
-      try {
-        const raw = String(new FormData(e.target).get("token") || "").trim();
-        const bk = await api("/api/backup/token", { method: "POST", body: JSON.stringify({ token: raw }) });
-        state.backupReady = !!bk.configured;
-        const saved = document.querySelector("#ghsaved");
-        if (saved) saved.textContent = `Token saved on this VPS (${bk.token_hint || "••••"}) for @${bk.github_user || "?"} — you do not need to paste it again.`;
-        document.querySelector("#ghstatus").textContent = `Enabled for @${bk.github_user} · next ${bk.next_backup_at || "24h"}`;
-        e.target.querySelector("[name=token]").value = "";
-        e.target.querySelector("[name=token]").placeholder = "Leave blank — already saved. Paste a new token only to replace.";
-        toast("GitHub token saved on the server");
-      } catch (ex) { err.textContent = ex.message; }
-    };
-    bindAction(document.querySelector("#bak-now-settings"), async () => {
-      const err = document.querySelector("#gherr");
-      if (err) err.textContent = "";
-      try {
-        await api("/api/backup/now", {
-          method: "POST",
-          body: JSON.stringify({ label: "Manual backup", description: "Backup now from Settings" }),
-        });
-        toast("Backup started");
-        startJobPoll("settings");
-      } catch (ex) { if (err) err.textContent = ex.message; }
-    });
-    bindAction(document.querySelector("#gh-clear"), async () => {
-      await api("/api/backup/token", { method: "DELETE" });
-      state.backupReady = false;
-      document.querySelector("#ghstatus").textContent = "Token removed — backups disabled.";
-      state.shellBuilt = false;
-      render();
-    });
-
     document.querySelector("#pw-form").onsubmit = async (e) => {
       e.preventDefault();
       const box = document.querySelector("#pwerr");
@@ -1594,27 +2727,6 @@ docker save -o myapp.tar myapp:latest`;
         if (err) err.textContent = ex.message;
       }
     });
-
-    document.querySelector("#tok-form").onsubmit = async (e) => {
-      e.preventDefault();
-      const fd = new FormData(e.target);
-      const err = document.querySelector("#tokerr");
-      err.textContent = "";
-      try {
-        await api("/api/settings/tokens", {
-          method: "POST",
-          body: JSON.stringify({ name: fd.get("name"), mode: fd.get("mode") }),
-        });
-        e.target.reset();
-        render();
-      } catch (ex) { err.textContent = ex.message; }
-    };
-
-    document.querySelectorAll("[data-del-tok]").forEach((btn) => bindAction(btn, async () => {
-      if (!confirm("Revoke this API token?")) return;
-      await api(`/api/settings/tokens/${btn.dataset.delTok}`, { method: "DELETE" });
-      render();
-    }));
   }
 
   function jobPanelHTML(job) {
@@ -1651,14 +2763,13 @@ docker save -o myapp.tar myapp:latest`;
   function startJobPoll(where) {
     clearTimeout(state.jobTimer);
     const tick = async () => {
-      const onPage = (where === "settings" && state.view === "settings") ||
-        (where !== "settings" && state.view === "restore");
+      const onPage = state.view === "restore";
       if (!onPage) return;
       try {
         const bk = await api("/api/backup/status");
-        const sel = where === "settings" ? "#job-live-settings" : "#job-live";
+        const sel = "#job-live";
         paintJob(bk.job, sel);
-        const btn = document.querySelector(where === "settings" ? "#bak-now-settings" : "#bak-now");
+        const btn = document.querySelector("#bak-now");
         if (btn) {
           const running = !!(bk.job && bk.job.status === "running");
           btn.disabled = running;
@@ -1682,23 +2793,12 @@ docker save -o myapp.tar myapp:latest`;
 
   async function renderRestore() {
     const gen = state._gen;
-    if (!state.backupReady) {
-      shell(`<div class="panel"><h3>Restore locked</h3>
-        <p class="muted">Save and validate a GitHub classic PAT with <span class="mono">repo</span> scope in Settings first.</p>
-        <button class="btn primary action" id="go-set">Open Settings</button></div>`, "restore");
-      document.querySelector("#go-set").onclick = () => setView("settings");
-      return;
-    }
     shell(`
       <div class="topbar restore-hero">
         <div>
-          <h2>Restore & Backup</h2>
-          <div class="sub restore-sub"><span class="restore-live" aria-hidden="true"></span>Runs on the server — leave anytime and check status here</div>
+          <h2>Backup</h2>
+          <div class="sub restore-sub"><span class="restore-live" aria-hidden="true"></span>Enable with a tested GitHub key · runs on the server</div>
         </div>
-        <button class="btn primary action bak-now-btn" id="bak-now" disabled>
-          <span class="bak-now-ring" aria-hidden="true"></span>
-          Backup now
-        </button>
       </div>${skel(3)}`, "restore");
     let bk = {};
     try { bk = await api("/api/backup/status"); } catch (e) {
@@ -1716,32 +2816,55 @@ docker save -o myapp.tar myapp:latest`;
       ? (resumeKind === "backup"
         ? `Interrupted backup — ${bk.resume_rooms || 0} room(s) already uploaded. Click Resume to inspect and continue.`
         : `Interrupted restore — ${bk.resume_rooms || 0} room(s) already applied. Click Resume restore to continue.`)
-      : "Runs on the server — leave anytime and check status here";
+      : (bk.enabled ? "Backup is on — leave anytime and check status here" : "Backup is off until you test a GitHub PAT with repo scope");
     const rows = snaps.map((s) => {
       const resumeThis = canResume && resumeKind === "restore" && bk.resume_snapshot && s.id === bk.resume_snapshot;
       return `<tr>
       <td><strong>${esc(s.label || s.id)}</strong><div class="muted" style="font-size:0.8rem">${esc(s.description || "")}</div></td>
       <td class="muted">${esc(s.created_at || "")}</td>
       <td><span class="badge ${s.status === "ok" ? "ok" : "miss"}">${esc(s.status || "")}</span></td>
-      <td><button class="btn sm primary action" data-restore="${esc(s.id)}">${resumeThis ? "Resume" : "Restore"}</button></td>
+      <td><button class="btn sm primary action" data-restore="${esc(s.id)}" ${bk.configured ? "" : "disabled"}>${resumeThis ? "Resume" : "Restore"}</button></td>
     </tr>`;
-    }).join("") || `<tr><td colspan="4" class="muted">No local snapshots yet — run Backup now or restore from GitHub.</td></tr>`;
+    }).join("") || `<tr><td colspan="4" class="muted">No local snapshots yet — enable backup, then run Backup now.</td></tr>`;
 
     const jobHTML = `<div id="job-live">${job ? jobPanelHTML(job) : ""}</div>`;
 
     shell(`
       <div class="topbar restore-hero ${job && job.status === "running" ? "is-running" : ""}">
         <div>
-          <h2>Restore & Backup</h2>
+          <h2>Backup</h2>
           <div class="sub restore-sub"><span class="restore-live" aria-hidden="true"></span>${esc(resumeNote)}</div>
         </div>
         <div class="topbar-actions">
           ${canResume && resumeKind === "restore" ? `<button class="btn action" id="resume-restore">Resume restore</button>` : ""}
-          <button class="btn primary action bak-now-btn" id="bak-now" ${job && job.status === "running" ? "disabled" : ""}>
+          <button class="btn primary action bak-now-btn" id="bak-now" ${!bk.enabled || (job && job.status === "running") ? "disabled" : ""}>
             <span class="bak-now-ring" aria-hidden="true"></span>
             ${esc(bakLabel)}
           </button>
         </div>
+      </div>
+      <div class="panel bak-switch-card">
+        <div class="bak-switch-row">
+          <div>
+            <h3>GitHub backup</h3>
+            <p class="muted">Classic PAT with <span class="mono">repo</span> scope. Tested before it turns on. Creates private repos and pushes files.</p>
+          </div>
+          <label class="switch" title="Enable backup">
+            <input type="checkbox" id="bak-enable" ${bk.enabled ? "checked" : ""} />
+            <span class="switch-ui"></span>
+          </label>
+        </div>
+        <p class="ok-text" id="ghsaved">${bk.configured ? `Key saved (${esc(bk.token_hint || "••••")}) for @${esc(bk.github_user || "?")}` : ""}</p>
+        <form id="gh-form" class="form-grid" style="margin-top:12px">
+          <div class="field full"><label>Account key (GitHub PAT)</label>
+            <input name="token" type="password" placeholder="${bk.configured ? "Paste a new key only to replace" : "ghp_…"}" autocomplete="off" /></div>
+          <div class="full" style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn primary action" type="submit">Test & enable</button>
+            ${bk.configured ? `<button class="btn sm danger action" type="button" id="gh-clear">Remove key</button>` : ""}
+          </div>
+        </form>
+        <p class="error" id="gherr"></p>
+        <p class="muted" id="ghstatus" style="margin-top:8px">${bk.enabled ? `On · @${esc(bk.github_user || "?")} · last ${esc(bk.last_backup_at || "never")}` : "Off — paste a key and test it to turn on."}</p>
       </div>
       ${jobHTML}
       <div class="grid-2">
@@ -1771,6 +2894,57 @@ docker save -o myapp.tar myapp:latest`;
         <p class="error" id="bakerr"></p>
         <p class="ok-text hidden" id="bakok"></p>
       </div>`, "restore");
+
+    const setBakErr = (msg) => {
+      const el = document.querySelector("#gherr");
+      if (el) el.textContent = msg || "";
+    };
+    document.querySelector("#bak-enable")?.addEventListener("change", async (e) => {
+      const on = !!e.target.checked;
+      setBakErr("");
+      const raw = String(document.querySelector("#gh-form [name=token]")?.value || "").trim();
+      if (on && !bk.configured && !raw) {
+        e.target.checked = false;
+        setBakErr("Paste a GitHub classic PAT with repo scope, then turn it on.");
+        return;
+      }
+      try {
+        const res = await api("/api/backup/enable", {
+          method: "POST",
+          body: JSON.stringify({ enabled: on, token: raw }),
+        });
+        state.backupReady = !!res.configured;
+        toast(on ? "Backup enabled" : "Backup turned off");
+        renderRestore();
+      } catch (ex) {
+        e.target.checked = !on;
+        setBakErr(ex.message);
+      }
+    });
+    document.querySelector("#gh-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      setBakErr("");
+      const raw = String(new FormData(e.target).get("token") || "").trim();
+      if (!raw && !bk.configured) {
+        setBakErr("Paste a GitHub classic PAT with repo scope.");
+        return;
+      }
+      try {
+        const res = await api("/api/backup/enable", {
+          method: "POST",
+          body: JSON.stringify({ enabled: true, token: raw }),
+        });
+        state.backupReady = !!res.configured;
+        toast("Key tested — backup is on");
+        renderRestore();
+      } catch (ex) { setBakErr(ex.message); }
+    });
+    bindAction(document.querySelector("#gh-clear"), async () => {
+      await api("/api/backup/token", { method: "DELETE" });
+      state.backupReady = false;
+      toast("GitHub key removed");
+      renderRestore();
+    });
 
     if (job && job.status === "running") {
       startJobPoll("restore");
@@ -1856,6 +3030,117 @@ docker save -o myapp.tar myapp:latest`;
         setTimeout(() => renderRestore(), 600);
       } catch (ex) { document.querySelector("#bakerr").textContent = ex.message; }
     }));
+  }
+
+  function tokenCardHTML(t, opts = {}) {
+    const secret = t.secret || opts.secret || "";
+    const fresh = opts.fresh ? " tok-fresh" : "";
+    const copyVal = secret || "";
+    return `<div class="tok-card${fresh}" data-tok-id="${esc(t.id)}">
+      <div class="tok-card-top">
+        <div>
+          <strong>${esc(t.name)}</strong>
+          <span class="badge ${t.mode === "write" ? "ok" : "stop"}">${esc(t.mode)}</span>
+        </div>
+        <div class="row-actions">
+          <button class="btn sm action" data-copy-btn="${esc(copyVal)}" ${copyVal ? "" : "disabled"}>Copy</button>
+          <button class="btn sm danger action" data-del-tok="${esc(t.id)}">Revoke</button>
+        </div>
+      </div>
+      <div class="secret-row tok-secret-row">
+        <span class="secret-mask">${copyVal ? "••••••••••••••••••••" : (esc(t.token_prefix || "••••") + "…")}</span>
+      </div>
+      <div class="muted" style="font-size:0.75rem;margin-top:6px">created ${esc(t.created_at || "")}${t.last_used_at ? " · last used " + esc(t.last_used_at) : ""}</div>
+    </div>`;
+  }
+
+  async function renderTokens() {
+    const gen = state._gen;
+    shell(`<div class="topbar"><div><h2>Tokens</h2><div class="sub">API keys · agent helps you create and use them</div></div></div>${skel(3)}`, "tokens");
+    let tokens = [];
+    try {
+      tokens = await api("/api/settings/tokens");
+    } catch (e) {
+      if (!alive("tokens", gen)) return;
+      shell(`<p class="error">${esc(e.message)}</p>`, "tokens"); return;
+    }
+    if (!alive("tokens", gen)) return;
+    const list = tokens || [];
+    const cards = list.map((t) => tokenCardHTML(t)).join("") || `<p class="muted" id="tok-empty">No tokens yet — the agent will create the first one.</p>`;
+
+    shell(`
+      <div class="topbar"><div>
+        <h2>Tokens</h2>
+        <div class="sub">${list.length ? `${list.length} saved` : "Create the first key with the agent"}</div>
+      </div>
+        <button class="btn primary action" id="tok-new">Create token</button>
+      </div>
+      <div id="tok-fresh"></div>
+      <div id="tok-list" class="tok-list">${cards}</div>
+      ${agentDeskHTML({
+        title: "Tokens agent",
+        showTerm: false,
+      })}`, "tokens");
+
+    const paintList = (items, fresh) => {
+      const box = document.querySelector("#tok-list");
+      if (!box) return;
+      box.innerHTML = (items || []).map((t) => tokenCardHTML(t)).join("") || `<p class="muted">No tokens yet.</p>`;
+      if (fresh) {
+        const top = document.querySelector("#tok-fresh");
+        if (top) top.innerHTML = tokenCardHTML(fresh.token || fresh, { secret: fresh.secret, fresh: true });
+      }
+      bindCopyables();
+      document.querySelectorAll("[data-copy-btn]").forEach((b) => {
+        if (!b.dataset.copyBtn) return;
+        b.onclick = async () => { await copyText(b.dataset.copyBtn); toast("Copied"); };
+      });
+      document.querySelectorAll("[data-del-tok]").forEach((btn) => bindAction(btn, async () => {
+        if (!confirm("Revoke this API token?")) return;
+        await api(`/api/settings/tokens/${btn.dataset.delTok}`, { method: "DELETE" });
+        renderTokens();
+      }));
+    };
+    paintList(list);
+
+    const agent = bindAgentChat({
+      key: "tokens",
+      stillHere: () => state.view === "tokens",
+      aiPath: "/api/tokens/ai",
+      hello: TOKEN_HELLO,
+      onToken: (res) => {
+        const extras = Array.isArray(res.tokens) ? res.tokens : [];
+        const items = extras.length
+          ? extras.map((x) => {
+              const tok = x.token || x;
+              tok.secret = x.secret || tok.secret;
+              return tok;
+            })
+          : [Object.assign({}, res.token || {}, { secret: res.secret })];
+        const fresh = items[0] ? { token: items[0], secret: items[0].secret } : res;
+        const rest = list.filter((t) => !items.some((n) => n.id && n.id === t.id));
+        paintList([...items, ...rest], fresh);
+        items.reverse().forEach((tok) => list.unshift(tok));
+      },
+    });
+    document.querySelector("#tok-new")?.addEventListener("click", () => {
+      if (agent.pack.busy) return;
+      const text = agent.pack.rtl
+        ? "اعمل توكن جديد. اسألني read ولا write ولا both، وبعدين الاسم."
+        : "Create a new API token. Ask me read, write, or both, then a name.";
+      agent.pack.pendingAsk = null;
+      agent.pack.bubbles.push({ role: "user", text, enter: true });
+      agent.pack.messages.push({ role: "user", text });
+      paintAIChat(document.querySelector("#ai-log"), agent.pack);
+      agent.run();
+    });
+    if (!list.length && agent.pack.messages.length === 0) {
+      agent.pack.messages.push({
+        role: "user",
+        text: "I opened Tokens. I have none yet. Start first-token setup: ask read, write, or both, then a name, then create it.",
+      });
+      agent.run();
+    }
   }
 
   function showRestorePrompt() {
@@ -1963,7 +3248,7 @@ docker save -o myapp.tar myapp:latest`;
           <div class="stat"><div class="label">Project disk</div><div class="value">${fmtBytes(room.usage_bytes)}</div><div class="muted">quota ${room.quota_bytes ? fmtBytes(room.quota_bytes) : "not set"}</div></div>
           <div class="stat"><div class="label">Status</div><div class="value" style="font-size:1.1rem">${esc((projs[0] && projs[0].status) || "—")}</div></div>
           <div class="stat"><div class="label">Password</div><div class="value" style="font-size:1rem">${room.password
-            ? `<span class="mono copyable" data-copy="${esc(room.password)}">${esc(room.password)}</span>`
+            ? `<div class="secret-row"><span class="secret-mask">••••••••</span><button type="button" class="btn sm action" data-copy="${esc(room.password)}">Copy</button></div>`
             : `<span class="muted">hidden until unlock</span>`}</div></div>
         </div>
         <div class="grid" style="margin-top:12px">
@@ -2075,7 +3360,8 @@ docker save -o myapp.tar myapp:latest`;
             <button class="btn sm primary action" id="env-save">Save</button>
           </div>
         </div>
-        <p class="muted mono" style="margin-bottom:10px">${esc(envMeta.path || "")}</p>
+        <p class="muted mono" style="margin-bottom:6px">${esc(envMeta.path || "")}</p>
+        <p class="muted" style="margin:0 0 10px;font-size:0.82rem">These are the project secrets the container started with. If this page was empty, the panel now fills it from the running container. After you save, pause then resume so the app reloads the new values.</p>
         <form id="env-form" class="env-form">
           ${rows.map((r) => `<div class="env-row">
             <input name="key" placeholder="KEY" value="${esc(r.key)}" />
@@ -2089,38 +3375,14 @@ docker save -o myapp.tar myapp:latest`;
       </div>`;
     } else if (tab === "terminal") {
       const lines = (state.termLines || []).join("") || "Linux shell for this room. Commands run in room files or project container.\n";
-      const curQ = room.quota_bytes ? gb(room.quota_bytes) : 0.1;
-      const maxQ = Math.max(curQ, Number(room.quota_max_gb || st?.quota_available_gb || curQ));
-      body = `<div class="term-stack">
-        <div class="panel term-panel">
-          <h3>Terminal</h3>
-          <div class="term">
-            <div class="term-out" id="tout">${esc(lines)}</div>
-            <form class="term-in" id="tform"><span class="prompt">root@${esc(room.name)}:~#</span>
-            <input id="tcmd" autocomplete="off" spellcheck="false" /></form>
-          </div>
-          <div class="cmd-hints">
-            ${TERM_HINTS.map((h) => `<button type="button" class="hint" data-hint="${esc(h.cmd)}" title="${esc(h.tip)}">${esc(h.cmd)}</button>`).join("")}
-          </div>
-        </div>
-        <section class="ai-sheet" id="ai-chat">
-          <header class="ai-sheet-head">
-            <div>
-              <h3>Assistant</h3>
-              <p class="muted">Chat below. It asks for disk space, moves the slider, then types commands in the terminal.</p>
-            </div>
-          </header>
-          <div class="ai-quota" id="ai-quota">
-            ${quotaSliderHTML({ name: "quota_gb", id: "ai-quota-gb", maxGB: maxQ, valueGB: curQ, required: true })}
-            <p class="muted ai-quota-hint">Available up to <strong>${maxQ.toFixed(1)} GB</strong> on this VPS.</p>
-          </div>
-          <div class="ai-chat-log" id="ai-log"></div>
-          <form class="ai-chat-in" id="ai-form">
-            <input id="ai-q" autocomplete="off" maxlength="2000" placeholder="Ask to clone, dockerize, or host a project…" />
-            <button class="btn sm primary" type="submit">Send</button>
-          </form>
-        </section>
-      </div>`;
+      const prompt = `root@${room.name}:~#`;
+      body = agentDeskHTML({
+        title: "Agent",
+        prompt,
+        termLines: lines,
+        showTerm: true,
+        hints: TERM_HINTS.map((h) => `<button type="button" class="hint" data-hint="${esc(h.cmd)}" title="${esc(h.tip)}">${esc(h.cmd)}</button>`).join(""),
+      });
     }
 
     shell(`
@@ -2139,7 +3401,7 @@ docker save -o myapp.tar myapp:latest`;
         <button data-tab="files" class="${tab === "files" ? "active" : ""}">Files</button>
         <button data-tab="logs" class="${tab === "logs" ? "active" : ""}">Logs</button>
         <button data-tab="env" class="${tab === "env" ? "active" : ""}">Env</button>
-        <button data-tab="terminal" class="${tab === "terminal" ? "active" : ""}">Terminal</button>
+        <button data-tab="terminal" class="${tab === "terminal" ? "active" : ""}">Ai Agent | Terminal</button>
       </div>
       ${body}`, "room");
 
@@ -2154,7 +3416,12 @@ docker save -o myapp.tar myapp:latest`;
     bindPowerToggles();
     document.querySelectorAll("[data-act]").forEach((b) => bindAction(b, async () => {
       if (b.dataset.act === "delete") {
-        if (!confirm("Delete project/room?")) return;
+        if (!await confirmAction({
+          title: "Delete this project?",
+          body: "This removes the room and its data. This cannot be undone.",
+          ok: "Delete",
+          danger: true,
+        })) return;
         await api(`/api/rooms/${id}`, { method: "DELETE" });
         await unlockOwner();
         setView("rooms");
@@ -2360,21 +3627,54 @@ docker save -o myapp.tar myapp:latest`;
       });
     }
     if (tab === "terminal") {
-      const tout = document.querySelector("#tout");
-      const aiLog = document.querySelector("#ai-log");
-      const pack = roomAIState(id);
-      bindQuotaSliders(document.querySelector("#ai-quota"));
-      paintAIChat(aiLog, pack);
-      document.querySelectorAll("[data-hint]").forEach((b) => b.onclick = () => {
-        document.querySelector("#tcmd").value = b.dataset.hint;
-        document.querySelector("#tcmd").focus();
-      });
-      const runExec = async (cmd, typed, host) => {
+      const termOut = document.querySelector("#term-out");
+      const prompt = `root@${room.name}:~# `;
+      const persist = (line) => {
         state.termLines = state.termLines || [];
-        if (!typed) {
-          state.termLines.push(`root@${room.name}:~# ${cmd}\n`);
-          tout.textContent += `root@${room.name}:~# ${cmd}\n`;
+        state.termLines.push(line);
+      };
+      const agent = bindAgentChat({
+        key: id,
+        stillHere: () => state.view === "room" && state.roomId === id && (state.roomTab || "") === "terminal",
+        aiPath: `/api/rooms/${id}/ai`,
+        execFn: (cmd) => api(`/api/rooms/${id}/exec`, {
+          method: "POST",
+          body: JSON.stringify({
+            command: cmd,
+            project_id: mainProj?.id || "",
+            timeout_sec: 120,
+            host: true,
+          }),
+        }),
+        termOut,
+        prompt,
+        hello: ROOM_HELLO,
+        seedContext: `SYSTEM CONTEXT (do not ask again): You are inside room "${room.name}". ` +
+          `Disk used ${fmtBytes(room.usage_bytes)} of quota ${room.quota_bytes ? fmtBytes(room.quota_bytes) : "not set"}. ` +
+          `Projects: ${(projs || []).map((p) => `${p.name} image=${p.image} status=${p.status} port=${p.host_port || 0} domain=${p.domain || "-"}`).join("; ") || "none"}. ` +
+          `If they ask for usage, answer with those numbers in one say. You may edit files via the terminal after reading them. Refuse cloning/downloading new projects. Refuse deleting this room.`,
+        onQuota: (gb) => api(`/api/rooms/${id}/quota`, { method: "POST", body: JSON.stringify({ quota_gb: gb }) }),
+        onAction: (action) => api(`/api/rooms/${id}/${action}`, { method: "POST" }),
+        onTermLine: persist,
+      });
+      document.querySelectorAll("[data-hint]").forEach((b) => {
+        b.onclick = () => {
+          const inp = document.querySelector("#term-cmd");
+          if (inp) { inp.value = b.dataset.hint; inp.focus(); }
+        };
+      });
+      document.querySelector("#term-form")?.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const inp = document.querySelector("#term-cmd");
+        const cmd = String(inp?.value || "").trim();
+        if (!cmd) return;
+        inp.value = "";
+        const head = prompt + cmd + "\n";
+        if (termOut) {
+          termOut.textContent += head;
+          termOut.scrollTop = termOut.scrollHeight;
         }
+        persist(head);
         try {
           const res = await api(`/api/rooms/${id}/exec`, {
             method: "POST",
@@ -2382,117 +3682,28 @@ docker save -o myapp.tar myapp:latest`;
               command: cmd,
               project_id: mainProj?.id || "",
               timeout_sec: 120,
-              host: !!host,
             }),
           });
           const where = res.where ? `[${res.where}] ` : "";
           const out = where + (res.output || "") + (res.error ? `\n${res.error}` : "");
           const line = out + (out.endsWith("\n") ? "" : "\n");
-          state.termLines.push(line);
-          tout.textContent += line;
-          tout.scrollTop = tout.scrollHeight;
-          return { exit: res.exit ?? (res.error ? 1 : 0), output: out };
-        } catch (ex) {
-          state.termLines.push(ex.message + "\n");
-          tout.textContent += ex.message + "\n";
-          return { exit: 1, output: ex.message };
-        }
-      };
-      const runAILoop = async () => {
-        if (pack.busy) return;
-        pack.busy = true;
-        pack.pendingAsk = null;
-        const run = ++pack.run;
-        paintAIChat(aiLog, pack);
-        try {
-          for (let i = 0; i < 25; i++) {
-            if (pack.run !== run || state.view !== "room" || state.roomId !== id || (state.roomTab || "") !== "terminal") return;
-            if (pack.messages.length > 40) pack.messages = pack.messages.slice(-40);
-            const res = await api(`/api/rooms/${id}/ai`, {
-              method: "POST",
-              body: JSON.stringify({ messages: pack.messages }),
-            });
-            if (pack.run !== run) return;
-            const say = String(res.say || "").trim();
-            const cmd = String(res.command || "").trim();
-            const ask = Array.isArray(res.ask) ? res.ask.map((x) => String(x || "").trim()).filter(Boolean) : [];
-            pack.messages.push({
-              role: "assistant",
-              text: JSON.stringify({ say, command: cmd, ask, quota_gb: Number(res.quota_gb || 0), done: !!res.done }),
-            });
-            if (say) pack.bubbles.push({ role: "bot", text: say });
-            paintAIChat(aiLog, pack);
-            const wantQ = Number(res.quota_gb || 0);
-            if (wantQ > 0) {
-              const saved = await animateQuotaSlider(document.querySelector("#ai-quota"), wantQ);
-              try {
-                await api(`/api/rooms/${id}/quota`, { method: "POST", body: JSON.stringify({ quota_gb: saved }) });
-                pack.messages.push({ role: "terminal", text: `QUOTA slider set and saved: ${saved.toFixed(1)} GB` });
-              } catch (ex) {
-                pack.messages.push({ role: "terminal", text: `QUOTA save failed: ${ex.message}` });
-                pack.bubbles.push({ role: "bot", text: "Could not save disk quota: " + (ex.message || "") });
-                paintAIChat(aiLog, pack);
-              }
-            }
-            if (ask.length) {
-              pack.pendingAsk = ask;
-              break;
-            }
-            if (cmd) {
-              const prompt = `root@${room.name}:~# `;
-              await typeCommand(tout, prompt, cmd);
-              state.termLines = state.termLines || [];
-              state.termLines.push(prompt + cmd + "\n");
-              const execRes = await runExec(cmd, true, true);
-              pack.messages.push({
-                role: "terminal",
-                text: `exit ${execRes.exit}\n${execRes.output}`.slice(0, 12000),
-              });
-              continue;
-            }
-            break;
+          if (termOut) {
+            termOut.textContent += line;
+            termOut.scrollTop = termOut.scrollHeight;
           }
-        } catch (ex) {
-          pack.bubbles.push({ role: "bot", text: ex.message || "Assistant failed" });
-        } finally {
-          if (pack.run === run) pack.busy = false;
-          paintAIChat(aiLog, pack);
-          document.querySelector("#ai-ask")?.addEventListener("submit", async (e) => {
-            e.preventDefault();
-            if (pack.busy) return;
-            const questions = pack.pendingAsk || [];
-            const fd = new FormData(e.target);
-            const lines = questions.map((q, idx) => `${q}: ${String(fd.get("a" + idx) || "").trim()}`);
-            pack.pendingAsk = null;
-            pack.bubbles.push({ role: "user", text: lines.join("\n") });
-            pack.messages.push({ role: "answers", text: lines.join("\n") });
-            paintAIChat(aiLog, pack);
-            await runAILoop();
+          persist(line);
+          agent.pack.messages.push({ role: "user", text: "I ran this in the terminal: " + cmd });
+          agent.pack.messages.push({
+            role: "terminal",
+            text: `exit ${res.exit ?? (res.error ? 1 : 0)}\n${out}`.slice(0, 12000),
           });
+        } catch (ex) {
+          const err = (ex.message || ex) + "\n";
+          if (termOut) termOut.textContent += err;
+          persist(err);
         }
-      };
-      document.querySelector("#tform").onsubmit = async (e) => {
-        e.preventDefault();
-        const cmd = document.querySelector("#tcmd").value;
-        document.querySelector("#tcmd").value = "";
-        if (!String(cmd || "").trim()) return;
-        const execRes = await runExec(cmd, false);
-        pack.messages.push({ role: "user", text: "I ran this in the terminal: " + cmd });
-        pack.messages.push({ role: "terminal", text: `exit ${execRes.exit}\n${execRes.output}`.slice(0, 12000) });
-      };
-      document.querySelector("#ai-form")?.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const inp = document.querySelector("#ai-q");
-        const text = String(inp?.value || "").trim();
-        if (!text || pack.busy) return;
-        inp.value = "";
-        pack.pendingAsk = null;
-        pack.bubbles.push({ role: "user", text });
-        pack.messages.push({ role: "user", text });
-        paintAIChat(aiLog, pack);
-        await runAILoop();
       });
-      document.querySelector("#tcmd")?.focus();
+      document.querySelector("#term-cmd")?.focus();
     }
   }
 
@@ -2522,6 +3733,7 @@ docker save -o myapp.tar myapp:latest`;
       if (state.view === "docs") return renderDocs();
       if (state.view === "settings") return renderSettings();
       if (state.view === "restore") return renderRestore();
+      if (state.view === "tokens") return renderTokens();
       if (state.view === "room") return renderRoom();
       await renderServer();
       showRestorePrompt();

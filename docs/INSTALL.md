@@ -1,10 +1,11 @@
-# Install VPS MANAGE
+# Install VPS Manager
 
-## Supported OS
+**Repository:** [https://github.com/X5Coder/VPS-Manager](https://github.com/X5Coder/VPS-Manager)  
+**Developer:** X5Coder
 
-**Ubuntu 20.04, 22.04, or 24.04** only. You need **root**.
+## Supported
 
-Does not run on Windows VPS, other Linux distributions, or shared hosting without root.
+**Ubuntu 20.04, 22.04, or 24.04** with **root**. x86_64 or ARM64.
 
 ## After you buy a VPS
 
@@ -63,8 +64,8 @@ docker save -o myapp.tar myapp:latest
 
 In the panel: **Deploy** → upload `myapp.tar` → set disk quota → Start.
 
-The panel creates the room, loads the image, and starts it. No room name is required.
+The panel creates the room, loads the image, and starts it.
 
 You can also pull a public image on the VPS (`docker pull nginx:alpine`) and set quota the same way.
 
-In a room **Terminal** you can ask the assistant to clone a GitHub repo, write a Dockerfile, and build an image for this VPS.
+In a room **Ai Agent | Terminal** you can ask the assistant to inspect this project, run commands, and explain files after it reads them in the terminal.

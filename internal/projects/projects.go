@@ -461,11 +461,72 @@ func (s *Service) ReadEnv(id string) (string, error) {
 		return "", fmt.Errorf("project not found")
 	}
 	_ = s.prepareRoom(p.RoomID)
-	b, err := os.ReadFile(filepath.Join(s.Rooms.ProjectDir(p.RoomID, p.ID), ".env"))
-	if os.IsNotExist(err) {
-		return "", nil
+	pdir := s.Rooms.ProjectDir(p.RoomID, p.ID)
+	path := filepath.Join(pdir, ".env")
+	b, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return "", err
 	}
-	return string(b), err
+	text := string(b)
+	if strings.TrimSpace(text) != "" {
+		return text, nil
+	}
+	if filled := s.discoverEnvText(*p, pdir); strings.TrimSpace(filled) != "" {
+		_ = writeEnv(path, filled)
+		return filled, nil
+	}
+	return "", nil
+}
+
+func (s *Service) discoverEnvText(p store.Project, pdir string) string {
+	skip := map[string]bool{
+		"PATH": true, "HOME": true, "HOSTNAME": true, "TERM": true, "LANG": true,
+		"LC_ALL": true, "PWD": true, "OLDPWD": true, "SHLVL": true, "container": true,
+		"DEBIAN_FRONTEND": true, "GPG_KEYS": true, "_": true,
+	}
+	fromFile := func(fp string) string {
+		b, err := os.ReadFile(fp)
+		if err != nil || strings.TrimSpace(string(b)) == "" {
+			return ""
+		}
+		return string(b)
+	}
+	meta := readMountsMeta(pdir)
+	cands := []string{filepath.Join(pdir, "files", ".env")}
+	if meta.FilesRoot != "" {
+		cands = append(cands, filepath.Join(meta.FilesRoot, ".env"))
+	}
+	if meta.ComposeDir != "" {
+		cands = append(cands, filepath.Join(meta.ComposeDir, ".env"))
+	}
+	for _, cand := range cands {
+		if t := fromFile(cand); t != "" {
+			return t
+		}
+	}
+	if s.Docker == nil || p.ContainerID == "" {
+		return ""
+	}
+	pairs, err := s.Docker.InspectEnv(p.ContainerID)
+	if err != nil || len(pairs) == 0 {
+		return ""
+	}
+	var lines []string
+	for _, e := range pairs {
+		k, _, ok := strings.Cut(e, "=")
+		if !ok {
+			continue
+		}
+		k = strings.TrimSpace(k)
+		if k == "" || skip[k] || strings.HasPrefix(k, "GPG_") {
+			continue
+		}
+		lines = append(lines, e)
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return strings.Join(lines, "\n") + "\n"
 }
 
 func (s *Service) WriteEnv(id, text string) error {
@@ -492,12 +553,12 @@ func containerName(roomID, projectID string) string {
 }
 
 type mountsMeta struct {
-	HostIP          string   `json:"host_ip,omitempty"`
-	Binds           []string `json:"binds,omitempty"`
-	FilesRoot       string   `json:"files_root,omitempty"` // host dir shown in Files UI
-	ComposeDir      string   `json:"compose_dir,omitempty"`
-	ComposeProject  string   `json:"compose_project,omitempty"`
-	Gateway         string   `json:"gateway,omitempty"`
+	HostIP         string   `json:"host_ip,omitempty"`
+	Binds          []string `json:"binds,omitempty"`
+	FilesRoot      string   `json:"files_root,omitempty"` // host dir shown in Files UI
+	ComposeDir     string   `json:"compose_dir,omitempty"`
+	ComposeProject string   `json:"compose_project,omitempty"`
+	Gateway        string   `json:"gateway,omitempty"`
 }
 
 func writeMountsMeta(pdir, hostIP string, binds []string) error {

@@ -27,4 +27,6 @@ ENV VPS_ROOMS_ADDR=:9090 \
     VPS_ROOMS_AGENT_SOCK=/opt/vps-rooms/data/agent.sock
 VOLUME ["/opt/vps-rooms/data", "/opt/vps-rooms/rooms", "/opt/vps-rooms/runtime"]
 EXPOSE 9090
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD curl -fsS http://127.0.0.1:9090/api/health || exit 1
 ENTRYPOINT ["/entrypoint.sh"]

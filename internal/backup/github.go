@@ -50,13 +50,38 @@ func (g *GitHub) Validate() (*GHUser, error) {
 	if u.Login == "" {
 		return nil, fmt.Errorf("could not read GitHub user")
 	}
-	// check scopes hint
 	scopes := res.Header.Get("X-OAuth-Scopes")
-	if scopes != "" && !strings.Contains(scopes, "repo") {
-		return nil, fmt.Errorf("token missing 'repo' scope — create a classic PAT with repo access")
+	if err := g.checkBackupScopes(scopes); err != nil {
+		return nil, err
 	}
 	g.User = u.Login
 	return &u, nil
+}
+
+func (g *GitHub) checkBackupScopes(scopes string) error {
+	sc := strings.ToLower(strings.TrimSpace(scopes))
+	if sc == "" {
+		return fmt.Errorf("this token has no classic scopes. Create a classic PAT with the repo scope (GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)). Fine-grained tokens are not accepted")
+	}
+	if !strings.Contains(sc, "repo") {
+		return fmt.Errorf("permissions are not enough (scopes: %s). Backup needs a classic PAT with repo so it can create private repos and push files", scopes)
+	}
+	req, _ := http.NewRequest("GET", "https://api.github.com/user/repos?per_page=1&affiliation=owner", nil)
+	g.auth(req)
+	res, err := g.Client.Do(req)
+	if err != nil {
+		return fmt.Errorf("could not test repository access: %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode == 401 || res.StatusCode == 403 {
+		body, _ := io.ReadAll(res.Body)
+		return fmt.Errorf("token cannot list repositories (%d): %s", res.StatusCode, truncate(string(body), 180))
+	}
+	if res.StatusCode >= 300 {
+		body, _ := io.ReadAll(res.Body)
+		return fmt.Errorf("repository permission check failed (%d): %s", res.StatusCode, truncate(string(body), 180))
+	}
+	return nil
 }
 
 func (g *GitHub) auth(req *http.Request) {

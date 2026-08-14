@@ -85,7 +85,12 @@ func (s *Server) routes() {
 
 	s.Mux.HandleFunc("/api/host", s.withGate(s.handleHostInfo))
 	s.Mux.HandleFunc("/api/deploy/pull", s.withGate(s.handleDeployPull))
+	s.Mux.HandleFunc("/api/deploy/ai", s.withGate(s.handleDeployAI))
+	s.Mux.HandleFunc("/api/deploy/exec", s.withGate(s.handleDeployExec))
 	s.Mux.HandleFunc("/api/deploy", s.withGate(s.autoDeploy))
+	s.Mux.HandleFunc("/api/tokens/ai", s.withGate(s.handleTokensAI))
+	s.Mux.HandleFunc("/api/logs/ai", s.withGate(s.handleLogsAI))
+	s.Mux.HandleFunc("/api/usage/ai", s.withGate(s.handleUsageAI))
 	s.routesManage()
 	s.routesAPITokens()
 	s.routesBackupDomain()
@@ -641,6 +646,7 @@ func (s *Server) handleRooms(w http.ResponseWriter, r *http.Request) {
 			UsageBytes int64  `json:"usage_bytes"`
 			Projects   int    `json:"projects"`
 			HostPort   int    `json:"host_port"`
+			Image      string `json:"image"`
 			Status     string `json:"status"`
 			CreatedAt  string `json:"created_at"`
 			Locked     bool   `json:"locked"`
@@ -651,9 +657,11 @@ func (s *Server) handleRooms(w http.ResponseWriter, r *http.Request) {
 			projs, _ := s.Projects.List(rm.ID)
 			st := "empty"
 			hostPort := 0
+			image := ""
 			if len(projs) > 0 {
 				st = "stopped"
 				hostPort = projs[0].HostPort
+				image = projs[0].Image
 				for _, p := range projs {
 					if p.Status == "running" {
 						st = "running"
@@ -664,7 +672,7 @@ func (s *Server) handleRooms(w http.ResponseWriter, r *http.Request) {
 			out = append(out, roomOut{
 				ID: rm.ID, Name: rm.Name, Password: rm.PassPlain,
 				QuotaBytes: rm.QuotaBytes,
-				UsageBytes: usage, Projects: len(projs), HostPort: hostPort, Status: st,
+				UsageBytes: usage, Projects: len(projs), HostPort: hostPort, Image: image, Status: st,
 				CreatedAt: rm.CreatedAt.UTC().Format(time.RFC3339),
 				Locked:    false, // admin vault shows all room passwords
 			})
@@ -1134,7 +1142,7 @@ func (s *Server) handleProjectByID(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 200, map[string]any{
 				"editable": true,
 				"content":  text,
-				"path":     filepath.Join(s.Cfg.RuntimeDir, p.RoomID, p.ID, ".env"),
+				"path":     filepath.Join(s.Cfg.RuntimeDir, p.RoomID, "projects", p.ID, ".env"),
 			})
 			return
 		}

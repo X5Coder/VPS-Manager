@@ -84,6 +84,16 @@ func main() {
 		}
 	}()
 
+	// Periodic log trim so AI / UI never ingest unbounded text.
+	go func() {
+		api.PruneLogsDir(cfg.DataDir, 256*1024)
+		t := time.NewTicker(30 * time.Minute)
+		defer t.Stop()
+		for range t.C {
+			api.PruneLogsDir(cfg.DataDir, 256*1024)
+		}
+	}()
+
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 	<-ch

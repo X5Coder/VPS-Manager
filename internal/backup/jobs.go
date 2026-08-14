@@ -89,6 +89,10 @@ func (s *Service) report(percent int, format string, args ...any) {
 }
 
 func (s *Service) StartBackupAsync(label, description string) (*Job, error) {
+	en, _, _ := s.Store.GetMeta("backup_enabled")
+	if en != "1" {
+		return nil, fmt.Errorf("backup is turned off — enable it on the Backup page first")
+	}
 	token, _, err := s.LoadToken()
 	if err != nil || token == "" {
 		return nil, fmt.Errorf("GitHub PAT required — save and validate a classic token with repo scope first")

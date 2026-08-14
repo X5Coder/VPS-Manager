@@ -64,6 +64,27 @@ func (s *Service) SaveToken(token string) error {
 	return nil
 }
 
+func (s *Service) SetEnabled(on bool) error {
+	if !on {
+		_ = s.Store.SetMeta("backup_enabled", "0")
+		return nil
+	}
+	token, _, err := s.LoadToken()
+	if err != nil || token == "" {
+		return fmt.Errorf("enter a GitHub classic PAT with repo scope to turn backup on")
+	}
+	gh := NewGitHub(token)
+	if _, err := gh.Validate(); err != nil {
+		return err
+	}
+	_ = s.Store.SetMeta("backup_enabled", "1")
+	now := time.Now().UTC()
+	if next, ok, _ := s.Store.GetMeta("backup_next_at"); !ok || next == "" {
+		_ = s.Store.SetMeta("backup_next_at", now.Add(IntervalHours*time.Hour).Format(time.RFC3339))
+	}
+	return nil
+}
+
 func (s *Service) ClearToken() error {
 	_ = os.Remove(s.secretsPath())
 	_ = s.Store.SetMeta("backup_enabled", "0")
@@ -534,7 +555,7 @@ func (s *Service) backupRoom(gh *GitHub, work string, room store.Room) (*Project
 			addRoot("appdata/"+p.ID, host)
 		}
 	}
-	files, repos, err := s.chunkRoots(gh, work, slug, roots)
+	files, repos, err := s.chunkRoots(gh, work, slug, roots, hasGoodPostgresDumpForRoom(s, room.ID, projs))
 	if err != nil {
 		return nil, err
 	}
@@ -543,12 +564,21 @@ func (s *Service) backupRoom(gh *GitHub, work string, room store.Room) (*Project
 	return pm, nil
 }
 
+func hasGoodPostgresDumpForRoom(s *Service, roomID string, projs []store.Project) bool {
+	for _, p := range projs {
+		if hasGoodPostgresDump(s.Rooms.ProjectDir(roomID, p.ID)) {
+			return true
+		}
+	}
+	return false
+}
+
 type rootSpec struct {
 	prefix string
 	root   string
 }
 
-func (s *Service) chunkRoots(gh *GitHub, work, slug string, roots []rootSpec) ([]FileEntry, []string, error) {
+func (s *Service) chunkRoots(gh *GitHub, work, slug string, roots []rootSpec, skipPGData bool) ([]FileEntry, []string, error) {
 	backupIdx := 1
 	backupRepo := BackupRepoName(slug, backupIdx)
 	var repoSize int64
@@ -619,7 +649,7 @@ func (s *Service) chunkRoots(gh *GitHub, work, slug string, roots []rootSpec) ([
 	for _, rs := range roots {
 		s.report(-1, "Scanning %s", rs.root)
 		fileN := 0
-		_ = filepath.Walk(rs.root, func(path string, info os.FileInfo, err error) error {
+		_ = walkFollowSymlinks(rs.root, func(path string, info os.FileInfo, err error) error {
 			if err != nil || info == nil {
 				return nil
 			}
@@ -632,6 +662,15 @@ func (s *Service) chunkRoots(gh *GitHub, work, slug string, roots []rootSpec) ([
 					return filepath.SkipDir
 				}
 				return nil
+			}
+			if skipPGData {
+				n := strings.ToLower(filepath.ToSlash(rel))
+				if strings.Contains(n, "volumes/db/data") || strings.HasSuffix(n, "/db/data") || n == "db/data" {
+					if info.IsDir() {
+						return filepath.SkipDir
+					}
+					return nil
+				}
 			}
 			if info.IsDir() {
 				return nil
@@ -1233,23 +1272,78 @@ func skipBackupRel(rel string) bool {
 	parts := strings.Split(n, "/")
 	for _, p := range parts {
 		if p == ".git" || p == "lost+found" || p == "pg_wal" || p == "pg_stat_tmp" ||
-			p == "node_modules" || p == "__pycache__" || p == ".cache" || p == ".npm" ||
-			p == "venv" || p == ".venv" || p == "site-packages" || p == "dist" || p == "build" {
+			p == "__pycache__" || p == ".npm" || p == "dist" || p == "build" {
 			return true
 		}
 	}
-	base := parts[len(parts)-1]
-	if base == "__container_image.tar" || base == "__container_export.tar" {
-		return true
-	}
-	// Live Postgres cluster files — dumped via pg_dumpall instead.
-	if strings.Contains(n, "/volumes/db/data") || strings.HasPrefix(n, "volumes/db/data") {
-		return true
-	}
-	if strings.HasSuffix(n, "/db/data") || n == "db/data" {
-		return true
-	}
 	return false
+}
+
+// walkFollowSymlinks walks root and follows directory symlinks (needed for
+// /opt/*/volumes → /mnt/*/volumes layout).
+func walkFollowSymlinks(root string, fn filepath.WalkFunc) error {
+	var walk func(string) error
+	walk = func(path string) error {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return fn(path, nil, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			resolved, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				return nil
+			}
+			ri, err := os.Stat(resolved)
+			if err != nil {
+				return nil
+			}
+			if err := fn(path, ri, nil); err != nil {
+				if err == filepath.SkipDir {
+					return nil
+				}
+				return err
+			}
+			if !ri.IsDir() {
+				return nil
+			}
+			entries, err := os.ReadDir(resolved)
+			if err != nil {
+				return nil
+			}
+			for _, e := range entries {
+				if err := walk(filepath.Join(path, e.Name())); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		if err := fn(path, info, nil); err != nil {
+			if err == filepath.SkipDir {
+				return nil
+			}
+			return err
+		}
+		if !info.IsDir() {
+			return nil
+		}
+		entries, err := os.ReadDir(path)
+		if err != nil {
+			return nil
+		}
+		for _, e := range entries {
+			if err := walk(filepath.Join(path, e.Name())); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return walk(root)
+}
+
+// hasGoodPostgresDump reports whether a usable SQL dump already exists for this project.
+func hasGoodPostgresDump(pdir string) bool {
+	st, err := os.Stat(filepath.Join(pdir, "__dumps", "postgres.sql.gz"))
+	return err == nil && st.Size() > 1024
 }
 
 func formatBytes(n int64) string {
@@ -1300,21 +1394,46 @@ func (s *Service) findPostgresContainer(p store.Project, composeProject string) 
 	if s.Docker == nil {
 		return ""
 	}
-	looksPG := func(name, image, service string) bool {
-		n := strings.ToLower(name + " " + image + " " + service)
-		return strings.Contains(n, "postgres") || service == "db" || strings.HasSuffix(strings.ToLower(name), "-db")
+	score := func(name, image, service string) int {
+		n := strings.ToLower(name)
+		img := strings.ToLower(image)
+		svc := strings.ToLower(service)
+		// Never pick meta/rest/studio/realtime helpers that mention postgres in the image name.
+		if strings.Contains(img, "postgres-meta") || strings.Contains(img, "postgrest") ||
+			strings.Contains(svc, "meta") || strings.Contains(svc, "rest") ||
+			strings.Contains(svc, "realtime") || strings.Contains(svc, "studio") ||
+			strings.Contains(n, "-meta") || strings.Contains(n, "-rest") {
+			return 0
+		}
+		if svc == "db" || strings.HasSuffix(n, "-db") || n == "db" {
+			return 100
+		}
+		if strings.Contains(img, "supabase/postgres") || strings.Contains(img, "/postgres:") ||
+			strings.HasPrefix(img, "postgres:") || strings.Contains(img, "postgres/postgres") {
+			return 80
+		}
+		if strings.Contains(img, "postgres") && !strings.Contains(img, "meta") {
+			return 40
+		}
+		return 0
 	}
+	bestName := ""
+	best := 0
 	if composeProject != "" {
 		list, err := s.Docker.ListCompose(composeProject)
 		if err == nil {
 			for _, c := range list {
-				if looksPG(c.Name, c.Image, c.Service) {
-					return c.Name
+				if sc := score(c.Name, c.Image, c.Service); sc > best {
+					best = sc
+					bestName = c.Name
 				}
 			}
 		}
 	}
-	if p.ContainerID != "" && imgLooksPostgres(p.Image) {
+	if bestName != "" {
+		return bestName
+	}
+	if p.ContainerID != "" && imgLooksPostgres(p.Image) && !strings.Contains(strings.ToLower(p.Image), "meta") {
 		return p.ContainerID
 	}
 	return ""

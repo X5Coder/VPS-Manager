@@ -110,6 +110,7 @@ func (h *Hub) Snapshot() HostMetrics {
 
 func (h *Hub) collect() HostMetrics {
 	if m, ok := h.fromAgent(); ok {
+		m.CPUPercent = smoothCPUValue(m.CPUPercent)
 		return m
 	}
 	return collectLocal()
@@ -149,9 +150,22 @@ func collectLocal() HostMetrics {
 }
 
 var (
+	cpuMu                                                                                                  sync.Mutex
 	prevCPUUser, prevCPUNice, prevCPUSystem, prevCPUIdle, prevCPUIO, prevCPUIRQ, prevCPUSoft, prevCPUSteal uint64
 	prevCPUOnce                                                                                            bool
+	cpuSmooth                                                                                              float64
 )
+
+func smoothCPUValue(raw float64) float64 {
+	cpuMu.Lock()
+	defer cpuMu.Unlock()
+	if cpuSmooth == 0 {
+		cpuSmooth = raw
+	} else {
+		cpuSmooth = cpuSmooth*0.7 + raw*0.3
+	}
+	return cpuSmooth
+}
 
 func readCPU() float64 {
 	f, err := os.Open("/proc/stat")
@@ -172,6 +186,8 @@ func readCPU() float64 {
 		vals[i], _ = strconv.ParseUint(fields[i+1], 10, 64)
 	}
 	user, nice, system, idle, iowait, irq, soft, steal := vals[0], vals[1], vals[2], vals[3], vals[4], vals[5], vals[6], vals[7]
+	cpuMu.Lock()
+	defer cpuMu.Unlock()
 	if !prevCPUOnce {
 		prevCPUUser, prevCPUNice, prevCPUSystem, prevCPUIdle = user, nice, system, idle
 		prevCPUIO, prevCPUIRQ, prevCPUSoft, prevCPUSteal = iowait, irq, soft, steal
@@ -189,9 +205,15 @@ func readCPU() float64 {
 	prevCPUUser, prevCPUNice, prevCPUSystem, prevCPUIdle = user, nice, system, idle
 	prevCPUIO, prevCPUIRQ, prevCPUSoft, prevCPUSteal = iowait, irq, soft, steal
 	if td <= 0 {
-		return 0
+		return cpuSmooth
 	}
-	return (td - id) / td * 100
+	raw := (td - id) / td * 100
+	if cpuSmooth == 0 {
+		cpuSmooth = raw
+	} else {
+		cpuSmooth = cpuSmooth*0.7 + raw*0.3
+	}
+	return cpuSmooth
 }
 
 func readMem() (total, used uint64, pct float64) {

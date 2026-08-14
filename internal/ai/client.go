@@ -22,43 +22,198 @@ type Message struct {
 }
 
 type Reply struct {
-	Say     string   `json:"say"`
-	Command string   `json:"command"`
-	Ask     []string `json:"ask"`
-	QuotaGB float64  `json:"quota_gb"`
-	Done    bool     `json:"done"`
+	Say         string   `json:"say"`
+	Says        []string `json:"says"`
+	Command     string   `json:"command"`
+	Ask         []string `json:"ask"`
+	Choices     []string `json:"choices"`
+	QuotaGB     float64  `json:"quota_gb"`
+	Image       string   `json:"image"`
+	Start       bool     `json:"start"`
+	Done        bool     `json:"done"`
+	Action      string   `json:"action"`   // pause | resume | ""
+	LogKind     string   `json:"log_kind"` // panel | api | deploy | host
+	CreateToken bool     `json:"create_token"`
+	TokenName   string   `json:"token_name"`
+	TokenMode   string   `json:"token_mode"`
+	TypeOnly    bool     `json:"type_only"` // fill the terminal input, do not run
 }
 
 type apiResp struct {
 	Response string `json:"response"`
 }
 
-const systemPrompt = `You are the terminal assistant inside VPS MANAGE, a panel that hosts isolated Docker project rooms on one VPS.
+const systemPrompt = `You are the VPS Manager Deploy agent. You ONLY help deploy: find a GitHub repo, clone it, dockerize it, pull an image, set disk quota, start a room. Refuse anything else (logs, tokens, other rooms, general chat, unrelated code). Short refusal, then what you can do.
 
-You have a Linux terminal in this room's project directory. When you return a command, the panel types it in the terminal above and runs it, then sends you the output. Use that loop to finish the user's task. Fix errors and continue until the job is done.
+Language: match the user's last message. If they write Arabic, "say" is natural spoken Arabic. If English, natural English. Do not mix. JSON keys stay English. In "say", use **bold** for important words. Short paragraphs. Wrap commands and names in markdown code spans. Code samples MUST use fenced blocks inside "say". Never dump the JSON wrapper into "say". Keep JSON valid (escape newlines in strings).
 
-Always reply with ONLY one JSON object (no markdown fences):
-{"say":"short message to the user","command":"one shell command or empty string","ask":[],"quota_gb":0,"done":false}
+Always reply with ONLY one JSON object (no markdown fences around the JSON itself):
+{"say":"first spoken bubble","says":[],"command":"","type_only":false,"ask":[],"choices":[],"quota_gb":0,"image":"","start":false,"done":false}
+
+You work in a LOOP until the task is done or the user stops you:
+1) One "say" (what you are doing / what happened). "says" stays empty.
+2) Then either: ask a question (ask+choices, empty command, wait) OR run one "command" OR type_only.
+3) After TERMINAL comes back: say what happened, then the next command. Keep looping. Do not stop after one command if more work remains. Set done true only when the job is finished or you are waiting on the user.
+4) You MAY pause mid-job to ask. Empty command while asking.
+5) type_only: if the user wants a command written in the terminal WITHOUT running it, set command to that text and type_only true. The panel types it into the input and does not send. Then done true.
+6) Fix failures from TERMINAL. Do not repeat a failed command unchanged.
+
+Be a practical operator: inspect, then act. Prefer doing the next real step over explaining what you could do.
+
+GitHub → Docker:
+- Public clone: git clone --depth 1 URL
+- Inspect files, write a Dockerfile only if missing, docker build -t name:latest .
+- Then set "image" to that tag.
+- Private repos need a token they provide.
+
+Disk quota is MANDATORY after a real install command:
+- After you actually run git clone, docker pull, or docker build (you received TERMINAL for it): STOP. Do not start. Ask how many GB with ask + choices like "0.5 GB","1 GB","2 GB","5 GB","10 GB" (all ≤ free in SYSTEM-NOTE). Wait.
+- Then set quota_gb to their number. Only then start if they want the room.
+- Never start with quota_gb 0. Never invent GB.
+
+No defaults — ever:
+- Do not assume image names, tags, ports, GB, Dockerfiles, or repo URLs.
+- No URL? SEARCH GitHub then ask which repo with choices.
+- Disk numbers ONLY from SYSTEM-NOTE.
+- "image": only a tag you actually pulled or built.
+- "start": true only when image + user quota are ready.
+- Do not docker compose up unrelated stacks.
+
+Fields: command = at most ONE shell command or empty. type_only true = type into the terminal input only (do not run). ask = at most one question. choices = tap answers (user may pick more than one). done = true when this job is finished or you are waiting.
+
+Never: rm -rf /, mkfs, dd onto disks, shutdown/reboot. Keep JSON valid.`
+
+const RoomPrompt = `You are the VPS Manager room agent. You are INSIDE one project room only.
+
+Language: match the user. Arabic or English — do not mix. JSON keys stay English. In "say", use **bold** and markdown code spans. Code samples MUST use fenced blocks inside "say". Keep JSON valid.
+
+Always reply with ONLY one JSON object:
+{"say":"one complete spoken reply","says":[],"command":"","type_only":false,"ask":[],"choices":[],"quota_gb":0,"action":"","done":false}
+
+You work in a LOOP until the task is done or the user hits Stop:
+1) One "say". "says" MUST stay [].
+2) Then the next tool: command (runs) OR type_only OR ask. After TERMINAL, say the result and continue with the next command. Do not dump five similar bubbles. Do not stop after one step if the job is unfinished.
+3) done true only when finished or waiting on the user.
+4) type_only: user asked you to WRITE a command in the terminal without sending — set command to that exact text, type_only true, empty ask, done true. Do not run it.
+
+Speech: if they asked to analyze usage, ANSWER NOW with SYSTEM-NOTE numbers in one say. Do not stall.
+
+Scope:
+- You already know this room from SYSTEM-NOTE. Act as its operator.
+- MAY: files via terminal, edit files via terminal, run commands, analyze THIS room usage, raise quota, pause/resume.
+- MUST refuse: delete this room, clone/pull a new app, other rooms, tokens, host-wide logs, unrelated general chat. One short refusal, then what you can do here.
+- Host CPU in SYSTEM-NOTE may jump second-to-second (normal VPS sampling). Real pressure = load1 staying above CPU cores, or disk/RAM high.
+
+Quota: ask+choices for GB (<= max in SYSTEM-NOTE), wait, then quota_gb.
+Power: action "pause" or "resume" only when they ask. Never delete.
+
+Golden tool = "command". File contents are NEVER attached. Fetch then edit.
+
+Read:
+1) List: command ls -la OR find . -maxdepth 2 -type f. Wait TERMINAL.
+2) Ask which file; choices = real names (user may pick several). Wait.
+3) Print with head -n 200 -- PATH. Wait.
+4) Explain real TERMINAL. FILE EMPTY means empty — never invent.
+
+Edit a file they named (professional, via terminal only):
+1) If you do not have current contents, command to read it first (head/cat). Wait.
+2) Then ONE command that writes the new file. Prefer python3:
+python3 - <<'PY'
+from pathlib import Path
+p = Path("RELATIVE/PATH")
+p.write_text("""NEW FULL CONTENTS""", encoding="utf-8")
+print("wrote", p, "bytes", p.stat().st_size)
+PY
+Or: printf '%s\n' 'line' > file   for tiny files.
+3) After TERMINAL, confirm what changed. Never invent a write that did not run.
+Do not use rm -rf on the project root.
+
+Commands: at most ONE per turn. type_only true = fill the terminal input, do not execute. ask at most one. done true when this job is finished or waiting.
+
+Never: git clone, docker pull a new app, docker compose up unrelated stacks, mkfs, shutdown, delete this room.`
+
+const LogsPrompt = `You are the VPS Manager Logs agent. You ONLY analyze panel logs (Panel, API, Deploy, Host events). Refuse anything else. Short refusal.
+
+Language: match the user. In "say", use **bold** for important findings. Log/code snippets MUST use fenced blocks inside "say". Never dump raw JSON into "say".
+
+Always reply with ONLY one JSON object:
+{"say":"spoken analysis","says":[],"ask":[],"choices":[],"log_kind":"","done":false}
+
+Speech: extra bubbles in "says". Use \\n for new lines inside JSON strings. Never dump JSON into say.
+Question tool: after analysis, ask a follow-up with ask + choices (what to check next). Wait.
 
 Rules:
-- "command": at most ONE shell command per reply. Prefer simple POSIX commands. Empty string if none.
-- After a command, wait for the next message which includes TERMINAL output. Then continue.
-- If a command fails, diagnose from the output and try a corrected command.
-- "ask": list of questions when you MUST have info from the user. Do not set a command in the same turn if ask is not empty.
-- "quota_gb": number of gigabytes to set on the room disk slider. 0 means do not move the slider. After the user tells you how much space they want, set quota_gb (within the maximum in SYSTEM-NOTE) so the panel moves the slider and saves it.
-- "say": short, useful status for the chat. English.
-- "done": true only when the task is finished or you are only talking (no more commands).
-- If the user only asked a question and no command is needed, set command to "" and done true.
-- Before cloning, building, or hosting a project on this management server you MUST ask how many GB they want from the currently available disk (state the available/max GB from SYSTEM-NOTE). Wait for their answer. Then set quota_gb and only after that clone/build. Convert the project to Docker before hosting (write a Dockerfile if missing, then docker build -t ROOMNAME:latest .). Do not docker compose up unrelated stacks. Do not touch /opt/vps-rooms except this room's files. Do not stop other containers.
-- Never run destructive host commands (rm -rf /, mkfs, dd onto disks, shutdown).
-- Keep JSON valid. No commentary outside JSON.`
+- If the user wants analysis and no log is loaded yet, ask which log and set choices exactly: ["Panel","API","Deploy","Host events"]. Wait.
+- When they pick one, set log_kind to one of: panel | api | deploy | host (map labels to those keys). Empty command work — the panel will attach that log next turn.
+- After you receive a LOG excerpt in the conversation, explain clearly: what happened, errors, warnings, and what to do next. Keep it practical.
+- Do not invent log lines. Only use the provided excerpt.
+- ask at most one question. done true when finished.`
+
+const TokenPrompt = `You are the VPS Manager Tokens agent. You ONLY help with API tokens: create them, explain how to use them. Refuse anything else. You do not run Linux commands. Speak like a person. Match the user's language (Arabic or English). In "say", use **bold** for important words and markdown code spans for headers, URLs, and token names. Code samples MUST use fenced blocks inside "say" (bash/python/js). Never dump the whole JSON object into "say". Keep JSON valid.
+
+Always reply with ONLY one JSON object:
+{"say":"spoken reply","says":[],"ask":[],"choices":[],"create_token":false,"token_name":"","token_mode":"","done":false}
+
+Speech: extra bubbles in "says". Use \\n for new lines inside JSON strings. Never dump JSON into say.
+Question tool: set ask:["question"] and choices for tap answers. Wait while asking.
+
+Rules:
+- Modes: **read**, **write**, or **both** (two tokens: one read + one write). All three are valid.
+- When asking mode, ALWAYS set choices exactly to ["read","write","both"]. The user may pick one or more. Wait.
+- Map answers: "both" or "read, write" → token_mode "both". "read" → read. "write" → write.
+- Then ask a short name unless they already gave one. Wait.
+- Only then set create_token true with token_name and token_mode ("read"|"write"|"both"). Never invent mode.
+- If SYSTEM-NOTE says zero tokens, start with the mode question first.
+- If they already have tokens, answer questions. Same ask flow to create another.
+- Delete via API is NEVER allowed. Say so if asked.
+- Full usage docs (include when they ask how to use the token). Base URL is in SYSTEM-NOTE.
+
+Auth: Authorization: Bearer <secret>   or   X-API-Token: <secret>
+Permission: read = GET only. write = GET + create/update/exec. Never delete.
+
+Endpoints:
+- GET  /api/v1/projects
+- GET  /api/v1/projects/{id}
+- POST /api/v1/projects          write. JSON: name, image, quota_gb (required, check storage first), host_port, container_port, env
+- PATCH /api/v1/projects/{id}    write. name, domain, env, quota_gb, action pause|resume
+- POST /api/v1/projects/{id}/exec  write. {"command":"ls -la"}
+- GET  /api/v1/storage
+- GET  /api/v1/ports
+
+Example:
+curl -sS -H "Authorization: Bearer SECRET" BASE/api/v1/storage
+
+ask: at most one question. choices: optional clickable answers. create_token false while asking. done true when finished talking.`
+
+const UsagePrompt = `You are the VPS Manager Usage agent. Your ONLY job is live consumption: CPU, memory, disk, load, network, GPU if present, how many rooms, each room NAME + its disk used vs quota, vs host totals. Refuse anything else (deploy, tokens, file contents, passwords). Short refusal.
+
+CPU note: the panel samples CPU every second then smooths it. Sharp jumps are usually normal on a VPS (short bursts, steal time). Danger is when load1 stays above CPU cores, or RAM/disk stay very high.
+
+Language: match the user. Arabic or English — do not mix. JSON keys stay English. In "say", use **bold** for important numbers and risk words. Never dump JSON into say. Use \\n for new lines inside JSON strings.
+
+Always reply with ONLY one JSON object:
+{"say":"spoken analysis","says":[],"ask":[],"choices":[],"done":false}
+
+Rules:
+- SYSTEM-NOTE is the live snapshot. Never invent numbers. Never mention passwords, hashes, tokens, or secrets (they are not provided).
+- Start from current load: is it safe, watch, or danger? Say that clearly.
+- Explain CPU, RAM, disk, load vs cores, and quota reserved vs free disk. Mention rooms/projects that use the most disk or are running.
+- Danger if: disk >= 90%, RAM >= 90%, CPU >= 90% sustained, load1 much higher than CPU cores, quota reserved near free disk.
+- Watch if those are 70–89%. Safe below that unless something else looks wrong.
+- Give practical next steps. Question tool: ask + choices when useful (e.g. which room to inspect). No commands.
+
+done true when this answer is complete.`
 
 func Turn(history []Message) (Reply, string, error) {
+	return TurnWith(systemPrompt, history)
+}
+
+func TurnWith(sys string, history []Message) (Reply, string, error) {
 	if len(history) > MaxTurns {
 		history = history[len(history)-MaxTurns:]
 	}
 	var b strings.Builder
-	b.WriteString(systemPrompt)
+	b.WriteString(sys)
 	b.WriteString("\n\nCONVERSATION:\n")
 	for _, m := range history {
 		role := strings.ToUpper(strings.TrimSpace(m.Role))
@@ -73,39 +228,146 @@ func Turn(history []Message) (Reply, string, error) {
 	b.WriteString("Reply with JSON only.\n")
 
 	payload, _ := json.Marshal(map[string]string{"text": b.String()})
-	req, err := http.NewRequest(http.MethodPost, Endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return Reply{}, "", err
+	var lastErr error
+	var text string
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 400 * time.Millisecond)
+		}
+		req, err := http.NewRequest(http.MethodPost, Endpoint, bytes.NewReader(payload))
+		if err != nil {
+			return Reply{}, "", err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		client := &http.Client{Timeout: 90 * time.Second}
+		res, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		raw, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+		res.Body.Close()
+		if res.StatusCode < 200 || res.StatusCode >= 300 {
+			lastErr = fmt.Errorf("assistant HTTP %d", res.StatusCode)
+			if res.StatusCode >= 500 || res.StatusCode == 429 {
+				continue
+			}
+			return Reply{}, "", lastErr
+		}
+		var ar apiResp
+		_ = json.Unmarshal(raw, &ar)
+		text = strings.TrimSpace(ar.Response)
+		if text == "" {
+			text = strings.TrimSpace(string(raw))
+		}
+		lastErr = nil
+		break
 	}
-	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 90 * time.Second}
-	res, err := client.Do(req)
-	if err != nil {
-		return Reply{}, "", err
-	}
-	defer res.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return Reply{}, "", fmt.Errorf("assistant HTTP %d", res.StatusCode)
-	}
-	var ar apiResp
-	_ = json.Unmarshal(raw, &ar)
-	text := strings.TrimSpace(ar.Response)
-	if text == "" {
-		text = strings.TrimSpace(string(raw))
+	if lastErr != nil {
+		return Reply{}, "", lastErr
 	}
 	rep, ok := parseReply(text)
 	if !ok {
 		rep = Reply{Say: text, Done: true}
 	}
+	rep.Say = sanitizeSay(rep.Say)
+	cleanSays := make([]string, 0, len(rep.Says))
+	for _, s := range rep.Says {
+		s = sanitizeSay(s)
+		if s != "" {
+			cleanSays = append(cleanSays, s)
+		}
+		if len(cleanSays) >= 6 {
+			break
+		}
+	}
+	rep.Says = cleanSays
+	if rep.Say == "" && len(rep.Says) > 0 {
+		rep.Say = rep.Says[0]
+		rep.Says = rep.Says[1:]
+	}
 	rep.Command = strings.TrimSpace(rep.Command)
+	rep.Image = strings.TrimSpace(rep.Image)
+	if len(rep.Ask) > 1 {
+		rep.Ask = rep.Ask[:1]
+	}
 	if len(rep.Ask) > 0 {
 		rep.Command = ""
+		rep.Start = false
+		rep.CreateToken = false
+		rep.TypeOnly = false
+	}
+	if rep.TypeOnly {
+		rep.Start = false
+	}
+	rep.TokenName = strings.TrimSpace(rep.TokenName)
+	rep.TokenMode = strings.ToLower(strings.TrimSpace(rep.TokenMode))
+	rep.TokenMode = strings.ReplaceAll(rep.TokenMode, " ", "")
+	switch {
+	case rep.TokenMode == "both" || strings.Contains(rep.TokenMode, "read") && strings.Contains(rep.TokenMode, "write"):
+		rep.TokenMode = "both"
+	case rep.TokenMode == "read" || rep.TokenMode == "write":
+		// ok
+	default:
+		rep.TokenMode = ""
+	}
+	compactSpeech(&rep)
+	if rep.CreateToken && (rep.TokenMode == "" || len(rep.Ask) > 0) {
+		rep.CreateToken = false
 	}
 	if rep.QuotaGB < 0 {
 		rep.QuotaGB = 0
 	}
+	rep.Action = strings.ToLower(strings.TrimSpace(rep.Action))
+	if rep.Action != "pause" && rep.Action != "resume" {
+		rep.Action = ""
+	}
+	rep.LogKind = NormalizeLogKind(rep.LogKind)
 	return rep, text, nil
+}
+
+func compactSpeech(rep *Reply) {
+	if rep == nil {
+		return
+	}
+	norm := func(s string) string {
+		return strings.ToLower(strings.Join(strings.Fields(s), " "))
+	}
+	seen := []string{norm(rep.Say)}
+	out := make([]string, 0, 1)
+	for _, s := range rep.Says {
+		n := norm(s)
+		if n == "" {
+			continue
+		}
+		dup := false
+		for _, x := range seen {
+			if x == "" {
+				continue
+			}
+			if n == x || strings.Contains(x, n) || strings.Contains(n, x) {
+				dup = true
+				break
+			}
+			pre := 24
+			if len(n) < pre || len(x) < pre {
+				pre = min(len(n), len(x))
+			}
+			if pre >= 16 && n[:pre] == x[:pre] {
+				dup = true
+				break
+			}
+		}
+		if dup {
+			continue
+		}
+		seen = append(seen, n)
+		out = append(out, s)
+		if len(out) >= 1 {
+			break
+		}
+	}
+	rep.Says = out
 }
 
 func parseReply(text string) (Reply, bool) {
@@ -113,6 +375,7 @@ func parseReply(text string) (Reply, bool) {
 	if i := strings.Index(s, "```"); i >= 0 {
 		rest := s[i+3:]
 		rest = strings.TrimPrefix(rest, "json")
+		rest = strings.TrimPrefix(rest, "JSON")
 		if j := strings.Index(rest, "```"); j >= 0 {
 			s = strings.TrimSpace(rest[:j])
 		}
@@ -122,8 +385,23 @@ func parseReply(text string) (Reply, bool) {
 	if start < 0 || end <= start {
 		return Reply{}, false
 	}
-	var r Reply
-	if err := json.Unmarshal([]byte(s[start:end+1]), &r); err != nil {
+	body := s[start : end+1]
+	r, ok := decodeReplyJSON(body)
+	if !ok {
+		r, ok = decodeReplyJSON(escapeRawControlsInJSONStrings(body))
+	}
+	if !ok {
+		say := extractJSONStringField(body, "say")
+		if say == "" {
+			return Reply{}, false
+		}
+		r = Reply{Say: say, Done: true}
+		if cmd := extractJSONStringField(body, "command"); cmd != "" {
+			r.Command = cmd
+		}
+		ok = true
+	}
+	if !ok {
 		return Reply{}, false
 	}
 	clean := make([]string, 0, len(r.Ask))
@@ -134,7 +412,196 @@ func parseReply(text string) (Reply, bool) {
 		}
 	}
 	r.Ask = clean
+	if len(r.Ask) > 1 {
+		r.Ask = r.Ask[:1]
+	}
+	ch := make([]string, 0, len(r.Choices))
+	seen := map[string]bool{}
+	for _, c := range r.Choices {
+		c = strings.TrimSpace(c)
+		if c == "" || seen[c] {
+			continue
+		}
+		seen[c] = true
+		ch = append(ch, c)
+		if len(ch) >= 8 {
+			break
+		}
+	}
+	r.Choices = ch
+	low := strings.ToLower(body)
+	if strings.Contains(low, `"type_only":true`) || strings.Contains(low, `"typeonly":true`) {
+		r.TypeOnly = true
+	}
+	if d := extractJSONStringField(body, "draft"); d != "" && strings.TrimSpace(r.Command) == "" {
+		r.Command = d
+		r.TypeOnly = true
+	}
 	return r, true
+}
+
+func decodeReplyJSON(body string) (Reply, bool) {
+	var r Reply
+	if err := json.Unmarshal([]byte(body), &r); err != nil {
+		return Reply{}, false
+	}
+	return r, true
+}
+
+// escapeRawControlsInJSONStrings fixes LLM JSON that put real newlines/tabs inside strings.
+func escapeRawControlsInJSONStrings(s string) string {
+	var b strings.Builder
+	b.Grow(len(s) + 32)
+	inStr := false
+	esc := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !inStr {
+			if c == '"' {
+				inStr = true
+			}
+			b.WriteByte(c)
+			continue
+		}
+		if esc {
+			b.WriteByte(c)
+			esc = false
+			continue
+		}
+		if c == '\\' {
+			b.WriteByte(c)
+			esc = true
+			continue
+		}
+		if c == '"' {
+			inStr = false
+			b.WriteByte(c)
+			continue
+		}
+		switch c {
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+func extractJSONStringField(body, key string) string {
+	needle := `"` + key + `"`
+	i := strings.Index(body, needle)
+	if i < 0 {
+		return ""
+	}
+	rest := body[i+len(needle):]
+	j := strings.Index(rest, ":")
+	if j < 0 {
+		return ""
+	}
+	rest = strings.TrimSpace(rest[j+1:])
+	if rest == "" {
+		return ""
+	}
+	if rest[0] == '"' {
+		var out strings.Builder
+		esc := false
+		for k := 1; k < len(rest); k++ {
+			c := rest[k]
+			if esc {
+				switch c {
+				case 'n':
+					out.WriteByte('\n')
+				case 'r':
+					out.WriteByte('\r')
+				case 't':
+					out.WriteByte('\t')
+				case '"', '\\', '/':
+					out.WriteByte(c)
+				default:
+					out.WriteByte('\\')
+					out.WriteByte(c)
+				}
+				esc = false
+				continue
+			}
+			if c == '\\' {
+				esc = true
+				continue
+			}
+			if c == '"' {
+				return out.String()
+			}
+			out.WriteByte(c)
+		}
+		return out.String()
+	}
+	// Unquoted / broken: take until next JSON key or end.
+	stopKeys := []string{`,"ask"`, `,"says"`, `,"command"`, `,"choices"`, `,"done"`, `,"create_token"`, `,"token_name"`, `,"quota_gb"`, `,"action"`, `,"log_kind"`, `,"image"`, `,"start"`}
+	end := len(rest)
+	for _, sk := range stopKeys {
+		if p := strings.Index(rest, sk); p >= 0 && p < end {
+			end = p
+		}
+	}
+	val := strings.TrimSpace(rest[:end])
+	val = strings.TrimSuffix(val, ",")
+	val = strings.Trim(val, `"`)
+	val = strings.ReplaceAll(val, `\n`, "\n")
+	val = strings.ReplaceAll(val, `\t`, "\t")
+	val = strings.ReplaceAll(val, `\"`, `"`)
+	return strings.TrimSpace(val)
+}
+
+func sanitizeSay(say string) string {
+	s := strings.TrimSpace(say)
+	if s == "" {
+		return s
+	}
+	if strings.Contains(s, `"say"`) && (strings.HasPrefix(s, "{") || strings.Contains(s, `{"say"`)) {
+		if inner := extractJSONStringField(s, "say"); inner != "" {
+			s = strings.TrimSpace(inner)
+		}
+	}
+	s = unescapeLiteralEscapes(s)
+	return strings.TrimSpace(s)
+}
+
+func unescapeLiteralEscapes(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			switch s[i+1] {
+			case 'n':
+				b.WriteByte('\n')
+				i++
+				continue
+			case 'r':
+				b.WriteByte('\r')
+				i++
+				continue
+			case 't':
+				b.WriteByte('\t')
+				i++
+				continue
+			case '"':
+				b.WriteByte('"')
+				i++
+				continue
+			case '\\':
+				b.WriteByte('\\')
+				i++
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 func Dangerous(cmd string) bool {
@@ -158,4 +625,40 @@ func Dangerous(cmd string) bool {
 		}
 	}
 	return false
+}
+
+// RoomForbidden blocks deploy-style / destructive project actions inside a room agent.
+func RoomForbidden(cmd string) bool {
+	c := strings.ToLower(strings.TrimSpace(cmd))
+	c = strings.Join(strings.Fields(c), " ")
+	needles := []string{
+		"git clone", "docker pull", "docker compose up", "docker-compose up",
+		"docker rm -f", "docker volume rm", "docker system prune",
+	}
+	for _, n := range needles {
+		if strings.Contains(c, n) {
+			return true
+		}
+	}
+	if strings.Contains(c, "rm -rf") && (strings.Contains(c, "/opt/") || strings.HasSuffix(c, " .") || strings.Contains(c, "/*")) {
+		return true
+	}
+	return Dangerous(cmd)
+}
+
+// NormalizeLogKind maps UI labels to storage keys.
+func NormalizeLogKind(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	switch s {
+	case "panel", "panel events", "panel log":
+		return "panel"
+	case "api", "api log":
+		return "api"
+	case "deploy", "deploy log":
+		return "deploy"
+	case "host", "host events", "host log":
+		return "host"
+	default:
+		return ""
+	}
 }

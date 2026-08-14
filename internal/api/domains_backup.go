@@ -18,6 +18,7 @@ import (
 func (s *Server) routesBackupDomain() {
 	s.Mux.HandleFunc("/api/backup/status", s.withGate(s.handleBackupStatus))
 	s.Mux.HandleFunc("/api/backup/token", s.withGate(s.handleBackupToken))
+	s.Mux.HandleFunc("/api/backup/enable", s.withGate(s.handleBackupEnable))
 	s.Mux.HandleFunc("/api/backup/now", s.withGate(s.handleBackupNow))
 	s.Mux.HandleFunc("/api/backup/inspect", s.withGate(s.handleBackupInspect))
 	s.Mux.HandleFunc("/api/backup/restore", s.withGate(s.handleBackupRestore))
@@ -208,6 +209,40 @@ func (s *Server) handleBackupToken(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeErr(w, 405, "method")
 	}
+}
+
+func (s *Server) handleBackupEnable(w http.ResponseWriter, r *http.Request) {
+	if s.requireOwner(w, r) == nil {
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeErr(w, 405, "method")
+		return
+	}
+	var body struct {
+		Enabled bool   `json:"enabled"`
+		Token   string `json:"token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, 400, "invalid request")
+		return
+	}
+	if body.Enabled {
+		tok := strings.TrimSpace(body.Token)
+		if tok != "" {
+			if err := s.Backup.SaveToken(tok); err != nil {
+				writeErr(w, 400, err.Error())
+				return
+			}
+		} else if err := s.Backup.SetEnabled(true); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+	} else if err := s.Backup.SetEnabled(false); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, s.Backup.Status())
 }
 
 func (s *Server) handleBackupNow(w http.ResponseWriter, r *http.Request) {
