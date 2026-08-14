@@ -1437,7 +1437,21 @@ button, input, textarea, select { font: inherit; color: inherit; }
   align-items: flex-start;
 }
 .bak-switch-card h3 { margin: 0 0 6px; }
-.tok-list { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+.upd-list { display: flex; flex-direction: column; gap: 6px; }
+.upd-row {
+  display: grid;
+  grid-template-columns: 3.2rem minmax(10rem, auto) 1fr;
+  gap: 10px;
+  align-items: baseline;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #101010;
+  font-size: 0.88rem;
+}
+.upd-n { color: #9ecbff; font-weight: 600; font-variant-numeric: tabular-nums; }
+.upd-at { color: var(--text); }
+.upd-img { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tok-hero {
   min-height: 42vh;
   display: flex;

@@ -855,10 +855,24 @@ func (s *Server) handleRoomByID(w http.ResponseWriter, r *http.Request) {
 		if s.requireOwner(w, r) == nil {
 			return
 		}
+		room, _ := s.Store.GetRoom(id)
+		projs, _ := s.Store.ListProjects(id)
+		if s.Proxy != nil {
+			for _, p := range projs {
+				if strings.TrimSpace(p.Domain) != "" {
+					_ = s.Proxy.Remove(p.Domain)
+				}
+			}
+		}
+		name := id
+		if room != nil {
+			name = room.Name
+		}
 		if err := s.Rooms.Delete(id); err != nil {
 			writeErr(w, 400, err.Error())
 			return
 		}
+		_ = appendLog(s.Cfg.DataDir, "panel", "DELETE room="+id+" name="+name)
 		writeJSON(w, 200, map[string]string{"ok": "1"})
 		return
 	}
@@ -888,6 +902,13 @@ func (s *Server) handleRoomByID(w http.ResponseWriter, r *http.Request) {
 				"links": s.projectLinks(r, &p),
 			})
 		}
+		if enriched == nil {
+			enriched = []map[string]any{}
+		}
+		hist := s.Projects.ReadUpdateHistory(id)
+		if hist == nil {
+			hist = []projects.UpdateEvent{}
+		}
 		writeJSON(w, 200, map[string]any{
 			"id": room.ID, "name": room.Name,
 			"password":    roomPasswordForSession(sess, room),
@@ -896,6 +917,7 @@ func (s *Server) handleRoomByID(w http.ResponseWriter, r *http.Request) {
 			"disk_free":          st["disk_free"],
 			"quota_available_gb": float64(avail) / (1024 * 1024 * 1024),
 			"quota_max_gb":       float64(avail) / (1024 * 1024 * 1024),
+			"updates":            hist,
 		})
 		return
 	}

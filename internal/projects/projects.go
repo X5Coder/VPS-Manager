@@ -616,10 +616,14 @@ func (s *Service) recreateKeep(p *store.Project, room *store.Room, image string,
 		}
 	}
 	_ = s.Docker.RemoveByName(cname)
-	fmt.Fprintf(log, "Starting container with image %s...\n", image)
+	runImage := image
+	if id := s.Docker.ImageID(image); id != "" {
+		runImage = id
+	}
+	fmt.Fprintf(log, "Starting container with image %s (%s)...\n", image, runImage)
 	cid, err := s.Docker.Run(dockerx.RunOpts{
 		Name:          cname,
-		Image:         image,
+		Image:         runImage,
 		Network:       room.NetworkName,
 		HostIP:        meta.HostIP,
 		HostPort:      p.HostPort,

@@ -338,6 +338,16 @@ func (s *Server) projectView(room *store.Room, p *store.Project) map[string]any 
 		"created_at":   room.CreatedAt,
 		"status":       st,
 	}
+	hist := s.Projects.ReadUpdateHistory(room.ID)
+	if hist == nil {
+		hist = []projects.UpdateEvent{}
+	}
+	count := 0
+	if len(hist) > 0 {
+		count = hist[0].N
+	}
+	out["updates"] = hist
+	out["update_count"] = count
 	if busy := s.jobKind(room.ID); busy != "" {
 		out["status"] = "deploying"
 		out["job"] = busy
@@ -869,12 +879,20 @@ func (s *Server) apiRedeployProject(w http.ResponseWriter, r *http.Request, id s
 }
 
 func (s *Server) apiProjectDeploys(w http.ResponseWriter, id string) {
-	room, p, err := s.resolveRoomProject(id)
-	if err != nil || p == nil {
+	room, _, err := s.resolveRoomProject(id)
+	if err != nil || room == nil {
 		writeErr(w, 404, "not found")
 		return
 	}
-	writeJSON(w, 200, s.projectView(room, p))
+	list := s.Projects.ReadUpdateHistory(room.ID)
+	if list == nil {
+		list = []projects.UpdateEvent{}
+	}
+	count := 0
+	if len(list) > 0 {
+		count = list[0].N
+	}
+	writeJSON(w, 200, map[string]any{"updates": list, "count": count})
 }
 
 func (s *Server) githubToken() string {

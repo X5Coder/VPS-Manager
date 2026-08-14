@@ -175,7 +175,11 @@ func (s *Server) applyImageTarRoom(room *store.Room, p *store.Project, tarPath s
 		return "", err
 	}
 	fmt.Fprintf(logw, "Loaded %s\n", loaded)
-	if err := s.Docker.Tag(loaded, want); err != nil {
+	tagSrc := loaded
+	if id := s.Docker.ImageID(loaded); id != "" {
+		tagSrc = id
+	}
+	if err := s.Docker.Tag(tagSrc, want); err != nil {
 		if p != nil {
 			s.Projects.MarkDeployResult(p.RoomID, p.ID, p.Image, "", false, err.Error())
 		}

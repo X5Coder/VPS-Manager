@@ -79,8 +79,70 @@ func (c *Client) EnsureNetwork(name string) error {
 }
 
 func (c *Client) RemoveNetwork(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return nil
+	}
 	_ = c.run(context.Background(), nil, "network", "rm", name)
 	return nil
+}
+
+func LocalOwnedImage(ref string) bool {
+	ref = strings.ToLower(strings.TrimSpace(ref))
+	if ref == "" {
+		return false
+	}
+	return strings.HasPrefix(ref, "vpsrooms/") ||
+		strings.HasPrefix(ref, "vpsrooms-bak/") ||
+		strings.HasPrefix(ref, "vpsrooms-restore/") ||
+		strings.HasPrefix(ref, "vps-ci:")
+}
+
+func (c *Client) RemoveImage(ref string) error {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, c.bin, "rmi", "-f", ref)
+	b, err := cmd.CombinedOutput()
+	if err != nil {
+		low := strings.ToLower(string(b) + err.Error())
+		if strings.Contains(low, "no such image") || strings.Contains(low, "image is referenced") {
+			return nil
+		}
+		return fmt.Errorf("docker rmi %s: %s", ref, strings.TrimSpace(string(b)))
+	}
+	return nil
+}
+
+func (c *Client) IDsByFilter(filters ...string) []string {
+	args := []string{"ps", "-aq"}
+	for _, f := range filters {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+		args = append(args, "--filter", f)
+	}
+	out, err := c.output(args...)
+	if err != nil {
+		return nil
+	}
+	var ids []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			ids = append(ids, line)
+		}
+	}
+	return ids
+}
+
+func (c *Client) PruneDanglingImages() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	_ = exec.CommandContext(ctx, c.bin, "image", "prune", "-f").Run()
 }
 
 func (c *Client) Login(registry, user, password string) error {

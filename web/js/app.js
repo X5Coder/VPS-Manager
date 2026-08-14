@@ -127,6 +127,27 @@
   const pct = (n) => `${(Number(n) || 0).toFixed(1)}%`;
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const gb = (bytes) => (Number(bytes) || 0) / (1024 * 1024 * 1024);
+  const fmtWhen = (iso) => {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return String(iso || "—");
+    return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  };
+  function updateHistoryHTML(items) {
+    const list = Array.isArray(items) ? items : [];
+    const n = list.length ? Number(list[0].n) || list.length : 0;
+    const rows = list.length
+      ? list.map((u) => `<div class="upd-row">
+          <span class="upd-n">#${esc(u.n)}</span>
+          <span class="upd-at">${esc(fmtWhen(u.at))}</span>
+          ${u.image ? `<span class="upd-img mono muted">${esc(u.image)}</span>` : ""}
+        </div>`).join("")
+      : `<p class="muted" style="margin:0">No updates yet. This fills when you upload a tar or GitHub deploys.</p>`;
+    const sub = n ? `Updated ${n} time${n === 1 ? "" : "s"}` : "Waiting for the first image update";
+    return `<div class="panel" id="update-history"><h3>Update history</h3>
+      <p class="muted" style="margin:0 0 10px">${sub}</p>
+      <div class="upd-list">${rows}</div>
+    </div>`;
+  }
 
   function brandMarkHTML() {
     return `<img class="brand-mark-img" src="/favicon.svg" width="36" height="36" alt="" />`;
@@ -3471,6 +3492,7 @@ docker save -o myapp.tar myapp:latest`;
             <div class="logs-body" id="tar-log">(waiting for upload)</div>
           </div>
         </div>
+        ${updateHistoryHTML(room.updates)}
         <div class="panel"><h3>Name, password & disk</h3>
           ${(() => {
             const cur = Number(qgb) || 0.1;
@@ -3632,6 +3654,14 @@ docker save -o myapp.tar myapp:latest`;
             logEl.textContent += chunk;
             logEl.scrollTop = logEl.scrollHeight;
           });
+          const text = logEl ? logEl.textContent : "";
+          if (/Updated\.|status=running/i.test(text)) {
+            try {
+              const fresh = await api(`/api/rooms/${id}`);
+              const box = document.querySelector("#update-history");
+              if (box) box.outerHTML = updateHistoryHTML(fresh.updates);
+            } catch {}
+          }
         } catch (ex) {
           if (err) err.textContent = ex.message || "Update failed";
         }

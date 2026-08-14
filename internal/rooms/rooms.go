@@ -1,6 +1,7 @@
 package rooms
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -143,19 +144,93 @@ func (s *Service) Delete(id string) error {
 		return fmt.Errorf("room not found")
 	}
 	projects, _ := s.Store.ListProjects(id)
-	for _, p := range projects {
-		if s.Docker != nil && p.ContainerID != "" {
-			_ = s.Docker.Stop(p.ContainerID)
-			_ = s.Docker.Remove(p.ContainerID, true)
+	images := map[string]struct{}{}
+	addImg := func(ref string) {
+		ref = strings.TrimSpace(ref)
+		if dockerx.LocalOwnedImage(ref) {
+			images[ref] = struct{}{}
 		}
-		_ = s.Store.DeleteProject(p.ID)
 	}
+	addImg(localImageTag(r.Name))
+	if len(id) >= 8 {
+		addImg("vpsrooms/" + id[:8] + ":latest")
+	}
+	for _, p := range projects {
+		addImg(p.Image)
+		addImg(localImageTag(p.Name))
+		if len(p.ID) >= 8 {
+			addImg("vpsrooms/" + p.ID[:8] + ":latest")
+		}
+		metaPath := filepath.Join(s.ProjectDir(id, p.ID), "__deploy.json")
+		if b, err := os.ReadFile(metaPath); err == nil {
+			var meta struct {
+				Image       string `json:"image"`
+				ImageDigest string `json:"image_digest"`
+			}
+			if json.Unmarshal(b, &meta) == nil {
+				addImg(meta.Image)
+				addImg(meta.ImageDigest)
+			}
+		}
+	}
+
 	if s.Docker != nil {
+		ids := map[string]struct{}{}
+		for _, cid := range s.Docker.IDsByFilter("label=vps-rooms.room=" + id) {
+			ids[cid] = struct{}{}
+		}
+		if len(id) >= 8 {
+			for _, cid := range s.Docker.IDsByFilter("name=vr_" + id[:8] + "_") {
+				ids[cid] = struct{}{}
+			}
+		}
+		for _, p := range projects {
+			if p.ContainerID != "" {
+				ids[p.ContainerID] = struct{}{}
+			}
+			if len(id) >= 8 && len(p.ID) >= 8 {
+				base := "vr_" + id[:8] + "_" + p.ID[:8]
+				_ = s.Docker.RemoveByName(base)
+				_ = s.Docker.RemoveByName(base + "-prev")
+			}
+		}
+		for cid := range ids {
+			_ = s.Docker.Stop(cid)
+			_ = s.Docker.Remove(cid, true)
+		}
+		for ref := range images {
+			_ = s.Docker.RemoveImage(ref)
+		}
 		_ = s.Docker.RemoveNetwork(r.NetworkName)
+		s.Docker.PruneDanglingImages()
+	}
+
+	for _, p := range projects {
+		_ = s.Store.DeleteProject(p.ID)
 	}
 	_ = os.RemoveAll(s.paths(id).Root)
 	_ = os.RemoveAll(filepath.Join(s.RuntimeDir, id))
 	return s.Store.DeleteRoom(id)
+}
+
+func localImageTag(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	var b strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			b.WriteRune(r)
+		} else if r == '_' || r == '/' || r == ':' || r == ' ' {
+			b.WriteByte('-')
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		out = "app"
+	}
+	if len(out) > 40 {
+		out = out[:40]
+	}
+	return "vpsrooms/" + out + ":latest"
 }
 
 func (s *Service) Dir(roomID string) string {
