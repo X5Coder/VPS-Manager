@@ -678,13 +678,18 @@ func (s *Service) chunkRoots(gh *GitHub, work, slug string, roots []rootSpec, sk
 			if !info.Mode().IsRegular() {
 				return nil
 			}
+			if skipBackupFile(rel, info.Size()) {
+				return nil
+			}
 			key := rs.prefix + "/" + filepath.ToSlash(rel)
-			if old, ok := prevFiles[key]; ok && old.Size == info.Size() && old.SHA256 != "" && len(old.Chunks) > 0 {
+			if old, ok := prevFiles[key]; ok && old.Size == info.Size() && !old.Deleted && (len(old.Chunks) > 0 || old.SHA256 != "") {
 				fileN++
-				newHashes[key] = old.SHA256
+				if old.SHA256 != "" {
+					newHashes[key] = old.SHA256
+				}
 				files = append(files, old)
 				if fileN%80 == 0 {
-					s.report(-1, "Unchanged %d files in %s", fileN, rs.prefix)
+					s.report(-1, "Already on GitHub — skip %d files in %s", fileN, rs.prefix)
 				}
 				return nil
 			}
@@ -834,22 +839,36 @@ func (s *Service) chunkNamed(gh *GitHub, work, baseRepo, desc string, roots []ro
 	}
 	for _, rs := range roots {
 		_ = filepath.Walk(rs.root, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info == nil || info.IsDir() {
-				return nil
-			}
-			if info.Mode()&os.ModeSymlink != 0 {
+			if err != nil || info == nil {
 				return nil
 			}
 			rel, err := filepath.Rel(rs.root, path)
 			if err != nil {
 				return nil
 			}
+			if skipBackupRel(rel) {
+				if info.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if info.IsDir() {
+				return nil
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return nil
+			}
 			if !info.Mode().IsRegular() {
 				return nil
 			}
+			if skipBackupFile(rel, info.Size()) {
+				return nil
+			}
 			key := rs.prefix + "/" + filepath.ToSlash(rel)
-			if old, ok := prevFiles[key]; ok && old.Size == info.Size() && old.SHA256 != "" && len(old.Chunks) > 0 {
-				newHashes[key] = old.SHA256
+			if old, ok := prevFiles[key]; ok && old.Size == info.Size() && !old.Deleted && (len(old.Chunks) > 0 || old.SHA256 != "") {
+				if old.SHA256 != "" {
+					newHashes[key] = old.SHA256
+				}
 				files = append(files, old)
 				return nil
 			}
@@ -1271,10 +1290,15 @@ func skipBackupRel(rel string) bool {
 	}
 	parts := strings.Split(n, "/")
 	for _, p := range parts {
-		if p == ".git" || p == "lost+found" || p == "pg_wal" || p == "pg_stat_tmp" ||
-			p == "node_modules" || p == "__pycache__" || p == ".cache" || p == ".npm" ||
-			p == "venv" || p == ".venv" || p == "site-packages" || p == "dist" || p == "build" ||
-			p == "huggingface" || p == ".huggingface" {
+		switch p {
+		case ".git", "lost+found", "pg_wal", "pg_stat_tmp",
+			"node_modules", "__pycache__", ".cache", ".npm",
+			"venv", ".venv", "site-packages", "dist", "build",
+			"huggingface", ".huggingface", "transformers", "torch",
+			"optimization_guide_model_store", "component_crx_cache",
+			"wasmttsengine", "ondeviceheadsuggestmodel", "safe browsing",
+			"gpucache", "shadercache", "code cache", "blob_storage",
+			"service worker", "cache":
 			return true
 		}
 	}
@@ -1286,6 +1310,47 @@ func skipBackupRel(rel string) bool {
 		return true
 	}
 	return false
+}
+
+func skipBackupFile(rel string, size int64) bool {
+	n := strings.ToLower(filepath.ToSlash(rel))
+	base := n
+	if i := strings.LastIndex(n, "/"); i >= 0 {
+		base = n[i+1:]
+	}
+	if strings.HasPrefix(base, "__container_image") || strings.HasPrefix(base, "__container_export") {
+		return true
+	}
+	switch {
+	case strings.HasSuffix(base, ".safetensors"), strings.HasSuffix(base, ".tflite"),
+		strings.HasSuffix(base, ".onnx"), strings.HasSuffix(base, ".gguf"),
+		strings.HasSuffix(base, ".ggml"), strings.HasSuffix(base, ".ckpt"),
+		strings.HasSuffix(base, ".pt"), strings.HasSuffix(base, ".pth"),
+		strings.HasSuffix(base, ".h5"), strings.HasSuffix(base, ".ot"),
+		strings.HasSuffix(base, ".msgpack"):
+		return true
+	}
+	if strings.Contains(base, "model.safetensors") || strings.Contains(base, "pytorch_model") {
+		return true
+	}
+	if strings.HasSuffix(base, ".log") && size >= 2*1024*1024 {
+		return true
+	}
+	if isRestoreableDump(n) {
+		return false
+	}
+	// Models and image tars belong on the VPS (pull/download on restore), not GitHub.
+	if size >= 32*1024*1024 {
+		return true
+	}
+	return false
+}
+
+func isRestoreableDump(n string) bool {
+	if strings.Contains(n, "/__dumps/") {
+		return true
+	}
+	return strings.HasSuffix(n, ".sql") || strings.HasSuffix(n, ".sql.gz") || strings.HasSuffix(n, ".dump")
 }
 
 // walkFollowSymlinks walks root and follows directory symlinks (needed for
