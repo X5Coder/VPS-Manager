@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -60,7 +61,11 @@ func (s *Service) SaveToken(token string) error {
 	_ = s.Store.SetMeta("backup_github_user", u.Login)
 	_ = s.Store.SetMeta("backup_enabled", "1")
 	now := time.Now().UTC()
-	_ = s.Store.SetMeta("backup_next_at", now.Add(IntervalHours*time.Hour).Format(time.RFC3339))
+	if next, ok, _ := s.Store.GetMeta("backup_next_at"); !ok || next == "" {
+		if h := s.IntervalHours(); h > 0 {
+			_ = s.Store.SetMeta("backup_next_at", now.Add(time.Duration(h)*time.Hour).Format(time.RFC3339))
+		}
+	}
 	return nil
 }
 
@@ -80,7 +85,9 @@ func (s *Service) SetEnabled(on bool) error {
 	_ = s.Store.SetMeta("backup_enabled", "1")
 	now := time.Now().UTC()
 	if next, ok, _ := s.Store.GetMeta("backup_next_at"); !ok || next == "" {
-		_ = s.Store.SetMeta("backup_next_at", now.Add(IntervalHours*time.Hour).Format(time.RFC3339))
+		if h := s.IntervalHours(); h > 0 {
+			_ = s.Store.SetMeta("backup_next_at", now.Add(time.Duration(h)*time.Hour).Format(time.RFC3339))
+		}
 	}
 	return nil
 }
@@ -149,7 +156,7 @@ func (s *Service) Status() map[string]any {
 		"last_error":      lastErr,
 		"running":         s.running,
 		"last_log":        s.lastLog,
-		"interval_hours":  IntervalHours,
+		"interval_hours":  s.IntervalHours(),
 		"snapshots":       snaps,
 		"job":             s.CurrentJob(),
 		"can_resume":      cp != nil && (cp.Kind == "backup" || cp.Kind == "restore"),
@@ -162,10 +169,11 @@ func (s *Service) Status() map[string]any {
 			"panel.db (rooms, projects, API tokens, settings)",
 			"telegram & github secrets",
 			"owner password",
-			"room vaults + runtime files + project source volumes",
+			"room vaults + runtime files + project data (.env, sqlite, dumps)",
 			"Postgres dumps (Supabase auth/db + any Postgres in a project)",
-			"object storage files (Supabase Storage and bind-mounted data)",
-			"docker named volumes",
+			"object storage files (bind-mounted data, not model caches)",
+			"docker named volumes (not image tars)",
+			"image names so a new VPS can docker pull/build",
 			"proxy Caddyfile",
 			"panel logs",
 		},
@@ -257,15 +265,72 @@ func (s *Service) tick() {
 		return
 	}
 	nextStr, ok, _ := s.Store.GetMeta("backup_next_at")
+	h := s.IntervalHours()
+	if h <= 0 {
+		return
+	}
 	if !ok || nextStr == "" {
-		_ = s.Store.SetMeta("backup_next_at", time.Now().UTC().Add(IntervalHours*time.Hour).Format(time.RFC3339))
+		_ = s.Store.SetMeta("backup_next_at", time.Now().UTC().Add(time.Duration(h)*time.Hour).Format(time.RFC3339))
 		return
 	}
 	next, err := time.Parse(time.RFC3339, nextStr)
 	if err != nil || time.Now().UTC().Before(next) {
 		return
 	}
-	_, _ = s.StartBackupAsync("Scheduled backup", "Automatic full 24h backup (panel + projects + container data)")
+	_, _ = s.StartBackupAsync("Scheduled backup", "Automatic backup on your schedule", true)
+}
+
+func (s *Service) IntervalHours() int {
+	raw, ok, _ := s.Store.GetMeta("backup_interval_hours")
+	if !ok || strings.TrimSpace(raw) == "" {
+		return 24
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || n < 0 {
+		return 24
+	}
+	if n > 24*365 {
+		return 24 * 365
+	}
+	return n
+}
+
+func (s *Service) SetIntervalHours(hours int) error {
+	if hours < 0 {
+		hours = 0
+	}
+	if hours > 24*365 {
+		hours = 24 * 365
+	}
+	_ = s.Store.SetMeta("backup_interval_hours", strconv.Itoa(hours))
+	if hours <= 0 {
+		_ = s.Store.SetMeta("backup_next_at", "")
+		return nil
+	}
+	_ = s.Store.SetMeta("backup_next_at", time.Now().UTC().Add(time.Duration(hours)*time.Hour).Format(time.RFC3339))
+	return nil
+}
+
+func (s *Service) advanceSchedule() {
+	h := s.IntervalHours()
+	if h <= 0 {
+		return
+	}
+	now := time.Now().UTC()
+	nextStr, ok, _ := s.Store.GetMeta("backup_next_at")
+	next := now
+	if ok && nextStr != "" {
+		if t, err := time.Parse(time.RFC3339, nextStr); err == nil {
+			next = t
+		}
+	}
+	step := time.Duration(h) * time.Hour
+	if !next.After(now) {
+		for !next.After(now) {
+			next = next.Add(step)
+		}
+	}
+	_ = s.Store.SetMeta("backup_next_at", next.Format(time.RFC3339))
 }
 
 func (s *Service) RunBackup(label, description string) (*SnapshotRecord, error) {
@@ -281,10 +346,10 @@ func (s *Service) RunBackup(label, description string) (*SnapshotRecord, error) 
 		s.running = false
 		s.mu.Unlock()
 	}()
-	return s.executeBackup(label, description)
+	return s.executeBackup(label, description, false)
 }
 
-func (s *Service) executeBackup(label, description string) (*SnapshotRecord, error) {
+func (s *Service) executeBackup(label, description string, scheduled bool) (*SnapshotRecord, error) {
 	token, user, err := s.LoadToken()
 	if err != nil || token == "" {
 		return nil, fmt.Errorf("GitHub PAT required — add a classic token with repo scope in Restore/Backup settings")
@@ -416,7 +481,7 @@ func (s *Service) executeBackup(label, description string) (*SnapshotRecord, err
 		if err != nil {
 			s.report(-1, "room %s failed: %v", room.Name, err)
 			_ = s.Store.SetMeta("backup_last_error", err.Error())
-			continue
+			return nil, fmt.Errorf("room %s: %w", room.Name, err)
 		}
 		manifest.Projects = append(manifest.Projects, *pm)
 		cp.RoomsDone = append(cp.RoomsDone, room.ID)
@@ -461,7 +526,9 @@ func (s *Service) executeBackup(label, description string) (*SnapshotRecord, err
 	_ = s.saveSnapshots(local)
 	now := time.Now().UTC()
 	_ = s.Store.SetMeta("backup_last_at", now.Format(time.RFC3339))
-	_ = s.Store.SetMeta("backup_next_at", now.Add(IntervalHours*time.Hour).Format(time.RFC3339))
+	if scheduled {
+		s.advanceSchedule()
+	}
 	_ = s.Store.SetMeta("backup_last_error", "")
 	s.clearCheckpoint()
 	s.logf("backup ok %s", id)
@@ -1348,6 +1415,10 @@ func skipBackupFile(rel string, size int64) bool {
 		return true
 	}
 	if isRestoreableDump(n) {
+		return false
+	}
+	if strings.HasSuffix(base, ".sqlite") || strings.HasSuffix(base, ".sqlite3") ||
+		strings.HasSuffix(base, ".db") || strings.HasSuffix(base, ".env") {
 		return false
 	}
 	// Models and image tars belong on the VPS (pull/download on restore), not GitHub.

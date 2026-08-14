@@ -21,8 +21,8 @@ func TestSkipBackupFileModelsAndImages(t *testing.T) {
 	if skipBackupFile("__dumps/postgres.sql.gz", 80*1024*1024) {
 		t.Fatal("dumps must stay")
 	}
-	if skipBackupFile("data/database.sqlite", 15*1024*1024) {
-		t.Fatal("sqlite under cap should stay")
+	if skipBackupFile("data/database.sqlite", 80*1024*1024) {
+		t.Fatal("sqlite user data must stay")
 	}
 	if !skipBackupRel("profiles/x/optimization_guide_model_store/a") {
 		t.Fatal("chrome model store")

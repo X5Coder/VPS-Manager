@@ -20,6 +20,7 @@ func (s *Server) routesBackupDomain() {
 	s.Mux.HandleFunc("/api/backup/token", s.withGate(s.handleBackupToken))
 	s.Mux.HandleFunc("/api/backup/enable", s.withGate(s.handleBackupEnable))
 	s.Mux.HandleFunc("/api/backup/now", s.withGate(s.handleBackupNow))
+	s.Mux.HandleFunc("/api/backup/schedule", s.withGate(s.handleBackupSchedule))
 	s.Mux.HandleFunc("/api/backup/inspect", s.withGate(s.handleBackupInspect))
 	s.Mux.HandleFunc("/api/backup/restore", s.withGate(s.handleBackupRestore))
 	s.Mux.HandleFunc("/api/proxy/status", s.withGate(s.handleProxyStatus))
@@ -258,12 +259,34 @@ func (s *Server) handleBackupNow(w http.ResponseWriter, r *http.Request) {
 		Description string `json:"description"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	job, err := s.Backup.StartBackupAsync(body.Label, body.Description)
+	job, err := s.Backup.StartBackupAsync(body.Label, body.Description, false)
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
 	writeJSON(w, 202, map[string]any{"ok": "1", "job": job, "message": "Backup running on server — check Restore page for status"})
+}
+
+func (s *Server) handleBackupSchedule(w http.ResponseWriter, r *http.Request) {
+	if s.requireOwner(w, r) == nil {
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeErr(w, 405, "method")
+		return
+	}
+	var body struct {
+		Hours int `json:"hours"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, 400, "invalid request")
+		return
+	}
+	if err := s.Backup.SetIntervalHours(body.Hours); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, s.Backup.Status())
 }
 
 func (s *Server) handleBackupInspect(w http.ResponseWriter, r *http.Request) {

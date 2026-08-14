@@ -88,7 +88,7 @@ func (s *Service) report(percent int, format string, args ...any) {
 	s.setJob(*j)
 }
 
-func (s *Service) StartBackupAsync(label, description string) (*Job, error) {
+func (s *Service) StartBackupAsync(label, description string, scheduled bool) (*Job, error) {
 	en, _, _ := s.Store.GetMeta("backup_enabled")
 	if en != "1" {
 		return nil, fmt.Errorf("backup is turned off — enable it on the Backup page first")
@@ -126,7 +126,7 @@ func (s *Service) StartBackupAsync(label, description string) (*Job, error) {
 			s.running = false
 			s.mu.Unlock()
 		}()
-		rec, err := s.executeBackup(label, description)
+		rec, err := s.executeBackup(label, description, scheduled)
 		cur := s.CurrentJob()
 		if cur == nil {
 			cur = &j

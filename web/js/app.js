@@ -2873,6 +2873,19 @@ docker save -o myapp.tar myapp:latest`;
         </form>
         <p class="error" id="gherr"></p>
         <p class="muted" id="ghstatus" style="margin-top:8px">${bk.enabled ? `On · @${esc(bk.github_user || "?")} · last ${esc(bk.last_backup_at || "never")}` : "Off — paste a key and test it to turn on."}</p>
+        <div class="field" style="margin-top:14px">
+          <label>Automatic backup</label>
+          <select id="bak-interval">
+            <option value="0"${Number(bk.interval_hours) === 0 ? " selected" : ""}>Only when I press Backup now</option>
+            <option value="6"${Number(bk.interval_hours) === 6 ? " selected" : ""}>Every 6 hours</option>
+            <option value="12"${Number(bk.interval_hours) === 12 ? " selected" : ""}>Every 12 hours</option>
+            <option value="24"${![0,6,12,48,168,336].includes(Number(bk.interval_hours)) ? " selected" : ""}>Every 24 hours</option>
+            <option value="48"${Number(bk.interval_hours) === 48 ? " selected" : ""}>Every 2 days</option>
+            <option value="168"${Number(bk.interval_hours) === 168 ? " selected" : ""}>Every week</option>
+            <option value="336"${Number(bk.interval_hours) === 336 ? " selected" : ""}>Every 2 weeks</option>
+          </select>
+          <p class="muted" style="margin-top:6px">Backup now does not move the next scheduled time.</p>
+        </div>
       </div>
       ${jobHTML}
       <div class="grid-2">
@@ -2907,6 +2920,16 @@ docker save -o myapp.tar myapp:latest`;
       const el = document.querySelector("#gherr");
       if (el) el.textContent = msg || "";
     };
+    document.querySelector("#bak-interval")?.addEventListener("change", async (e) => {
+      const hours = Number(e.target.value);
+      try {
+        await api("/api/backup/schedule", { method: "POST", body: JSON.stringify({ hours }) });
+        toast(hours <= 0 ? "Automatic backup off — use Backup now" : "Schedule saved");
+        renderRestore();
+      } catch (ex) {
+        setBakErr(ex.message);
+      }
+    });
     document.querySelector("#bak-enable")?.addEventListener("change", async (e) => {
       const on = !!e.target.checked;
       setBakErr("");
@@ -2989,7 +3012,7 @@ docker save -o myapp.tar myapp:latest`;
           method: "POST",
           body: JSON.stringify({
             label: canResume && resumeKind === "backup" ? "Resume backup" : "Manual backup",
-            description: "Inspect last point and continue — 24h timer reset from this moment",
+            description: canResume && resumeKind === "backup" ? "Resume from last point" : "Manual backup — does not change the schedule",
           }),
         });
         ok.textContent = res.message || "Backup started on server.";
