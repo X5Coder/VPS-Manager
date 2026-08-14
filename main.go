@@ -24,6 +24,9 @@ import (
 var webEmbed embed.FS
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "set-telegram-id" {
+		os.Exit(runSetTelegramID())
+	}
 	cfg := config.Load()
 	if err := os.MkdirAll(cfg.DataDir, 0o750); err != nil {
 		log.Fatal(err)

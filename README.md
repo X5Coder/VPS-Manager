@@ -179,6 +179,24 @@ Main routes: `GET /api/v1/projects`, `GET /api/v1/projects/{id}`, `POST /api/v1/
 
 ---
 
+## Change the Telegram owner id
+
+The login gate is locked to one Telegram user id. The panel UI cannot change it. Use this **on the VPS** (you already typed the VPS/root password to SSH). The command then asks for the **panel admin password**, then the new numeric id from `@userinfobot`.
+
+```bash
+ssh root@YOUR_VPS_IP
+/opt/vps-rooms/bin/vps-rooms set-telegram-id
+```
+
+You will be prompted:
+
+1. **Panel admin password** — the password you created at install (the web login password)
+2. **New Telegram user id** — numbers only
+
+The command writes the locked id and restarts `vps-rooms.service`.
+
+---
+
 ## Backup
 
 In **Restore**, connect a GitHub classic PAT with `repo` scope. The panel can snapshot panel data and rooms to GitHub and restore later. Do not use this as the only copy of production secrets.

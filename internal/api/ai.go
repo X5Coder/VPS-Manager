@@ -303,17 +303,26 @@ func (s *Server) handleTokensAI(w http.ResponseWriter, r *http.Request) {
 		if name == "" {
 			name = "API token"
 		}
-		tok, plain, err := s.Store.CreateAPIToken(name, rep.TokenMode)
-		if err != nil {
-			out["say"] = strings.TrimSpace(rep.Say + " Could not create the token: " + err.Error())
-		} else {
-			out["create_token"] = true
-			out["token"] = tok
-			out["secret"] = plain
-			out["prompt"] = s.buildAPIPrompt(base, plain, tok.Mode)
+		if existing, _ := s.Store.GetAPITokenByName(name); existing != nil {
 			out["say"] = strings.TrimSpace(rep.Say)
 			if out["say"] == "" {
-				out["say"] = "Token created. Copy it from the card above — it stays saved here."
+				out["say"] = "That token name already exists. Use the card already on this page — I did not create a second one."
+			}
+			out["done"] = true
+		} else {
+			tok, plain, err := s.Store.CreateAPIToken(name, rep.TokenMode)
+			if err != nil {
+				out["say"] = strings.TrimSpace(rep.Say + " Could not create the token: " + err.Error())
+			} else {
+				out["create_token"] = true
+				out["token"] = tok
+				out["secret"] = plain
+				out["prompt"] = s.buildAPIPrompt(base, plain, tok.Mode)
+				out["say"] = strings.TrimSpace(rep.Say)
+				if out["say"] == "" {
+					out["say"] = "Token created. Copy it from the card above — it stays saved here."
+				}
+				out["done"] = true
 			}
 		}
 	}

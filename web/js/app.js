@@ -194,7 +194,7 @@
     return `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3.4 20.6 21 12 3.4 3.4 3 10.2 15 12 3 13.8z"/></svg>`;
   }
   function stopIconSVG() {
-    return `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>`;
+    return `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="7.5" y="7.5" width="9" height="9" rx="2"/></svg>`;
   }
 
   function agentDeskHTML({
@@ -1127,7 +1127,10 @@
             }
           }
           if (img && onImage) onImage(img);
-          if (res.token && onToken) onToken(res);
+          if (res.token && onToken) {
+            onToken(res);
+            break;
+          }
           const typeOnly = !!(res.type_only || res.draft);
           const draftCmd = cmd || String(res.draft || "").trim();
           if (typeOnly && draftCmd && execFn) {
@@ -2568,8 +2571,7 @@
     const alt = `git clone https://github.com/X5Coder/VPS-Manager.git
 cd VPS-Manager
 bash install.sh`;
-    const saveImg = `docker build -t myapp:latest .
-docker save -o myapp.tar myapp:latest`;
+    const changeTg = `/opt/vps-rooms/bin/vps-rooms set-telegram-id`;
     const step = (n, title, sub, extra, code) => `<div class="docs-step">
       <div class="docs-n">${n}</div>
       <div class="docs-step-body">
@@ -2599,6 +2601,7 @@ docker save -o myapp.tar myapp:latest`;
       ${step("4", "Enter your Telegram user id", "Required. Open Telegram, search @userinfobot, tap Start, paste the numeric Id. Saved on the VPS.", "", "")}
       ${step("5", "Open the printed URL", "The script prints Panel URL last. Telegram bot token → 30-second code → the password you created.", "<p class=\"muted\">Full guide: <a href=\"https://github.com/X5Coder/VPS-Manager/blob/main/docs/INSTALL.md\" target=\"_blank\" rel=\"noopener\">docs/INSTALL.md</a></p>", "")}
       ${step("6", "Ship a project as one image", "Build on your machine, save one .tar file, upload it in Deploy, set disk quota. Or ask the room terminal assistant to clone a repo and dockerize it.", "", saveImg)}
+      ${step("7", "Change the Telegram owner id later", "SSH as root (VPS password). The command then asks for the panel admin password, then the new numeric id from @userinfobot. The web UI cannot change this id.", "", changeTg)}
       ${cmdCard("If curl is blocked", alt)}`, "docs");
     bindCmdCopies();
   }
@@ -3088,10 +3091,13 @@ docker save -o myapp.tar myapp:latest`;
     const paintList = (items, fresh) => {
       const box = document.querySelector("#tok-list");
       if (!box) return;
-      box.innerHTML = (items || []).map((t) => tokenCardHTML(t)).join("") || `<p class="muted">No tokens yet.</p>`;
-      if (fresh) {
-        const top = document.querySelector("#tok-fresh");
-        if (top) top.innerHTML = tokenCardHTML(fresh.token || fresh, { secret: fresh.secret, fresh: true });
+      const freshTok = fresh ? (fresh.token || fresh) : null;
+      const freshId = freshTok && freshTok.id;
+      const rest = (items || []).filter((t) => !freshId || t.id !== freshId);
+      box.innerHTML = rest.map((t) => tokenCardHTML(t)).join("") || (freshId ? "" : `<p class="muted">No tokens yet.</p>`);
+      const top = document.querySelector("#tok-fresh");
+      if (top) {
+        top.innerHTML = freshTok ? tokenCardHTML(freshTok, { secret: fresh.secret || freshTok.secret, fresh: true }) : "";
       }
       bindCopyables();
       document.querySelectorAll("[data-copy-btn]").forEach((b) => {
@@ -3112,18 +3118,10 @@ docker save -o myapp.tar myapp:latest`;
       aiPath: "/api/tokens/ai",
       hello: TOKEN_HELLO,
       onToken: (res) => {
-        const extras = Array.isArray(res.tokens) ? res.tokens : [];
-        const items = extras.length
-          ? extras.map((x) => {
-              const tok = x.token || x;
-              tok.secret = x.secret || tok.secret;
-              return tok;
-            })
-          : [Object.assign({}, res.token || {}, { secret: res.secret })];
-        const fresh = items[0] ? { token: items[0], secret: items[0].secret } : res;
-        const rest = list.filter((t) => !items.some((n) => n.id && n.id === t.id));
-        paintList([...items, ...rest], fresh);
-        items.reverse().forEach((tok) => list.unshift(tok));
+        const tok = Object.assign({}, res.token || {}, { secret: res.secret });
+        if (!tok.id) return;
+        list = [tok, ...list.filter((t) => t.id !== tok.id && String(t.name || "").toLowerCase() !== String(tok.name || "").toLowerCase())];
+        paintList(list, { token: tok, secret: tok.secret });
       },
     });
     document.querySelector("#tok-new")?.addEventListener("click", () => {

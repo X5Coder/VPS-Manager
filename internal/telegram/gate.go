@@ -86,6 +86,26 @@ func (g *Gate) EnsureOwnerChatID(want string) error {
 	return g.saveSecretsUnlocked(*sec)
 }
 
+// ReplaceOwnerChatID overwrites a locked owner chat id. CLI only (root + panel password).
+func (g *Gate) ReplaceOwnerChatID(want string) error {
+	want = strings.TrimSpace(want)
+	if want == "" {
+		return fmt.Errorf("chat id required")
+	}
+	if _, err := strconv.ParseInt(want, 10, 64); err != nil {
+		return fmt.Errorf("invalid chat id")
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	sec, err := g.loadSecretsUnlocked()
+	if err != nil {
+		return err
+	}
+	sec.ChatID = want
+	sec.Locked = true
+	return g.saveSecretsUnlocked(*sec)
+}
+
 func (g *Gate) loadSecretsUnlocked() (*Secrets, error) {
 	b, err := os.ReadFile(g.SecretsPath())
 	if err != nil {

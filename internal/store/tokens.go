@@ -110,6 +110,23 @@ func (s *Store) GetAPIToken(id string) (*APIToken, error) {
 	return &t, nil
 }
 
+func (s *Store) GetAPITokenByName(name string) (*APIToken, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, nil
+	}
+	var t APIToken
+	err := s.DB.QueryRow(`SELECT id,name,token_hash,COALESCE(token_plain,''),token_prefix,mode,created_at,last_used_at FROM api_tokens WHERE lower(name)=lower(?) ORDER BY created_at DESC LIMIT 1`, name).
+		Scan(&t.ID, &t.Name, &t.TokenHash, &t.TokenPlain, &t.TokenPrefix, &t.Mode, &t.CreatedAt, &t.LastUsedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
 func (s *Store) DeleteAPIToken(id string) error {
 	_, err := s.DB.Exec(`DELETE FROM api_tokens WHERE id=?`, id)
 	return err
