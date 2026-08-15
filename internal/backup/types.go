@@ -13,23 +13,92 @@ import (
 )
 
 const (
-	FormatMagic   = "VPS-MANAGE-BACKUP-v1"
-	IndexRepo     = "vps-manage-map"
-	SystemRepo    = "vps-manage-system"
-	ChunkSize     = 90 * 1024 * 1024
-	MaxRepoBytes  = 900 * 1024 * 1024
-	IntervalHours = 24
+	FormatMagic      = "VPS-MANAGE-BACKUP-v1"
+	FormatMagicV2    = "VPS-MANAGE-BACKUP-v2"
+	IndexRepo        = "vps-manage-map"
+	SystemRepo       = "vps-manage-system"
+	ImagesRepo       = "vps-manage-images"
+	ContainersRepo   = "vps-manage-containers"
+	VolumeRepoPrefix = "vps-manage-volumes"
+	LayersRelease    = "vps-layers"
+	ChunkSize        = 90 * 1024 * 1024
+	MaxRepoBytes     = 4 * 1024 * 1024 * 1024
+	ReleaseAssetMax  = 2047 * 1024 * 1024
+	MaxLogicalPart   = 100 * 1024 * 1024 * 1024
+	IntervalHours    = 24
 )
 
 type Checkpoint struct {
-	Kind        string       `json:"kind"`
-	SnapshotID  string       `json:"snapshot_id,omitempty"`
-	SystemDone  bool         `json:"system_done"`
-	RoomsDone   []string     `json:"rooms_done,omitempty"`
-	SystemRepo  string       `json:"system_repo,omitempty"`
-	SystemFiles []FileEntry  `json:"system_files,omitempty"`
-	Projects    []ProjectMap `json:"projects,omitempty"`
-	UpdatedAt   string       `json:"updated_at"`
+	Kind        string        `json:"kind"`
+	SnapshotID  string        `json:"snapshot_id,omitempty"`
+	SystemDone  bool          `json:"system_done"`
+	RoomsDone   []string      `json:"rooms_done,omitempty"`
+	SystemRepo  string        `json:"system_repo,omitempty"`
+	SystemFiles []FileEntry   `json:"system_files,omitempty"`
+	Projects    []ProjectMap  `json:"projects,omitempty"`
+	Layout      *BackupLayout `json:"layout,omitempty"`
+	UpdatedAt   string        `json:"updated_at"`
+}
+
+// BackupLayout is the stable restore map (v2).
+type BackupLayout struct {
+	ImagesRepo     string         `json:"images_repo"`
+	ImagesRelease  string         `json:"images_release"`
+	ContainersRepo string         `json:"containers_repo"`
+	VolumeRepos    []string       `json:"volume_repos"`
+	Rooms          []RoomLayout   `json:"rooms"`
+	Images         []ImageLayout  `json:"images"`
+	Layers         []LayerLayout  `json:"layers"`
+	Volumes        []VolumeLayout `json:"volumes"`
+	Files          []FileEntry    `json:"files,omitempty"`
+}
+
+type RoomLayout struct {
+	ID         string   `json:"id"`
+	Name       string   `json:"name"`
+	Short      string   `json:"short"`
+	Path       string   `json:"path"`
+	ImageKeys  []string `json:"image_keys,omitempty"`
+	VolumeKeys []string `json:"volume_keys,omitempty"`
+}
+
+type ImageLayout struct {
+	Key      string          `json:"key"`
+	Tags     []string        `json:"tags,omitempty"`
+	RoomIDs  []string        `json:"room_ids,omitempty"`
+	Format   string          `json:"format"`
+	TreePath string          `json:"tree_path"`
+	Layers   []ImageLayerUse `json:"layers"`
+}
+
+type ImageLayerUse struct {
+	Rel    string `json:"rel"`
+	Digest string `json:"digest"`
+}
+
+type LayerLayout struct {
+	Digest  string   `json:"digest"`
+	Size    int64    `json:"size"`
+	SHA256  string   `json:"sha256"`
+	Release string   `json:"release"`
+	Assets  []string `json:"assets"`
+}
+
+type VolumeLayout struct {
+	Key    string       `json:"key"`
+	RoomID string       `json:"room_id"`
+	Name   string       `json:"name"`
+	Size   int64        `json:"size"`
+	SHA256 string       `json:"sha256"`
+	Parts  []VolumePart `json:"parts"`
+}
+
+type VolumePart struct {
+	Index  int      `json:"index"`
+	Size   int64    `json:"size"`
+	SHA256 string   `json:"sha256"`
+	Repo   string   `json:"repo"`
+	Chunks []string `json:"chunks"`
 }
 
 type FileEntry struct {
@@ -76,17 +145,18 @@ type ProjectMap struct {
 }
 
 type Manifest struct {
-	Format      string       `json:"format"`
-	Version     int          `json:"version"`
-	SnapshotID  string       `json:"snapshot_id"`
-	Label       string       `json:"label"`
-	Description string       `json:"description"`
-	CreatedAt   string       `json:"created_at"`
-	Owner       string       `json:"owner"`
-	FullBackup  bool         `json:"full_backup"`
-	SystemRepo  string       `json:"system_repo,omitempty"`
-	SystemFiles []FileEntry  `json:"system_files,omitempty"`
-	Projects    []ProjectMap `json:"projects"`
+	Format      string        `json:"format"`
+	Version     int           `json:"version"`
+	SnapshotID  string        `json:"snapshot_id"`
+	Label       string        `json:"label"`
+	Description string        `json:"description"`
+	CreatedAt   string        `json:"created_at"`
+	Owner       string        `json:"owner"`
+	FullBackup  bool          `json:"full_backup"`
+	SystemRepo  string        `json:"system_repo,omitempty"`
+	SystemFiles []FileEntry   `json:"system_files,omitempty"`
+	Projects    []ProjectMap  `json:"projects"`
+	Layout      *BackupLayout `json:"layout,omitempty"`
 }
 
 type SnapshotRecord struct {
@@ -109,11 +179,16 @@ func NewManifest(id, label, desc, owner string) *Manifest {
 	}
 }
 
+func acceptedBackupFormat(got string) bool {
+	got = strings.TrimSpace(got)
+	return got == FormatMagic || got == FormatMagicV2
+}
+
 func ValidateManifest(m *Manifest) error {
 	if m == nil {
 		return fmt.Errorf("empty manifest")
 	}
-	if m.Format != FormatMagic {
+	if !acceptedBackupFormat(m.Format) {
 		return fmt.Errorf("backup not organized for VPS MANAGE (expected %s)", FormatMagic)
 	}
 	if m.Version < 1 {
@@ -123,6 +198,22 @@ func ValidateManifest(m *Manifest) error {
 }
 
 func HashFile(path string) (string, int64, error) {
+	st, err := os.Lstat(path)
+	if err != nil {
+		return "", 0, err
+	}
+	if st.Mode()&os.ModeSymlink != 0 {
+		st, err = os.Stat(path)
+		if err != nil {
+			return "", 0, err
+		}
+	}
+	if st.IsDir() {
+		return "", 0, fmt.Errorf("read %s: is a directory", path)
+	}
+	if !st.Mode().IsRegular() {
+		return "", 0, fmt.Errorf("read %s: not a regular file", path)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return "", 0, err
@@ -137,6 +228,13 @@ func HashFile(path string) (string, int64, error) {
 }
 
 func ChunkFile(src, destDir, baseName string) ([]string, error) {
+	return ChunkFileSize(src, destDir, baseName, ChunkSize)
+}
+
+func ChunkFileSize(src, destDir, baseName string, size int64) ([]string, error) {
+	if size <= 0 {
+		size = ChunkSize
+	}
 	if err := os.MkdirAll(destDir, 0o750); err != nil {
 		return nil, err
 	}
@@ -146,22 +244,54 @@ func ChunkFile(src, destDir, baseName string) ([]string, error) {
 	}
 	defer in.Close()
 	var parts []string
-	buf := make([]byte, ChunkSize)
-	for i := 0; ; i++ {
-		n, rerr := io.ReadFull(in, buf)
+	buf := make([]byte, min64(size, 8*1024*1024))
+	var written int64
+	idx := 0
+	var out *os.File
+	openPart := func() error {
+		name := fmt.Sprintf("%s.part%03d", baseName, idx)
+		parts = append(parts, name)
+		var e error
+		out, e = os.OpenFile(filepath.Join(destDir, name), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		written = 0
+		return e
+	}
+	if err := openPart(); err != nil {
+		return nil, err
+	}
+	for {
+		want := size - written
+		if want > int64(len(buf)) {
+			want = int64(len(buf))
+		}
+		n, rerr := in.Read(buf[:want])
 		if n > 0 {
-			name := fmt.Sprintf("%s.part%03d", baseName, i)
-			if err := os.WriteFile(filepath.Join(destDir, name), buf[:n], 0o600); err != nil {
+			if _, err := out.Write(buf[:n]); err != nil {
+				out.Close()
 				return nil, err
 			}
-			parts = append(parts, name)
+			written += int64(n)
+			if written >= size {
+				out.Close()
+				idx++
+				if err := openPart(); err != nil {
+					return nil, err
+				}
+			}
 		}
-		if rerr == io.EOF || rerr == io.ErrUnexpectedEOF {
+		if rerr == io.EOF {
 			break
 		}
 		if rerr != nil {
+			out.Close()
 			return nil, rerr
 		}
+	}
+	out.Close()
+	if written == 0 && idx > 0 {
+		last := parts[len(parts)-1]
+		_ = os.Remove(filepath.Join(destDir, last))
+		parts = parts[:len(parts)-1]
 	}
 	if len(parts) == 0 {
 		name := fmt.Sprintf("%s.part000", baseName)
@@ -183,15 +313,44 @@ func JoinChunks(partPaths []string, dest string) error {
 	}
 	defer out.Close()
 	for _, p := range partPaths {
-		b, err := os.ReadFile(p)
+		in, err := os.Open(p)
 		if err != nil {
 			return err
 		}
-		if _, err := out.Write(b); err != nil {
+		_, err = io.Copy(out, in)
+		in.Close()
+		if err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func min64(a, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func VolumeRepoName(n int) string {
+	return fmt.Sprintf("%s-%03d", VolumeRepoPrefix, n)
+}
+
+func sharedBackupRepo(name string) bool {
+	switch name {
+	case IndexRepo, SystemRepo, ImagesRepo, ContainersRepo:
+		return true
+	}
+	return strings.HasPrefix(name, VolumeRepoPrefix+"-")
+}
+
+func LayerAssetName(digest string) string {
+	d := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(digest)), "sha256:")
+	if len(d) > 64 {
+		d = d[:64]
+	}
+	return "l-" + d
 }
 
 func Slug(name string) string {
@@ -224,4 +383,9 @@ func BackupRepoName(slug string, n int) string {
 
 func MarshalPretty(v any) ([]byte, error) {
 	return json.MarshalIndent(v, "", "  ")
+}
+
+func mustPretty(v any) []byte {
+	b, _ := MarshalPretty(v)
+	return b
 }

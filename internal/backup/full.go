@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,7 +24,7 @@ func (s *Service) prepareSystemTree(dest string) error {
 	if err := os.MkdirAll(dest, 0o750); err != nil {
 		return err
 	}
-	_ = os.WriteFile(filepath.Join(dest, "FORMAT"), []byte(FormatMagic+"\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dest, "FORMAT"), []byte(FormatMagicV2+"\n"), 0o644)
 	_ = os.WriteFile(filepath.Join(dest, "FULL"), []byte("1\n"), 0o644)
 
 	// Consistent SQLite snapshot
@@ -100,14 +101,21 @@ func snapshotSQLite(src, dest string) error {
 }
 
 func copyFile(src, dest string) error {
-	b, err := os.ReadFile(src)
+	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
+	defer in.Close()
 	if err := os.MkdirAll(filepath.Dir(dest), 0o750); err != nil {
 		return err
 	}
-	return os.WriteFile(dest, b, 0o600)
+	out, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
 }
 
 // captureProjectData dumps databases, storage, named volumes, and Docker
@@ -231,7 +239,71 @@ func (s *Service) captureProjectData(roomID string, p store.Project) error {
 			}
 		}
 	}
+	s.writeLogicalBackupNames(roomID, p, pdir)
 	return nil
+}
+
+func (s *Service) dumpPostgresForProject(roomID string, p store.Project) {
+	if s.Docker == nil || !s.Docker.Available() {
+		return
+	}
+	pdir := s.Rooms.ProjectDir(roomID, p.ID)
+	_, _, composeProject, _ := projects.ProjectLayout(pdir)
+	pg := s.findPostgresContainer(p, composeProject)
+	if pg == "" && p.ContainerID != "" && imgLooksPostgres(p.Image) {
+		pg = p.ContainerID
+	}
+	if pg == "" {
+		return
+	}
+	dest := filepath.Join(pdir, "__dumps", "postgres.sql.gz")
+	_ = os.MkdirAll(filepath.Dir(dest), 0o750)
+	var last error
+	ok := false
+	for _, user := range []string{"postgres", "supabase_admin"} {
+		s.report(-1, "Dumping Postgres from %s (user %s)", pg, user)
+		if err := s.Docker.DumpPostgresGzip(pg, user, dest); err != nil {
+			last = err
+			_ = os.Remove(dest)
+			continue
+		}
+		if st, err := os.Stat(dest); err == nil && st.Size() > 1024 {
+			s.report(-1, "Postgres dump %s (%s)", p.Name, formatBytes(st.Size()))
+			ok = true
+			break
+		}
+		_ = os.Remove(dest)
+		last = fmt.Errorf("dump too small")
+	}
+	if !ok && last != nil {
+		s.report(-1, "Postgres dump %s: %v — live db files will be archived instead", p.Name, last)
+	}
+}
+
+func (s *Service) writeLogicalBackupNames(roomID string, p store.Project, pdir string) {
+	short := store.ShortRoomID(roomID)
+	ord := 1
+	if c, _ := s.Store.GetContainer(p.ID); c != nil && c.Ordinal > 0 {
+		ord = c.Ordinal
+	}
+	safe := Slug(p.Name)
+	if safe == "" {
+		safe = "app"
+	}
+	if p.ContainerID != "" && s.Docker != nil {
+		if out, err := s.Docker.InspectJSON(p.ContainerID); err == nil && len(out) > 0 {
+			_ = os.WriteFile(filepath.Join(pdir, fmt.Sprintf("room-%s-container-%02d-%s-config.json", short, ord, safe)), out, 0o600)
+		}
+	}
+	srcImg := filepath.Join(pdir, "__container_image.tar.gz")
+	if _, err := os.Stat(srcImg); err == nil {
+		dst := filepath.Join(pdir, fmt.Sprintf("room-%s-image-%02d-%s.tar.gz", short, ord, safe))
+		_ = copyFile(srcImg, dst)
+	}
+	vault := filepath.Join(s.RoomsDir, roomID, "vault.bin")
+	if b, err := os.ReadFile(vault); err == nil && len(b) > 0 {
+		_ = os.WriteFile(filepath.Join(pdir, fmt.Sprintf("room-%s-secrets.enc", short)), b, 0o600)
+	}
 }
 
 func imageTarFileName(ref string) string {
@@ -313,6 +385,73 @@ func (s *Service) validateBackupComplete(m *Manifest, rooms []store.Room) error 
 	got := map[string]ProjectMap{}
 	for _, p := range m.Projects {
 		got[p.RoomID] = p
+	}
+	if m.Layout != nil {
+		have := map[string]RoomLayout{}
+		for _, r := range m.Layout.Rooms {
+			have[r.ID] = r
+		}
+		if len(m.Layout.Rooms) != len(rooms) {
+			return fmt.Errorf("layout has %d rooms, panel has %d", len(m.Layout.Rooms), len(rooms))
+		}
+		imgByKey := map[string]ImageLayout{}
+		for _, im := range m.Layout.Images {
+			imgByKey[im.Key] = im
+		}
+		layerByDigest := map[string]LayerLayout{}
+		for _, ly := range m.Layout.Layers {
+			layerByDigest[ly.Digest] = ly
+		}
+		volByKey := map[string]VolumeLayout{}
+		for _, v := range m.Layout.Volumes {
+			volByKey[v.Key] = v
+		}
+		for _, r := range rooms {
+			rl, ok := have[r.ID]
+			if !ok && got[r.ID].RoomID == "" {
+				return fmt.Errorf("room %s is missing from the backup map", r.Name)
+			}
+			if !ok {
+				continue
+			}
+			var nCts int
+			if s.Store != nil {
+				cts, _ := s.Store.ListContainers(r.ID)
+				nCts = len(cts)
+				if nCts == 0 {
+					projs, _ := s.Store.ListProjects(r.ID)
+					nCts = len(projs)
+				}
+			}
+			if nCts > 0 && len(rl.ImageKeys) == 0 {
+				return fmt.Errorf("room %s has containers but no image keys", r.Name)
+			}
+			for _, k := range rl.ImageKeys {
+				im, ok := imgByKey[k]
+				if !ok {
+					return fmt.Errorf("room %s missing image %s", r.Name, k)
+				}
+				for _, u := range im.Layers {
+					ly, ok := layerByDigest[u.Digest]
+					if !ok || len(ly.Assets) == 0 {
+						return fmt.Errorf("room %s missing layer assets for %s", r.Name, u.Digest)
+					}
+				}
+			}
+			if s.Store != nil {
+				vols, _ := s.Store.ListVolumes(r.ID)
+				if len(vols) > 0 && len(rl.VolumeKeys) == 0 {
+					return fmt.Errorf("room %s volumes were not archived", r.Name)
+				}
+			}
+			for _, k := range rl.VolumeKeys {
+				vl, ok := volByKey[k]
+				if !ok || len(vl.Parts) == 0 {
+					return fmt.Errorf("volume %s missing chunks", k)
+				}
+			}
+		}
+		return nil
 	}
 	for _, r := range rooms {
 		pm, ok := got[r.ID]
@@ -413,16 +552,32 @@ func (s *Service) mergePanelDB(path string) error {
 	}
 	defer db.Close()
 
-	rows, err := db.Query(`SELECT id,name,pass_hash,pass_plain,network_name,quota_bytes,created_at FROM rooms`)
+	rows, err := db.Query(`SELECT id,name,pass_hash,pass_plain,network_name,quota_bytes,created_at,
+		COALESCE(kind,'single'), COALESCE(domain,''), COALESCE(ssl,0) FROM rooms`)
+	legacyRooms := false
+	if err != nil {
+		rows, err = db.Query(`SELECT id,name,pass_hash,pass_plain,network_name,quota_bytes,created_at FROM rooms`)
+		legacyRooms = true
+	}
 	if err != nil {
 		return err
 	}
 	for rows.Next() {
 		var r store.Room
 		var ts string
-		if err := rows.Scan(&r.ID, &r.Name, &r.PassHash, &r.PassPlain, &r.NetworkName, &r.QuotaBytes, &ts); err != nil {
-			rows.Close()
-			return err
+		var sslInt int
+		if legacyRooms {
+			if err := rows.Scan(&r.ID, &r.Name, &r.PassHash, &r.PassPlain, &r.NetworkName, &r.QuotaBytes, &ts); err != nil {
+				rows.Close()
+				return err
+			}
+			r.Kind = store.KindSingle
+		} else {
+			if err := rows.Scan(&r.ID, &r.Name, &r.PassHash, &r.PassPlain, &r.NetworkName, &r.QuotaBytes, &ts, &r.Kind, &r.Domain, &sslInt); err != nil {
+				rows.Close()
+				return err
+			}
+			r.SSL = sslInt != 0
 		}
 		r.CreatedAt, _ = time.Parse(time.RFC3339, ts)
 		_ = s.Store.UpsertRoom(r)
@@ -449,6 +604,45 @@ func (s *Service) mergePanelDB(path string) error {
 		_ = s.Store.UpsertProject(p)
 	}
 	prows.Close()
+
+	if crows, err := db.Query(`SELECT id,room_id,ordinal,name,service,image,docker_id,host_port,container_port,status,created_at FROM containers`); err == nil {
+		for crows.Next() {
+			var c store.Container
+			var ts string
+			if err := crows.Scan(&c.ID, &c.RoomID, &c.Ordinal, &c.Name, &c.Service, &c.Image, &c.DockerID, &c.HostPort, &c.ContainerPort, &c.Status, &ts); err != nil {
+				break
+			}
+			c.CreatedAt, _ = time.Parse(time.RFC3339, ts)
+			c.DockerID = ""
+			c.Status = "stopped"
+			_ = s.Store.UpsertContainer(c)
+		}
+		crows.Close()
+	}
+	if irows, err := db.Query(`SELECT id,room_id,ordinal,name,ref,size_bytes,created_at FROM images`); err == nil {
+		for irows.Next() {
+			var im store.ImageRec
+			var ts string
+			if err := irows.Scan(&im.ID, &im.RoomID, &im.Ordinal, &im.Name, &im.Ref, &im.SizeBytes, &ts); err != nil {
+				break
+			}
+			im.CreatedAt, _ = time.Parse(time.RFC3339, ts)
+			_ = s.Store.UpsertImage(im)
+		}
+		irows.Close()
+	}
+	if vrows, err := db.Query(`SELECT id,room_id,ordinal,name,docker_name,size_bytes,created_at FROM volumes`); err == nil {
+		for vrows.Next() {
+			var v store.VolumeRec
+			var ts string
+			if err := vrows.Scan(&v.ID, &v.RoomID, &v.Ordinal, &v.Name, &v.DockerName, &v.SizeBytes, &ts); err != nil {
+				break
+			}
+			v.CreatedAt, _ = time.Parse(time.RFC3339, ts)
+			_ = s.Store.UpsertVolume(v)
+		}
+		vrows.Close()
+	}
 
 	trows, err := db.Query(`SELECT id,name,token_hash,COALESCE(token_plain,''),token_prefix,mode,COALESCE(room_id,''),created_at,COALESCE(last_used_at,'') FROM api_tokens`)
 	if err == nil {

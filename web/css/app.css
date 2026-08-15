@@ -74,6 +74,7 @@ button, input, textarea, select { font: inherit; color: inherit; }
   gap: 12px;
   padding: 4px 8px 14px;
   border-bottom: 1px solid var(--line);
+  cursor: pointer;
 }
 .brand-mark {
   width: 36px;
@@ -1115,6 +1116,46 @@ button, input, textarea, select { font: inherit; color: inherit; }
   pointer-events: none;
   box-shadow: none;
 }
+.ai-stop {
+  flex-shrink: 0;
+  height: 40px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 12px;
+  background: #c62828;
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.ai-stop:hover { background: #b71c1c; }
+.nav button.nav-busy { position: relative; }
+.nav button.nav-busy::after {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #5ad46a;
+  margin-left: auto;
+  box-shadow: 0 0 0 0 rgba(90, 212, 106, .7);
+  animation: navpulse 1.4s ease-out infinite;
+}
+@keyframes navpulse {
+  0% { box-shadow: 0 0 0 0 rgba(90, 212, 106, .55); }
+  70% { box-shadow: 0 0 0 8px rgba(90, 212, 106, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(90, 212, 106, 0); }
+}
+.docs-h { margin: 22px 0 8px; font-size: 1.05rem; }
+.docs-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--accent, #8ab4ff);
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+}
+.mobile-bar-brand { cursor: pointer; }
 
 .room-card {
   border: 1px solid var(--line);

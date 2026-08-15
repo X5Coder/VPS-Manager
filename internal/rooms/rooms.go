@@ -30,6 +30,7 @@ type CreateInput struct {
 	Name       string
 	Password   string
 	QuotaBytes int64
+	Kind       string
 }
 
 func (s *Service) paths(roomID string) isolate.RoomPaths {
@@ -53,6 +54,10 @@ func (s *Service) Create(in CreateInput) (*store.Room, error) {
 	}
 	id := uuid.NewString()
 	netName := "vpsrooms_" + strings.ReplaceAll(id[:8], "-", "")
+	kind := strings.ToLower(strings.TrimSpace(in.Kind))
+	if kind != store.KindMulti {
+		kind = store.KindSingle
+	}
 	r := store.Room{
 		ID:          id,
 		Name:        name,
@@ -60,6 +65,7 @@ func (s *Service) Create(in CreateInput) (*store.Room, error) {
 		PassPlain:   in.Password,
 		NetworkName: netName,
 		QuotaBytes:  in.QuotaBytes,
+		Kind:        kind,
 		CreatedAt:   time.Now().UTC(),
 	}
 	p := s.paths(id)

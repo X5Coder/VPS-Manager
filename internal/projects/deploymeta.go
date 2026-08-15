@@ -26,7 +26,7 @@ type UpdateEvent struct {
 	Image string `json:"image,omitempty"`
 }
 
-const maxUpdateHistory = 80
+const maxUpdateHistory = 5
 
 var updateHistMu sync.Mutex
 
@@ -117,8 +117,8 @@ func compactUpdateHistory(list []UpdateEvent) []UpdateEvent {
 		}
 		out = append(out, ev)
 	}
-	for i := range out {
-		out[i].N = len(out) - i
+	if len(out) > maxUpdateHistory {
+		out = out[:maxUpdateHistory]
 	}
 	return out
 }

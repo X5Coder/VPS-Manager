@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -34,10 +35,12 @@ type Service struct {
 	WorkDir        string
 	OnAfterRestore func() error
 
-	mu      sync.Mutex
-	running bool
-	lastLog string
-	liveJob *Job
+	mu        sync.Mutex
+	running   bool
+	lastLog   string
+	liveJob   *Job
+	stopGen   atomic.Uint64
+	activeGen uint64
 }
 
 func (s *Service) secretsPath() string {
@@ -127,12 +130,57 @@ func maskToken(t string) string {
 	return t[:4] + "••••" + t[len(t)-4:]
 }
 
+func (s *Service) errIfStopped() error {
+	s.mu.Lock()
+	gen := s.activeGen
+	s.mu.Unlock()
+	if s.stopGen.Load() != gen {
+		return fmt.Errorf("backup stopped")
+	}
+	return nil
+}
+
+func (s *Service) StopJob() error {
+	s.stopGen.Add(1)
+	s.mu.Lock()
+	s.running = false
+	j := Job{
+		Kind: "backup", Status: "error", Label: "Cancelled",
+		Message: "Backup cancelled", Progress: "Cancelled",
+		Error:   "Cancelled by owner",
+		EndedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if s.liveJob != nil {
+		j = *s.liveJob
+		j.Status = "error"
+		j.Message = "Cancelled"
+		j.Progress = "Cancelled"
+		j.Error = "Cancelled by owner"
+		j.EndedAt = time.Now().UTC().Format(time.RFC3339)
+		j.Logs = append(append([]string{}, j.Logs...), time.Now().UTC().Format(time.RFC3339)+"  Cancelled by owner")
+	}
+	cp := j
+	cp.Logs = append([]string{}, j.Logs...)
+	s.liveJob = &cp
+	s.mu.Unlock()
+	if s.Store != nil {
+		s.flushJob(j)
+		s.clearCheckpoint()
+		_ = s.Store.SetMeta("backup_last_error", "Cancelled by owner")
+	}
+	return nil
+}
+
 func (s *Service) Status() map[string]any {
 	token, user, _ := s.LoadToken()
 	enabled, _, _ := s.Store.GetMeta("backup_enabled")
 	last, _, _ := s.Store.GetMeta("backup_last_at")
 	next, _, _ := s.Store.GetMeta("backup_next_at")
 	lastErr, _, _ := s.Store.GetMeta("backup_last_error")
+	job := s.CurrentJob()
+	s.mu.Lock()
+	running := s.running
+	s.mu.Unlock()
 	snaps, _ := s.ListSnapshotsLocal()
 	cp := s.loadCheckpoint()
 	resumeKind := ""
@@ -154,11 +202,12 @@ func (s *Service) Status() map[string]any {
 		"last_backup_at":  last,
 		"next_backup_at":  next,
 		"last_error":      lastErr,
-		"running":         s.running,
+		"running":         running,
+		"can_cancel":      true,
 		"last_log":        s.lastLog,
 		"interval_hours":  s.IntervalHours(),
 		"snapshots":       snaps,
-		"job":             s.CurrentJob(),
+		"job":             job,
 		"can_resume":      cp != nil && (cp.Kind == "backup" || cp.Kind == "restore"),
 		"resume_kind":     resumeKind,
 		"resume_snapshot": resumeSnap,
@@ -172,8 +221,10 @@ func (s *Service) Status() map[string]any {
 			"room vaults + runtime files + project data (.env, sqlite, dumps)",
 			"Postgres dumps (Supabase auth/db + any Postgres in a project)",
 			"object storage files and model caches",
-			"docker named volumes",
-			"docker images for local vpsrooms/* (gzipped tars); public images pulled on restore",
+			"docker named volumes (repos max 4GiB, files over 100GiB split)",
+			"docker image layers on GitHub Releases (max 2GiB per asset, content-addressed)",
+			"container configs in vps-manage-containers",
+			"stable layout.json / map.json for full restore",
 			"proxy Caddyfile",
 			"panel logs",
 		},
@@ -401,7 +452,9 @@ func (s *Service) executeBackup(label, description string, scheduled bool) (*Sna
 		_ = os.MkdirAll(indexDir, 0o750)
 		_ = initGitRepo(indexDir, gh, IndexRepo)
 	}
-	_ = os.WriteFile(filepath.Join(indexDir, "FORMAT"), []byte(FormatMagic+"\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(indexDir, "FORMAT"), []byte(FormatMagicV2+"\n"), 0o644)
+
+	useV2 := cp.Layout != nil || len(cp.RoomsDone) == 0
 
 	if cp.SystemDone {
 		s.report(12, "Panel database already uploaded — skipping")
@@ -446,7 +499,25 @@ func (s *Service) executeBackup(label, description string, scheduled bool) (*Sna
 			manifest.SystemRepo = SystemRepo
 		}
 	}
+	var cat *cataloger
+	if useV2 {
+		prevLayout := prevMan.Layout
+		if cp.Layout != nil {
+			prevLayout = cp.Layout
+		}
+		s.report(19, "Opening images / containers / volume repos")
+		var err error
+		cat, err = s.newCataloger(gh, work, prevLayout)
+		if err != nil {
+			return nil, err
+		}
+		manifest.Format = FormatMagicV2
+		manifest.Version = 2
+	}
 	for i, room := range roomsList {
+		if err := s.errIfStopped(); err != nil {
+			return nil, err
+		}
 		base := 18
 		span := 70
 		if n := len(roomsList); n > 0 {
@@ -471,15 +542,27 @@ func (s *Service) executeBackup(label, description string, scheduled bool) (*Sna
 		}
 		s.report(base, "Room %s (%d/%d)", room.Name, i+1, len(roomsList))
 		_ = s.Rooms.EnsureUnlocked(room.ID)
-		if projs, err := s.Store.ListProjects(room.ID); err == nil {
+		projs, _ := s.Store.ListProjects(room.ID)
+		if cat == nil {
 			for _, p := range projs {
 				s.report(-1, "Capturing %s (image, files, database, storage)", p.Name)
 				if err := s.captureProjectData(room.ID, p); err != nil {
 					return nil, fmt.Errorf("room %s capture: %w", room.Name, err)
 				}
 			}
+		} else {
+			for _, p := range projs {
+				s.dumpPostgresForProject(room.ID, p)
+			}
 		}
-		pm, err := s.backupRoom(gh, work, room)
+		var pm *ProjectMap
+		var err error
+		if cat != nil {
+			pm, err = cat.addRoom(room)
+			cp.Layout = cat.layout
+		} else {
+			pm, err = s.backupRoom(gh, work, room)
+		}
 		if err != nil {
 			s.report(-1, "room %s failed: %v", room.Name, err)
 			_ = s.Store.SetMeta("backup_last_error", err.Error())
@@ -490,6 +573,19 @@ func (s *Service) executeBackup(label, description string, scheduled bool) (*Sna
 		cp.Projects = append(cp.Projects, *pm)
 		s.saveCheckpoint(cp)
 		s.report(base+span/max(len(roomsList), 1), "Uploaded room %s", room.Name)
+	}
+
+	if cat != nil {
+		s.report(88, "Writing stable restore map")
+		if err := cat.finalize(); err != nil {
+			return nil, err
+		}
+		manifest.Layout = cat.layout
+		_ = os.WriteFile(filepath.Join(indexDir, "layout.json"), mustPretty(manifest.Layout), 0o644)
+	}
+
+	if !useV2 {
+		s.pruneDeletedRoomRepos(gh, prevByRoom, roomsList)
 	}
 
 	s.report(90, "Checking backup is complete")
@@ -543,6 +639,37 @@ func (s *Service) executeBackup(label, description string, scheduled bool) (*Sna
 	return &rec, nil
 }
 
+func (s *Service) pruneDeletedRoomRepos(gh *GitHub, prevByRoom map[string]ProjectMap, roomsList []store.Room) {
+	alive := map[string]bool{}
+	for _, r := range roomsList {
+		alive[r.ID] = true
+	}
+	for id, pm := range prevByRoom {
+		if alive[id] {
+			continue
+		}
+		s.report(-1, "Room %s was deleted — removing GitHub backup repos", pm.RoomName)
+		if pm.ProjectRepo != "" && !sharedBackupRepo(pm.ProjectRepo) {
+			if err := gh.DeleteRepo(pm.ProjectRepo); err != nil {
+				s.logf("delete repo %s: %v", pm.ProjectRepo, err)
+				s.report(-1, "Could not delete GitHub repo %s: %v", pm.ProjectRepo, err)
+			} else {
+				s.report(-1, "Deleted GitHub repo %s", pm.ProjectRepo)
+			}
+		}
+		for _, repo := range pm.BackupRepos {
+			if sharedBackupRepo(repo) {
+				continue
+			}
+			if err := gh.DeleteRepo(repo); err != nil {
+				s.logf("delete repo %s: %v", repo, err)
+			} else {
+				s.report(-1, "Deleted GitHub repo %s", repo)
+			}
+		}
+	}
+}
+
 func (s *Service) backupRoom(gh *GitHub, work string, room store.Room) (*ProjectMap, error) {
 	slug := Slug(room.Name)
 	projRepo := ProjectRepoName(slug)
@@ -585,6 +712,7 @@ func (s *Service) backupRoom(gh *GitHub, work string, room store.Room) (*Project
 		pm.Image = p.Image
 		meta, _ := MarshalPretty(map[string]any{
 			"room": room, "project": p, "projects": pm.Projects, "format": FormatMagic,
+			"kind": room.Kind, "password": room.PassPlain, "id": room.ID,
 		})
 		_ = os.WriteFile(filepath.Join(projDir, "project.json"), meta, 0o644)
 		env, _ := os.ReadFile(filepath.Join(s.Rooms.ProjectDir(room.ID, p.ID), ".env"))
@@ -629,6 +757,12 @@ func (s *Service) backupRoom(gh *GitHub, work string, room store.Room) (*Project
 			host, _, _ := projects.SplitBind(b)
 			addRoot("appdata/"+p.ID, host)
 		}
+	}
+	logicalDir := filepath.Join(work, "logical-"+store.ShortRoomID(room.ID))
+	if err := s.captureLogicalRoom(room, logicalDir); err != nil {
+		s.report(-1, "logical backup: %v", err)
+	} else {
+		roots = append([]rootSpec{{"", logicalDir}}, roots...)
 	}
 	files, repos, err := s.chunkRoots(gh, work, slug, roots, hasGoodPostgresDumpForRoom(s, room.ID, projs))
 	if err != nil {
@@ -756,7 +890,10 @@ func (s *Service) chunkRoots(gh *GitHub, work, slug string, roots []rootSpec, sk
 			if skipBackupFile(rel, info.Size()) {
 				return nil
 			}
-			key := rs.prefix + "/" + filepath.ToSlash(rel)
+			key := filepath.ToSlash(rel)
+			if rs.prefix != "" && rs.prefix != "." {
+				key = rs.prefix + "/" + key
+			}
 			if old, ok := prevFiles[key]; ok && old.Size == info.Size() && !old.Deleted && (len(old.Chunks) > 0 || old.SHA256 != "") {
 				fileN++
 				if old.SHA256 != "" {
@@ -939,7 +1076,10 @@ func (s *Service) chunkNamed(gh *GitHub, work, baseRepo, desc string, roots []ro
 			if skipBackupFile(rel, info.Size()) {
 				return nil
 			}
-			key := rs.prefix + "/" + filepath.ToSlash(rel)
+			key := filepath.ToSlash(rel)
+			if rs.prefix != "" && rs.prefix != "." {
+				key = rs.prefix + "/" + key
+			}
 			if old, ok := prevFiles[key]; ok && old.Size == info.Size() && !old.Deleted && (len(old.Chunks) > 0 || old.SHA256 != "") {
 				if old.SHA256 != "" {
 					newHashes[key] = old.SHA256
@@ -1009,7 +1149,8 @@ func (s *Service) InspectRemote(token string) (*Manifest, []SnapshotRecord, erro
 		return nil, nil, fmt.Errorf("no VPS MANAGE backup map found on this account (missing %s)", IndexRepo)
 	}
 	b, _ := os.ReadFile(name)
-	if string(bytesTrim(b)) != FormatMagic {
+	got := string(bytesTrim(b))
+	if !acceptedBackupFormat(got) {
 		return nil, nil, fmt.Errorf("GitHub data is not organized in VPS MANAGE format")
 	}
 	var latest Manifest
@@ -1081,73 +1222,67 @@ func (s *Service) executeRestore(token, snapshotID string) error {
 	_ = os.MkdirAll(work, 0o750)
 	defer os.RemoveAll(work)
 
-	// 1) Full system state first
-	if len(man.SystemFiles) > 0 || man.FullBackup {
-		if cp.SystemDone {
-			s.report(10, "Panel database already restored — skipping")
-		} else {
-			s.report(8, "Restoring panel database, secrets & tokens")
-			sysDir := filepath.Join(work, "system-out")
-			_ = os.MkdirAll(sysDir, 0o750)
-			if err := s.downloadEntries(gh, work, man.SystemFiles, sysDir, "system/"); err != nil {
-				s.logf("system files: %v", err)
+	if man.Layout != nil || man.Version >= 2 {
+		if len(man.SystemFiles) > 0 || man.FullBackup {
+			if cp.SystemDone {
+				s.report(10, "Panel database already restored — skipping")
+			} else {
+				s.report(8, "Restoring panel database, secrets & tokens")
+				sysDir := filepath.Join(work, "system-out")
+				_ = os.MkdirAll(sysDir, 0o750)
+				if err := s.downloadEntries(gh, work, man.SystemFiles, sysDir, "system/"); err != nil {
+					s.logf("system files: %v", err)
+				}
+				if err := s.applyRestoredSystem(sysDir); err != nil {
+					return fmt.Errorf("apply system: %w", err)
+				}
+				cp.SystemDone = true
+				s.saveCheckpoint(cp)
 			}
-			if err := s.applyRestoredSystem(sysDir); err != nil {
-				return fmt.Errorf("apply system: %w", err)
+		}
+		if err := s.restoreFromLayout(gh, work, &man); err != nil {
+			return err
+		}
+	} else {
+		if len(man.SystemFiles) > 0 || man.FullBackup {
+			if cp.SystemDone {
+				s.report(10, "Panel database already restored — skipping")
+			} else {
+				s.report(8, "Restoring panel database, secrets & tokens")
+				sysDir := filepath.Join(work, "system-out")
+				_ = os.MkdirAll(sysDir, 0o750)
+				if err := s.downloadEntries(gh, work, man.SystemFiles, sysDir, "system/"); err != nil {
+					s.logf("system files: %v", err)
+				}
+				if err := s.applyRestoredSystem(sysDir); err != nil {
+					return fmt.Errorf("apply system: %w", err)
+				}
+				cp.SystemDone = true
+				s.saveCheckpoint(cp)
 			}
-			cp.SystemDone = true
+		}
+		for i, pm := range man.Projects {
+			pct := 20 + (60 * i / max(len(man.Projects), 1))
+			rid := pm.RoomID
+			if rid == "" {
+				rid = pm.RoomName
+			}
+			if checkpointHasRoom(cp, rid) {
+				s.report(pct, "Room %s already restored — skipping", pm.RoomName)
+				continue
+			}
+			s.report(pct, "Restoring %s (%d/%d)", pm.RoomName, i+1, len(man.Projects))
+			if err := s.restoreProject(gh, work, pm); err != nil {
+				return fmt.Errorf("%s: %w", pm.RoomName, err)
+			}
+			cp.RoomsDone = append(cp.RoomsDone, rid)
 			s.saveCheckpoint(cp)
 		}
 	}
 
-	for i, pm := range man.Projects {
-		pct := 20 + (60 * i / max(len(man.Projects), 1))
-		rid := pm.RoomID
-		if rid == "" {
-			rid = pm.RoomName
-		}
-		if checkpointHasRoom(cp, rid) {
-			s.report(pct, "Room %s already restored — skipping", pm.RoomName)
-			continue
-		}
-		s.report(pct, "Restoring %s (%d/%d)", pm.RoomName, i+1, len(man.Projects))
-		if err := s.restoreProject(gh, work, pm); err != nil {
-			return fmt.Errorf("%s: %w", pm.RoomName, err)
-		}
-		cp.RoomsDone = append(cp.RoomsDone, rid)
-		s.saveCheckpoint(cp)
-	}
-
-	// Recreate everything from restored files + saved Docker images.
-	if s.Projects != nil {
-		s.report(88, "Starting restored projects from saved images")
-		all, _ := s.Store.ListAllProjects()
-		for _, p := range all {
-			pdir := s.Rooms.ProjectDir(p.RoomID, p.ID)
-			s.loadSavedDockerImages(pdir)
-			_, composeDir, composeProject, _ := projects.ProjectLayout(pdir)
-			if composeDir == "" {
-				if dockerx.ComposeFile(pdir) != "" {
-					composeDir = pdir
-				}
-			}
-			if composeDir != "" {
-				s.report(-1, "Compose %s: docker pull (same public tags) then start", p.Name)
-				if err := s.Docker.ComposePullUp(composeDir, composeProject, nil); err != nil {
-					s.report(-1, "compose %s: %v", p.Name, err)
-				} else {
-					s.report(-1, "Compose stack %s is up", p.Name)
-				}
-				s.waitAndRestorePostgres(p, composeProject)
-				continue
-			}
-			s.report(-1, "Starting %s from backup image", p.Name)
-			if err := s.Projects.Redeploy(p.ID); err != nil {
-				s.report(-1, "redeploy %s: %v", p.Name, err)
-			} else {
-				s.report(-1, "Running %s", p.Name)
-			}
-		}
+	s.report(88, "Starting restored projects from saved images")
+	if err := s.startRestoredWorkloads(); err != nil {
+		return err
 	}
 	if s.OnAfterRestore != nil {
 		_ = s.OnAfterRestore()
@@ -1323,6 +1458,8 @@ func (s *Service) restoreProject(gh *GitHub, work string, pm ProjectMap) error {
 
 	_ = s.Rooms.Seal(room.ID)
 	_ = s.Rooms.EnsureUnlocked(room.ID)
+	s.applyLogicalBackup(room.ID, filepath.Join(s.RuntimeDir, room.ID))
+	s.applyLogicalBackup(room.ID, work)
 	return nil
 }
 
@@ -1387,7 +1524,7 @@ func skipBackupRel(rel string) bool {
 			return true
 		}
 	}
-	if strings.Contains(n, "huggingface") || strings.Contains(n, "/volumes/db/data") || strings.HasPrefix(n, "volumes/db/data") {
+	if strings.Contains(n, "huggingface") {
 		return true
 	}
 	return false
@@ -1415,6 +1552,21 @@ func (s *Service) loadSavedDockerImages(pdir string) {
 		if st, err := os.Stat(img); err == nil && st.Size() > 32 {
 			tars = append(tars, img)
 			break
+		}
+	}
+	if len(tars) == 0 {
+		ents, _ := os.ReadDir(pdir)
+		for _, e := range ents {
+			n := strings.ToLower(e.Name())
+			if e.IsDir() {
+				continue
+			}
+			if !strings.HasPrefix(n, "room-") || !strings.Contains(n, "-image-") {
+				continue
+			}
+			if strings.HasSuffix(n, ".tar") || strings.HasSuffix(n, ".tar.gz") || strings.HasSuffix(n, ".tgz") {
+				tars = append(tars, filepath.Join(pdir, e.Name()))
+			}
 		}
 	}
 	dir := filepath.Join(pdir, "__compose_images")

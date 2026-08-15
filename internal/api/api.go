@@ -17,10 +17,12 @@ import (
 	"github.com/x5coder/vps-rooms/internal/backup"
 	"github.com/x5coder/vps-rooms/internal/config"
 	"github.com/x5coder/vps-rooms/internal/dockerx"
+	"github.com/x5coder/vps-rooms/internal/inventory"
 	"github.com/x5coder/vps-rooms/internal/metrics"
 	"github.com/x5coder/vps-rooms/internal/projects"
 	"github.com/x5coder/vps-rooms/internal/proxy"
 	"github.com/x5coder/vps-rooms/internal/rooms"
+	"github.com/x5coder/vps-rooms/internal/stack"
 	"github.com/x5coder/vps-rooms/internal/store"
 	"github.com/x5coder/vps-rooms/internal/telegram"
 )
@@ -30,6 +32,7 @@ type Server struct {
 	Store          *store.Store
 	Rooms          *rooms.Service
 	Projects       *projects.Service
+	Stack          *stack.Service
 	Docker         *dockerx.Client
 	Metrics        *metrics.Hub
 	Gate           *telegram.Gate
@@ -49,6 +52,7 @@ type Server struct {
 func New(cfg config.Config, st *store.Store, docker *dockerx.Client, hub *metrics.Hub) *Server {
 	rs := &rooms.Service{Store: st, Docker: docker, RoomsDir: cfg.RoomsDir, RuntimeDir: cfg.RuntimeDir}
 	ps := &projects.Service{Store: st, Docker: docker, Rooms: rs, VolumesDir: cfg.VolumesDir}
+	sk := &stack.Service{Store: st, Docker: docker, Rooms: rs, RuntimeDir: cfg.RuntimeDir}
 	proxyDir := ensureProxyDir(cfg.DataDir)
 	work := filepath.Join(cfg.DataDir, "backup-work")
 	_ = os.MkdirAll(work, 0o750)
@@ -58,11 +62,12 @@ func New(cfg config.Config, st *store.Store, docker *dockerx.Client, hub *metric
 		ProxyDir: proxyDir, DBPath: cfg.DBPath, OwnerPass: cfg.OwnerPass, WorkDir: work,
 	}
 	s := &Server{
-		Cfg: cfg, Store: st, Rooms: rs, Projects: ps, Docker: docker, Metrics: hub,
+		Cfg: cfg, Store: st, Rooms: rs, Projects: ps, Stack: sk, Docker: docker, Metrics: hub,
 		Gate: telegram.NewGate(cfg.DataDir), Notify: telegram.NewNotifier(cfg.DataDir),
 		Proxy: proxy.New(proxyDir), Backup: bs,
 		Mux: http.NewServeMux(),
 	}
+	inventory.AdoptExisting(st, docker, rs, cfg.RuntimeDir)
 	bs.OnAfterRestore = func() error { return s.syncProxy() }
 	s.routes()
 	bs.StartScheduler()
@@ -101,6 +106,7 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("/api/tokens/ai", s.withGate(s.handleTokensAI))
 	s.Mux.HandleFunc("/api/logs/ai", s.withGate(s.handleLogsAI))
 	s.Mux.HandleFunc("/api/usage/ai", s.withGate(s.handleUsageAI))
+	s.Mux.HandleFunc("/api/agent/tool", s.withGate(s.handleAgentTool))
 	s.routesManage()
 	s.routesAPITokens()
 	s.routesBackupDomain()
@@ -664,9 +670,13 @@ func (s *Server) handleRooms(w http.ResponseWriter, r *http.Request) {
 			ProjectID     string `json:"project_id"`
 			Name          string `json:"name"`
 			Password      string `json:"password"`
+			Kind          string `json:"kind"`
 			QuotaBytes    int64  `json:"quota_bytes"`
 			UsageBytes    int64  `json:"usage_bytes"`
 			Projects      int    `json:"projects"`
+			Containers    int    `json:"containers"`
+			Images        int    `json:"images"`
+			Volumes       int    `json:"volumes"`
 			HostPort      int    `json:"host_port"`
 			ContainerPort int    `json:"container_port"`
 			Image         string `json:"image"`
@@ -699,10 +709,25 @@ func (s *Server) handleRooms(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
+			cts, _ := s.Store.ListContainers(rm.ID)
+			imgs, _ := s.Store.ListImages(rm.ID)
+			vols, _ := s.Store.ListVolumes(rm.ID)
+			nC := len(cts)
+			if nC == 0 {
+				nC = len(projs)
+			}
+			kind := rm.Kind
+			if kind == "" {
+				kind = store.KindSingle
+			}
+			if nC > 1 {
+				kind = store.KindMulti
+			}
 			out = append(out, roomOut{
 				ID: rm.ID, ProjectID: projectID, Name: rm.Name, Password: rm.PassPlain,
-				QuotaBytes: rm.QuotaBytes,
-				UsageBytes: usage, Projects: len(projs), HostPort: hostPort, ContainerPort: cPort,
+				Kind: kind, QuotaBytes: rm.QuotaBytes,
+				UsageBytes: usage, Projects: len(projs), Containers: nC, Images: len(imgs), Volumes: len(vols),
+				HostPort: hostPort, ContainerPort: cPort,
 				Image: image, Domain: domain, Status: st,
 				CreatedAt: rm.CreatedAt.UTC().Format(time.RFC3339),
 				Locked:    false,
@@ -725,6 +750,22 @@ func (s *Server) handleRoomByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := parts[0]
+	if len(parts) >= 2 && parts[1] == "volumes" {
+		rest := []string{}
+		if len(parts) > 2 {
+			rest = parts[2:]
+		}
+		s.handleRoomVolume(w, r, id, rest)
+		return
+	}
+	if len(parts) >= 2 && parts[1] == "containers" {
+		rest := []string{}
+		if len(parts) > 2 {
+			rest = parts[2:]
+		}
+		s.handleRoomContainer(w, r, id, rest)
+		return
+	}
 	if len(parts) >= 2 {
 		switch parts[1] {
 		case "enter":
@@ -806,6 +847,9 @@ func (s *Server) handleRoomByID(w http.ResponseWriter, r *http.Request) {
 		case "logs":
 			s.handleRoomLogs(w, r, id)
 			return
+		case "env":
+			s.handleRoomEnv(w, r, id)
+			return
 		case "quota":
 			s.handleRoomQuota(w, r, id)
 			return
@@ -829,9 +873,20 @@ func (s *Server) handleRoomByID(w http.ResponseWriter, r *http.Request) {
 			if _, room := s.canControlRoom(w, r, id); room == nil {
 				return
 			}
-			projs, _ := s.Store.ListProjects(id)
-			for _, p := range projs {
-				_ = s.Projects.Stop(p.ID)
+			cts, _ := s.Store.ListContainers(id)
+			if len(cts) == 0 {
+				projs, _ := s.Store.ListProjects(id)
+				for _, p := range projs {
+					_ = s.Projects.Stop(p.ID)
+				}
+			} else if s.Docker != nil {
+				for _, c := range cts {
+					if c.DockerID != "" {
+						_ = s.Docker.Stop(c.DockerID)
+						c.Status = "stopped"
+						_ = s.Store.UpsertContainer(c)
+					}
+				}
 			}
 			writeJSON(w, 200, map[string]string{"ok": "1"})
 			return
@@ -843,9 +898,20 @@ func (s *Server) handleRoomByID(w http.ResponseWriter, r *http.Request) {
 			if _, room := s.canControlRoom(w, r, id); room == nil {
 				return
 			}
-			projs, _ := s.Store.ListProjects(id)
-			for _, p := range projs {
-				_ = s.Projects.Start(p.ID)
+			cts, _ := s.Store.ListContainers(id)
+			if len(cts) == 0 {
+				projs, _ := s.Store.ListProjects(id)
+				for _, p := range projs {
+					_ = s.Projects.Start(p.ID)
+				}
+			} else if s.Docker != nil {
+				for _, c := range cts {
+					if c.DockerID != "" {
+						_ = s.Docker.Start(c.DockerID)
+						c.Status = "running"
+						_ = s.Store.UpsertContainer(c)
+					}
+				}
 			}
 			writeJSON(w, 200, map[string]string{"ok": "1"})
 			return
@@ -881,6 +947,7 @@ func (s *Server) handleRoomByID(w http.ResponseWriter, r *http.Request) {
 		if room == nil {
 			return
 		}
+		inventory.RefreshRoom(s.Store, s.Docker, s.Rooms, s.Cfg.RuntimeDir, *room)
 		projs, _ := s.Projects.List(id)
 		if projs == nil {
 			projs = []store.Project{}
@@ -911,8 +978,12 @@ func (s *Server) handleRoomByID(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, 200, map[string]any{
 			"id": room.ID, "name": room.Name,
+			"kind":        room.Kind,
 			"password":    roomPasswordForSession(sess, room),
 			"quota_bytes": room.QuotaBytes, "usage_bytes": usage, "projects": enriched,
+			"containers":         s.roomContainersJSON(id),
+			"images":             s.roomImagesJSON(id),
+			"volumes":            s.roomVolumesJSON(id),
 			"public_host":        s.publicHost(r),
 			"disk_free":          st["disk_free"],
 			"quota_available_gb": float64(avail) / (1024 * 1024 * 1024),
@@ -922,6 +993,71 @@ func (s *Server) handleRoomByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeErr(w, 405, "method")
+}
+
+func (s *Server) roomContainersJSON(roomID string) []map[string]any {
+	list, _ := s.Store.ListContainers(roomID)
+	if len(list) == 0 {
+		projs, _ := s.Store.ListProjects(roomID)
+		out := make([]map[string]any, 0, len(projs))
+		for i, p := range projs {
+			st := p.Status
+			if s.Docker != nil && p.ContainerID != "" {
+				if x, err := s.Docker.InspectStatus(p.ContainerID); err == nil && x != "" {
+					st = x
+				}
+			}
+			out = append(out, map[string]any{
+				"ordinal": i + 1, "id": p.ID, "name": p.Name, "service": p.Name,
+				"label": inventory.ContainerLabel(p.Name, p.Name, p.Image),
+				"image": p.Image, "docker_id": p.ContainerID, "status": st,
+				"host_port": p.HostPort, "container_port": p.ContainerPort,
+			})
+		}
+		return out
+	}
+	out := make([]map[string]any, 0, len(list))
+	for _, c := range list {
+		st := c.Status
+		if s.Docker != nil && c.DockerID != "" {
+			if x, err := s.Docker.InspectStatus(c.DockerID); err == nil && x != "" {
+				st = x
+			}
+		}
+		out = append(out, map[string]any{
+			"ordinal": c.Ordinal, "id": c.ID, "name": c.Name, "service": c.Service,
+			"label": inventory.ContainerLabel(c.Name, c.Service, c.Image),
+			"image": c.Image, "docker_id": c.DockerID, "status": st,
+			"host_port": c.HostPort, "container_port": c.ContainerPort,
+		})
+	}
+	return out
+}
+
+func (s *Server) roomImagesJSON(roomID string) []map[string]any {
+	list, _ := s.Store.ListImages(roomID)
+	out := make([]map[string]any, 0, len(list))
+	for _, im := range list {
+		sz := im.SizeBytes
+		if sz == 0 && s.Docker != nil && im.Ref != "" {
+			sz = s.Docker.ImageSize(im.Ref)
+		}
+		out = append(out, map[string]any{
+			"ordinal": im.Ordinal, "id": im.ID, "name": im.Name, "ref": im.Ref, "size_bytes": sz,
+		})
+	}
+	return out
+}
+
+func (s *Server) roomVolumesJSON(roomID string) []map[string]any {
+	list, _ := s.Store.ListVolumes(roomID)
+	out := make([]map[string]any, 0, len(list))
+	for _, v := range list {
+		out = append(out, map[string]any{
+			"ordinal": v.Ordinal, "id": v.ID, "name": v.Name, "docker_name": v.DockerName, "size_bytes": v.SizeBytes,
+		})
+	}
+	return out
 }
 
 func roomPasswordForSession(sess *store.Session, room *store.Room) string {

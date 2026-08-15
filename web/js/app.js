@@ -6,7 +6,9 @@
     gated: false,
     view: "server",
     roomId: null,
-    roomTab: "overview",
+    roomLogCtr: null,
+    ctrId: null,
+    ctrTab: "files",
     metrics: null,
     ws: null,
     sidebarOpen: false,
@@ -128,12 +130,29 @@
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const gb = (bytes) => (Number(bytes) || 0) / (1024 * 1024 * 1024);
   const fmtWhen = (iso) => {
-    const d = new Date(iso);
+    if (iso == null || iso === "" || iso === "never") return iso || "—";
+    let s = String(iso).trim();
+    if (/^\d{4}-\d{2}-\d{2} /.test(s) && !/[zZ]|[+-]\d{2}:\d{2}$/.test(s)) {
+      s = s.replace(" ", "T") + "Z";
+    }
+    const d = new Date(s);
     if (Number.isNaN(d.getTime())) return String(iso || "—");
     return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
   };
+  const ctrLabel = (c) => (c && (c.label || c.service || c.name)) || "container";
+  const ctrNum = (c) => "#" + String((c && c.ordinal) || 1).padStart(3, "0");
+  const shortDocker = (id) => {
+    const s = String(id || "").replace(/^sha256:/, "");
+    return s.length > 12 ? s.slice(0, 12) : (s || "—");
+  };
+  function formatJobLogLine(line) {
+    const t = String(line || "");
+    const m = t.match(/^(\d{4}-\d{2}-\d{2}T\S+)\s+(.*)$/);
+    if (m) return `${fmtWhen(m[1])}  ${m[2]}`;
+    return t;
+  }
   function updateHistoryHTML(items) {
-    const list = Array.isArray(items) ? items : [];
+    const list = (Array.isArray(items) ? items : []).slice(0, 5);
     const n = list.length ? Number(list[0].n) || list.length : 0;
     const rows = list.length
       ? list.map((u) => `<div class="upd-row">
@@ -202,14 +221,15 @@
     return en[key] || en.think;
   }
 
-  const AGENT_HELLO = "Hello — write me a command and I’ll run it in the terminal.";
-  const TOKEN_HELLO = "Hello — one API covers every room. I can create a key by name, list rooms (id, quota, usage), create an empty room, and show GitHub: set ROOM_ID then push app.tar. Ask me anything about the API.";
-  const ROOM_HELLO = "Hello — I’m inside this project. Update the image from Overview (drop a .tar) or via GitHub Action (API → Copy script). I can inspect files, change disk, pause/resume, and publish a Docker tag on this same id. I won’t delete the project.";
+  const AGENT_HELLO = "Hello — you are already on this VPS. Write a command and I’ll run it in the terminal here. I will not SSH.";
+  const TOKEN_HELLO = "Hello — I explain the full API. Ask how to create a token, update a room, GitHub, or an empty room — I’ll pull that docs section and walk you through it.";
+  const ROOM_HELLO = "Hello — I’m inside this project on the VPS. I can run shell commands here, fetch this room’s usage vs the host, and publish a Docker update on this same id. I won’t SSH and I won’t delete the project.";
   const LOGS_HELLO = "Hello — I analyze panel logs. Ask me to analyze, then pick which log.";
-  const USAGE_HELLO = "Hello — I analyze this server’s live usage: CPU, RAM, disk, load, room names, and each room’s disk vs the host total.";
+  const USAGE_HELLO = "Hello — I use live tools: list every project and its disk, details for one project, and host CPU/RAM/disk. Ask how many projects and whether usage is high.";
 
   function sendIconHTML() {
-    return `<button class="ai-send" id="ai-send" type="submit" aria-label="Send">${planeIconSVG()}</button>`;
+    return `<button class="ai-send" id="ai-send" type="submit" aria-label="Send">${planeIconSVG()}</button>
+            <button class="ai-stop" id="ai-stop" type="button" hidden>Stop</button>`;
   }
   function planeIconSVG() {
     return `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3.4 20.6 21 12 3.4 3.4 3 10.2 15 12 3 13.8z"/></svg>`;
@@ -262,6 +282,7 @@
     const form = document.querySelector("#ai-form");
     const inp = document.querySelector("#ai-q");
     const btn = document.querySelector("#ai-send");
+    const stopBtn = document.querySelector("#ai-stop");
     if (inp) {
       inp.setAttribute("dir", "auto");
       if (inp.tagName === "TEXTAREA") {
@@ -269,13 +290,18 @@
         inp.style.height = Math.min(140, Math.max(24, inp.scrollHeight)) + "px";
       }
     }
+    const stop = !!pack.busy;
     if (btn) {
-      const stop = !!pack.busy;
       btn.disabled = false;
+      btn.hidden = stop;
       btn.classList.toggle("is-busy", stop);
-      btn.classList.toggle("is-stop", stop);
-      btn.setAttribute("aria-label", stop ? "Stop" : "Send");
-      btn.innerHTML = stop ? stopIconSVG() : planeIconSVG();
+      btn.classList.remove("is-stop");
+      btn.setAttribute("aria-label", "Send");
+      btn.innerHTML = planeIconSVG();
+    }
+    if (stopBtn) {
+      stopBtn.hidden = !stop;
+      stopBtn.disabled = false;
     }
     form?.classList.toggle("is-busy", !!pack.busy);
   }
@@ -874,8 +900,9 @@
     }
   }
 
-  function bindAgentChat({ key, stillHere, aiPath, execFn, quotaRoot, termOut, prompt, onImage, onStart, onToken, onQuota, onTermLine, onAction, hello, logMode, seedContext }) {
+  function bindAgentChat({ key, stillHere, aiPath, execFn, quotaRoot, termOut, prompt, onImage, onStart, onToken, onQuota, onTermLine, onAction, hello, logMode, seedContext, toolScope, roomId }) {
     const pack = roomAIState(key);
+    state._aiKey = key;
     if (!pack.welcomed) {
       pack.welcomed = true;
       if (!(pack.bubbles || []).length) {
@@ -939,6 +966,11 @@
       await runAILoop();
     };
     paintAIChat(aiLog, pack);
+    const draftBox = document.querySelector("#ai-q");
+    if (draftBox && pack.draft) {
+      draftBox.value = pack.draft;
+      syncAgentComposer(pack);
+    }
     const looksLikeRead = (cmd) => /\b(cat|head|tail|sed\s+-n|awk)\b/.test(String(cmd || ""));
     const runExec = async (cmd, typed) => {
       const head = (prompt || "") + cmd + "\n";
@@ -1018,6 +1050,8 @@
           if (!alive()) return;
           const say = String(res.say || "").trim();
           const cmd = String(res.command || "").trim();
+          const tool = String(res.tool || "").trim();
+          const toolArg = String(res.tool_arg || "").trim();
           const img = String(res.image || "").trim();
           const ask = Array.isArray(res.ask) ? res.ask.map((x) => String(x || "").trim()).filter(Boolean).slice(0, 1) : [];
           let choices = Array.isArray(res.choices) ? res.choices.map((x) => String(x || "").trim()).filter(Boolean).slice(0, 8) : [];
@@ -1026,7 +1060,7 @@
           pack.messages.push({
             role: "assistant",
             text: JSON.stringify({
-              say, says: res.says || [], command: cmd, type_only: !!res.type_only, ask, choices, quota_gb: Number(res.quota_gb || 0),
+              say, says: res.says || [], command: cmd, type_only: !!res.type_only, tool, tool_arg: toolArg, ask, choices, quota_gb: Number(res.quota_gb || 0),
               image: img, update_id: String(res.update_id || "").trim(), start: !!res.start, action, log_kind: logKind, done: !!res.done,
             }),
           });
@@ -1066,6 +1100,32 @@
           });
           if (msgs.length || say) await pushBot(pack, msgs.length ? msgs.join("\n\n") : say, aiLog);
           else await releaseTyping(pack, aiLog);
+          if (tool) {
+            pack.status = "Using tool…";
+            pack.typing = true;
+            paintAIChat(aiLog, pack);
+            try {
+              const tr = await api("/api/agent/tool", {
+                method: "POST",
+                body: JSON.stringify({
+                  tool,
+                  arg: toolArg,
+                  scope: toolScope || key,
+                  room_id: roomId || state.roomId || "",
+                }),
+                signal: pack.abort?.signal,
+              });
+              pack.messages.push({
+                role: "terminal",
+                text: String(tr.text || "(empty tool result)"),
+              });
+            } catch (ex) {
+              pack.messages.push({ role: "terminal", text: `TOOL ${tool} failed: ${ex.message || ex}` });
+            }
+            if (!alive()) return;
+            pack.typing = true;
+            continue;
+          }
           if (ask.length) {
             const q = ask[0];
             const nameQ = /name|اسم|سمي|سمّ/i.test(q);
@@ -1259,6 +1319,7 @@
       const inp = document.querySelector("#ai-q");
       const text = String(inp?.value || "").trim();
       if (!text) return;
+      pack.draft = "";
       inp.value = "";
       if (inp.tagName === "TEXTAREA") {
         inp.style.height = "auto";
@@ -1268,8 +1329,15 @@
       setTimeout(() => btn?.classList.remove("is-press"), 180);
       await sendUserText(text);
     });
+    document.querySelector("#ai-stop")?.addEventListener("click", async (e) => {
+      e.preventDefault();
+      await stopLoop();
+    });
     const aiInp = document.querySelector("#ai-q");
-    aiInp?.addEventListener("input", () => syncAgentComposer(pack));
+    aiInp?.addEventListener("input", () => {
+      pack.draft = aiInp.value;
+      syncAgentComposer(pack);
+    });
     aiInp?.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
@@ -1471,6 +1539,16 @@
       case "rooms": return "/projects";
       case "room":
         if (roomId) {
+          const ctr = extra.ctrId || state.ctrId;
+          if ((tab === "container" || extra.roomTab === "container") && ctr) {
+            const st = extra.ctrTab || state.ctrTab || "files";
+            const extraTab = st && st !== "files" ? `/${encodeURIComponent(st)}` : "";
+            return `/projects/${encodeURIComponent(roomId)}/c/${encodeURIComponent(ctr)}${extraTab}`;
+          }
+          const vol = extra.volId || state.volId;
+          if ((tab === "volume" || extra.roomTab === "volume") && vol) {
+            return `/projects/${encodeURIComponent(roomId)}/v/${encodeURIComponent(vol)}`;
+          }
           const t = tab && tab !== "overview" ? `/${encodeURIComponent(tab)}` : "";
           return `/projects/${encodeURIComponent(roomId)}${t}`;
         }
@@ -1490,6 +1568,10 @@
     let p = path || "/";
     try { p = decodeURIComponent(p); } catch {}
     p = p.replace(/\/+$/, "") || "/";
+    const cpath = p.match(/^\/projects\/([^/]+)\/c\/([^/]+)(?:\/([^/]+))?$/);
+    if (cpath) return { view: "room", roomId: cpath[1], roomTab: "container", ctrId: cpath[2], ctrTab: cpath[3] || "files" };
+    const vpath = p.match(/^\/projects\/([^/]+)\/v\/([^/]+)$/);
+    if (vpath) return { view: "room", roomId: vpath[1], roomTab: "volume", volId: vpath[2] };
     const room = p.match(/^\/projects\/([^/]+)(?:\/([^/]+))?$/);
     if (room) return { view: "room", roomId: room[1], roomTab: room[2] || "overview" };
     if (p === "/projects") return { view: "rooms" };
@@ -1504,7 +1586,15 @@
     return null;
   }
 
+  function saveChatDraft() {
+    const inp = document.querySelector("#ai-q");
+    const key = state._aiKey;
+    if (!inp || !key) return;
+    roomAIState(key).draft = inp.value;
+  }
+
   function setView(view, extra = {}) {
+    saveChatDraft();
     state.view = view;
     Object.assign(state, extra);
     state.sidebarOpen = false;
@@ -1874,9 +1964,35 @@
     const mobileRole = root.querySelector("#mobile-role");
     if (mobileRole) mobileRole.textContent = isOwner ? "Admin" : `Room · ${state.me?.room?.name || ""}`;
 
+    const goHome = () => {
+      if (state.me?.kind === "owner") setView("server");
+      else {
+        state.roomId = state.me?.room?.id || state.roomId;
+        setView("room", { roomTab: "overview" });
+      }
+    };
+    const brandHome = root.querySelector(".brand");
+    if (brandHome && !brandHome.dataset.homeBound) {
+      brandHome.dataset.homeBound = "1";
+      brandHome.setAttribute("role", "button");
+      brandHome.tabIndex = 0;
+      brandHome.title = "Home";
+      brandHome.addEventListener("click", goHome);
+      brandHome.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goHome(); }
+      });
+    }
+    const mobHome = root.querySelector(".mobile-bar-brand");
+    if (mobHome && !mobHome.dataset.homeBound) {
+      mobHome.dataset.homeBound = "1";
+      mobHome.setAttribute("role", "button");
+      mobHome.tabIndex = 0;
+      mobHome.addEventListener("click", goHome);
+    }
+
     const nav = root.querySelector("#nav");
     const items = isOwner
-      ? [["server", "Server"], ["rooms", "Projects"], ["deploy", "Deploy"], ["restore", "Backup"], ["logs", "Logs"], ["docs", "Docs"], ["tokens", "Tokens"], ["settings", "Settings"]]
+      ? [["server", "Server"], ["rooms", "Rooms"], ["deploy", "Deploy"], ["restore", "Backup"], ["logs", "Logs"], ["tokens", "Tokens"], ["docs", "Docs"], ["settings", "Settings"]]
       : [["room", "Room"], ["rooms", "All rooms"]];
     const highlight = navHighlight(active || state.view);
     nav.innerHTML = items.map(([k, label]) => {
@@ -1913,6 +2029,7 @@
   }
 
   function shell(content, active) {
+    saveChatDraft();
     const main = ensureShell(active);
     const prev = state._viewKey;
     const next = active || state.view || "";
@@ -2036,6 +2153,7 @@
           stillHere: () => state.view === "server",
           aiPath: "/api/usage/ai",
           hello: USAGE_HELLO,
+          toolScope: "usage",
         });
       }
     };
@@ -2056,7 +2174,7 @@
     const gen = state._gen;
     const paint = (rooms) => {
       if (!rooms) {
-        shell(`<div class="topbar"><div><h2>Projects</h2><div class="sub">Rooms on this VPS</div></div>
+        shell(`<div class="topbar"><div><h2>Rooms</h2><div class="sub">Each room is one project (id + password)</div></div>
           <button class="btn primary action" id="go-deploy">Deploy new</button></div>${skel(4)}`, "rooms");
         document.querySelector("#go-deploy")?.addEventListener("click", () => setView("deploy"));
         return;
@@ -2069,16 +2187,23 @@
         const fill = quotaN > 0 ? Math.min(100, Math.round((usedN / quotaN) * 100)) : 0;
         const heat = fill >= 90 ? "hot" : fill >= 70 ? "warm" : "";
         const pw = r.password || "";
+        const nC = Number(r.containers) || 0;
+        const nI = Number(r.images) || 0;
+        const nV = Number(r.volumes) || 0;
         const img = r.image || "";
         const port = Number(r.host_port) || 0;
+        const stack = nC > 1
+          ? `${nC} containers · ${nI} images · ${nV} volumes`
+          : (img ? img : (r.status === "empty" ? "Empty — upload tar or set ROOM_ID in GitHub" : "1 container"));
         return `<article class="proj-row" data-room="${r.id}">
           ${projectIconHTML(st)}
           <div class="proj-main">
             <div class="proj-titleline">
               <h4>${esc(r.name)}</h4>
               <span class="badge ${st}" data-badge>${esc(r.status)}</span>
+              ${nC > 1 ? `<span class="badge warn">${nC} containers</span>` : ""}
             </div>
-            <p class="proj-meta">${img ? `<span class="mono">${esc(img)}</span>` : `<span class="muted">${r.status === "empty" ? "Empty — upload tar or set ROOM_ID in GitHub" : "No image"}</span>`}${port ? `<span class="proj-dot"></span><span class="mono">:${port}</span>` : ""}</p>
+            <p class="proj-meta"><span class="mono">${esc(stack)}</span>${port ? `<span class="proj-dot"></span><span class="mono">:${port}</span>` : ""}</p>
             <button type="button" class="proj-id-btn copyable" data-copy="${esc(r.id)}" title="Copy id">
               <span>ID</span>
               <code>${esc(r.id)}</code>
@@ -2106,14 +2231,14 @@
         </article>`;
       }).join("") || `<div class="empty-projects">
           ${brandMarkHTML()}
-          <h3>No projects</h3>
-          <p class="muted">Deploy an image, set disk quota, and start a room.</p>
+          <h3>No rooms</h3>
+          <p class="muted">Deploy a project into a room. One room holds its containers, images, volumes, and secrets.</p>
           <button class="btn primary action" id="empty-deploy">Deploy new</button>
         </div>`;
 
       shell(`
         <div class="topbar"><div>
-          <h2>Projects</h2>
+          <h2>Rooms</h2>
           <div class="sub">${(rooms || []).length ? `${rooms.length} on this VPS` : "Nothing deployed yet"}</div>
         </div>
         <button class="btn primary action" id="go-deploy">Deploy new</button>
@@ -2146,7 +2271,7 @@
       bindPowerToggles();
       document.querySelectorAll("[data-del]").forEach((b) => bindAction(b, async () => {
         if (!await confirmAction({
-          title: "Delete this project?",
+          title: "Delete this room?",
           body: "This removes the room and its data. This cannot be undone.",
           ok: "Delete",
           danger: true,
@@ -2602,46 +2727,179 @@
   }
 
   async function renderDocs() {
-    const ssh = `ssh root@YOUR_VPS_IP`;
-    const install = `curl -fsSL https://raw.githubusercontent.com/X5Coder/VPS-Manager/main/install.sh | bash`;
-    const alt = `git clone https://github.com/X5Coder/VPS-Manager.git
-cd VPS-Manager
-bash install.sh`;
-    const changeTg = `/opt/vps-rooms/bin/vps-rooms set-telegram-id`;
-    const saveImg = `docker build -t myapp:latest .
-docker save -o myapp.tar myapp:latest`;
-    const step = (n, title, sub, extra, code) => `<div class="docs-step">
+    const listRooms = `curl -sS "http://YOUR_VPS_IP:9090/api/v1/projects" \\
+  -H "Authorization: Bearer YOUR_TOKEN"`;
+    const quota = `curl -sS "http://YOUR_VPS_IP:9090/api/v1/quota" \\
+  -H "Authorization: Bearer YOUR_TOKEN"`;
+    const createEmpty = `curl -sS -X POST "http://YOUR_VPS_IP:9090/api/v1/projects" \\
+  -H "Authorization: Bearer YOUR_TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d '{"name":"my-app","quota_gb":10,"password":"secret6+","kind":"single"}'`;
+    const uploadTar = `curl -sS -X POST "http://YOUR_VPS_IP:9090/api/v1/projects/ROOM_ID/upload" \\
+  -H "Authorization: Bearer YOUR_TOKEN" \\
+  -F "file=@app.tar;filename=app.tar"`;
+    const uploadMulti = `curl -sS -X POST "http://YOUR_VPS_IP:9090/api/v1/projects/ROOM_ID/upload" \\
+  -H "Authorization: Bearer YOUR_TOKEN" \\
+  -F "file=@project.vps.tar.gz;filename=project.vps.tar.gz"`;
+    const oneRoom = `curl -sS "http://YOUR_VPS_IP:9090/api/v1/projects/ROOM_ID" \\
+  -H "Authorization: Bearer YOUR_TOKEN"`;
+    const patchQuota = `curl -sS -X PATCH "http://YOUR_VPS_IP:9090/api/v1/projects/ROOM_ID" \\
+  -H "Authorization: Bearer YOUR_TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d '{"quota_gb":20}'`;
+    const execCmd = `curl -sS -X POST "http://YOUR_VPS_IP:9090/api/v1/projects/ROOM_ID/exec" \\
+  -H "Authorization: Bearer YOUR_TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d '{"command":"ls -la","container_id":"CONTAINER_ID"}'`;
+    const logsByName = `curl -sS "http://YOUR_VPS_IP:9090/api/v1/projects/ROOM_ID/logs?name=auth" \\
+  -H "Authorization: Bearer YOUR_TOKEN"`;
+    const logsById = `curl -sS "http://YOUR_VPS_IP:9090/api/v1/projects/ROOM_ID/logs?container=CONTAINER_ID" \\
+  -H "Authorization: Bearer YOUR_TOKEN"`;
+    const logsVps = `curl -sS "http://YOUR_VPS_IP:9090/api/v1/logs" \\
+  -H "Authorization: Bearer YOUR_TOKEN"`;
+    const filesCtr = `curl -sS "http://YOUR_VPS_IP:9090/api/rooms/ROOM_ID/containers/CONTAINER_ID/files?path=/" \\
+  -H "Authorization: Bearer YOUR_TOKEN"`;
+    const filesVol = `curl -sS "http://YOUR_VPS_IP:9090/api/rooms/ROOM_ID/volumes/VOLUME_ID/files?path=/" \\
+  -H "Authorization: Bearer YOUR_TOKEN"`;
+    const multiTree = `VPS Manager Multi-Container Package
+│
+├── compose.yml          # any *.yml name at the root is accepted
+└── images/
+    ├── image-01.tar
+    ├── image-02.tar
+    └── image-03.tar`;
+    const errBox = (rows) => `<div class="cmd-card"><div class="cmd-card-head"><h4>Responses & errors</h4></div>
+      <pre class="cmd-pre">${esc(rows)}</pre></div>`;
+    const step = (n, title, sub, extra, code, codeTitle) => `<div class="docs-step">
       <div class="docs-n">${n}</div>
       <div class="docs-step-body">
         <h3>${title}</h3>
         <p class="muted">${sub}</p>
         ${extra || ""}
-        ${code ? cmdCard("Command", code) : ""}
+        ${code ? cmdCard(codeTitle || "Command", code) : ""}
       </div>
     </div>`;
 
     shell(`
       <div class="topbar"><div>
         <h2>Docs</h2>
-        <div class="sub">Install on a new Ubuntu VPS</div>
-      </div></div>
-      <p class="docs-lead">Paste one command on the VPS. When Docker is ready the script stops and requires a panel password and your Telegram user id. Only after those are saved does it print the panel URL.</p>
-      <p class="docs-repo">Repository: <a href="https://github.com/X5Coder/VPS-Manager" target="_blank" rel="noopener">github.com/X5Coder/VPS-Manager</a> · Developer <strong>X5Coder</strong></p>
-      <div class="docs-os">
-        <div class="panel">
-          <h3>Supported</h3>
-          <p><strong>Ubuntu 20.04, 22.04, or 24.04</strong> · root access · x86_64 or ARM64.</p>
-        </div>
+        <div class="sub">Public API · quota · single / multi GitHub Actions</div>
       </div>
-      ${step("1", "SSH into the VPS", "On your computer, replace YOUR_VPS_IP with the address from your provider.", "", ssh)}
-      ${step("2", "Paste the installer", "As root. One command installs Docker and the panel. Downloads retry on failure.", "", install)}
-      ${step("3", "Create the panel password", "Required on first install. At least 8 characters, then confirm. Saved on the VPS.", "", "")}
-      ${step("4", "Enter your Telegram user id", "Required. Open Telegram, search @userinfobot, tap Start, paste the numeric Id. Saved on the VPS.", "", "")}
-      ${step("5", "Open the printed URL", "The script prints Panel URL last. Telegram bot token → 30-second code → the password you created.", "<p class=\"muted\">Full guide: <a href=\"https://github.com/X5Coder/VPS-Manager/blob/main/docs/INSTALL.md\" target=\"_blank\" rel=\"noopener\">docs/INSTALL.md</a></p>", "")}
-      ${step("6", "Ship a project as one image", "Build on your machine, save one .tar file, upload it in Deploy, set disk quota. Or ask the room terminal assistant to clone a repo and dockerize it.", "", saveImg)}
-      ${step("7", "Change the Telegram owner id later", "SSH as root (VPS password). The command then asks for the panel admin password, then the new numeric id from @userinfobot. The web UI cannot change this id.", "", changeTg)}
-      ${cmdCard("If curl is blocked", alt)}`, "docs");
+        <button class="btn sm primary action" type="button" id="docs-copy-page">Copy page</button>
+      </div>
+      <p class="docs-lead">One API token controls <strong>every room</strong>. Create it on <button type="button" class="docs-link" id="docs-goto-tokens">Tokens</button>. Always call <span class="mono">GET /api/v1/quota</span> before creating a room. Single = <span class="mono">.tar</span>. Multi = <span class="mono">.tar.gz</span> in the layout below.</p>
+      <p class="docs-repo">Repository: <a href="https://github.com/X5Coder/VPS-Manager" target="_blank" rel="noopener">github.com/X5Coder/VPS-Manager</a> · Developer <strong>X5Coder</strong></p>
+      <textarea class="hidden" id="docs-copy-src" readonly></textarea>
+
+      <h3 class="docs-h">1. Create an API</h3>
+      ${step("A", "Tokens page", "Create the key, then Copy API (BASE + TOKEN). Copy single script or Copy multi script into the matching GitHub workflow. Copy prompt = this whole brief for an AI.", "", "")}
+
+      <h3 class="docs-h">2. Available disk (required before create)</h3>
+      ${step("B", "GET /api/v1/quota", "Returns quota_available_gb. POST /api/v1/projects quota_gb must be &gt; 0 and ≤ this number.", errBox(`200 { quota_available_gb, quota_available, disk_total, disk_used, disk_free, quota_reserved, hint }
+401 { error: "unauthorized" }`), quota)}
+
+      <h3 class="docs-h">3. List rooms</h3>
+      ${step("C", "GET /api/v1/projects", "id, name, kind (single|multi), status (empty|running|…), quota_gb, usage_gb, containers/images/volumes.", errBox(`200 { projects: [...], storage: {...} }
+401 { error: "unauthorized" }`), listRooms)}
+      ${step("C2", "GET one room", "status=empty means the id exists but no container yet.", errBox(`200 room object
+404 { error: "not found" }`), oneRoom)}
+
+      <h3 class="docs-h">4. Create an empty room</h3>
+      ${step("D", "POST /api/v1/projects", "After step B. name + quota_gb + password (≥6). Optional kind single|multi.", errBox(`200 { ok:true, empty:true, status:"empty", project:{ id: ROOM_ID }, password }
+400 { code:"quota_required", error }
+400 { code:"quota_exceeds_available", quota_available_gb, error }
+400 { code:"password_required" | "password_invalid" }
+400 { code:"invalid_request" }
+401 unauthorized`), createEmpty)}
+
+      <h3 class="docs-h">5. Upload — single vs multi</h3>
+      ${step("E", "Single · .tar only", "docker save one image. Optional container_id updates one container in a multi room.", errBox(`202/200 deploying
+400 { code:"package_kind_mismatch" } if the file is actually a multi stack
+400 { code:"package_bad_name" } if not .tar
+404 container not found
+409 deploy already running`), uploadTar)}
+      ${step("F", "Multi · .tar.gz only", "Fixed layout. Any root *.yml is accepted as compose.", cmdCard("Package layout", multiTree) + errBox(`400 package_kind_mismatch if you send .tar.gz without compose.yml, or send multi to a single room
+400 package_bad_name if not .tar.gz`), uploadMulti)}
+
+      <h3 class="docs-h">6. Logs</h3>
+      ${step("G0", "By container name", "One container. There is no combined log for the whole room.", errBox(`200 { log, container_id, name, containers[] }
+400 { code:"logs_target_required" } if name and container are both missing
+404 { code:"container_not_found" }`), logsByName)}
+      ${step("G1", "By container ID", "Same as name. Alias: GET /api/v1/projects/ROOM_ID/containers/CONTAINER_ID/logs", "", logsById)}
+      ${step("G2", "Whole VPS", "Token only — no Room ID. Optional ?kind=vps|host|panel|api|deploy", errBox(`200 { kind, log, kinds[] }
+401 unauthorized`), logsVps)}
+
+      <h3 class="docs-h">7. Browse files</h3>
+      ${step("G", "Container files", "Panel: Containers → click a container → Files. API path below.", errBox(`200 { path, entries:[{name,dir,size}] } or { path, content }
+400 container stopped
+404 not found`), filesCtr)}
+      ${step("H", "Volume files", "Panel: Volumes → click a volume → browse. Read-only.", "", filesVol)}
+
+      <h3 class="docs-h">8. Quota, exec, ports</h3>
+      ${step("I", "PATCH quota", "Same quota errors as create.", "", patchQuota)}
+      ${step("J", "Exec", "Runs inside the selected container.", "", execCmd)}
+
+      <h3 class="docs-h">9. GitHub Actions</h3>
+      <p class="muted">Tokens → Copy single script → <code>.github/workflows/vps-deploy-single.yml</code> (builds, saves <code>app.tar</code>, fails if compose/images exist).<br>
+      Tokens → Copy multi script → <code>.github/workflows/vps-deploy-multi.yml</code> (packs <code>project.vps.tar.gz</code>, fails if .yml or images/*.tar missing). Set ROOM_ID. Repo PRIVATE.</p>
+    `, "docs");
+    const copySrc = document.querySelector("#docs-copy-src");
+    if (copySrc) copySrc.value = docsPagePlain();
     bindCmdCopies();
+    document.querySelector("#docs-goto-tokens")?.addEventListener("click", () => setView("tokens"));
+    document.querySelector("#docs-copy-page")?.addEventListener("click", async () => {
+      await copyText(document.querySelector("#docs-copy-src")?.value || document.querySelector(".page")?.innerText || "");
+      toast("Docs copied");
+    });
+  }
+
+  function docsPagePlain() {
+    return `VPS Manager API
+Base: http://YOUR_VPS_IP:9090
+Auth: Authorization: Bearer YOUR_TOKEN
+Errors: { "ok": false, "error": "...", "code": "..." } + HTTP status.
+
+1) GET /api/v1/quota
+   BEFORE creating a room. 200: quota_available_gb. 401 unauthorized.
+   quota_gb on create must be > 0 and <= quota_available_gb.
+
+2) GET /api/v1/projects
+   200 { projects[], storage }. 401 unauthorized.
+   GET /api/v1/projects/ROOM_ID  200 room  404 not found
+
+3) POST /api/v1/projects
+   {"name","quota_gb","password","kind":"single|multi"}
+   200 { ok, empty:true, status:"empty", project.id, password }
+   400 quota_required | quota_exceeds_available (includes quota_available_gb) | password_required | password_invalid | invalid_request
+
+4) POST /api/v1/projects/ROOM_ID/upload  field: file
+   SINGLE: filename *.tar (docker save). Optional container_id.
+   MULTI: filename *.tar.gz or *.vps.tar.gz
+     compose.yml   (any *.yml at root)
+     images/image-01.tar
+     images/image-02.tar
+   400 package_bad_name | package_kind_mismatch | file_required
+   404 container not found  409 deploy running
+
+5) Logs — one container, never a combined room dump
+   GET /api/v1/projects/ROOM_ID/logs?name=auth
+   GET /api/v1/projects/ROOM_ID/logs?container=CONTAINER_ID
+   GET /api/v1/projects/ROOM_ID/containers/CONTAINER_ID/logs
+   200 { log, container_id, name }  400 logs_target_required  404 container_not_found
+   Whole VPS (no ROOM_ID): GET /api/v1/logs   optional ?kind=vps|host|panel|api|deploy
+
+6) Files
+   GET /api/rooms/ROOM_ID/containers/CONTAINER_ID/files?path=/
+   GET /api/rooms/ROOM_ID/volumes/VOLUME_ID/files?path=/
+
+7) PATCH quota  POST exec  GET /api/v1/ports
+
+8) GitHub
+   Single: .github/workflows/vps-deploy-single.yml  (Copy single script)
+   Multi:  .github/workflows/vps-deploy-multi.yml   (Copy multi script)
+   Action builds/packs and POSTs to the API. Wrong kind fails with package_kind_mismatch.
+
+Never DELETE via API. One token = all rooms.`;
   }
 
   async function renderSettings() {
@@ -2773,20 +3031,49 @@ docker save -o myapp.tar myapp:latest`;
     });
   }
 
+  function jobIsLive(bk, job) {
+    return !!(bk && bk.running) || !!(job && (job.status === "running" || job.status === "queued"));
+  }
+
+  async function stopBackupJob() {
+    const err = document.querySelector("#bakerr");
+    if (err) err.textContent = "";
+    try {
+      await api("/api/backup/stop", { method: "POST", body: "{}" });
+      toast("Backup cancelled");
+      const nowBtn = document.querySelector("#bak-now");
+      if (nowBtn) { nowBtn.disabled = false; nowBtn.dataset.lock = "0"; }
+      document.querySelector(".restore-hero")?.classList.remove("is-running");
+      paintJob({
+        kind: "backup", status: "error", message: "Cancelled", progress: "Cancelled",
+        percent: 0, error: "Cancelled by owner", logs: ["Cancelled by owner"],
+      }, "#job-live");
+      setTimeout(() => { if (state.view === "restore") renderRestore(); }, 1500);
+    } catch (ex) {
+      const msg = ex.message || "Cancel failed";
+      if (err) err.textContent = msg;
+      else toast(msg);
+    }
+  }
+
   function jobPanelHTML(job) {
     if (!job) return "";
     const pct = Math.max(0, Math.min(100, Number(job.percent) || 0));
-    const logs = (job.logs || []).join("\n");
+    const logs = (job.logs || []).map(formatJobLogLine).join("\n");
     const err = job.error ? `\nERROR: ${job.error}` : "";
+    const when = job.started_at ? fmtWhen(job.started_at) : "";
     return `<div class="job-banner ${esc(job.status || "")}" id="job-banner">
       <div class="job-live">
         <div class="job-live-head">
           <div>
-            <strong>${esc((job.kind || "job").toUpperCase())} · ${esc(job.status || "")}</strong>
-            <div class="muted" style="margin-top:4px">${esc(job.message || "")}</div>
+            <strong>${esc((job.kind || "job").toUpperCase())} · ${esc(job.status || "")}${job.label ? ` · ${esc(job.label)}` : ""}</strong>
+            <div class="muted" style="margin-top:4px">${esc(job.message || "")}${when ? ` · started ${esc(when)}` : ""}</div>
             <div class="mono" style="margin-top:6px;font-size:0.8rem">${esc(job.progress || "")}</div>
           </div>
-          <div class="job-pct mono">${pct}%</div>
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px">
+            <div class="job-pct mono">${pct}%</div>
+            ${job.status === "running" || job.status === "queued" ? `<button class="btn sm danger action" type="button" id="bak-stop">Cancel</button>` : ""}
+          </div>
         </div>
         <div class="job-bar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><span style="width:${pct}%"></span></div>
         <pre class="job-log">${esc(logs + err) || "Waiting for log…"}</pre>
@@ -2800,32 +3087,44 @@ docker save -o myapp.tar myapp:latest`;
     el.innerHTML = jobPanelHTML(job);
     const log = el.querySelector(".job-log");
     if (log) log.scrollTop = log.scrollHeight;
-    const running = !!(job && job.status === "running");
+    const running = !!(job && (job.status === "running" || job.status === "queued"));
     document.querySelector(".restore-hero")?.classList.toggle("is-running", running);
+    const nowBtn = document.querySelector("#bak-now");
+    if (nowBtn && running) {
+      nowBtn.disabled = true;
+      nowBtn.dataset.lock = "1";
+    } else if (nowBtn) {
+      nowBtn.dataset.lock = "0";
+    }
+    const stopBtn = el.querySelector("#bak-stop");
+    if (stopBtn) bindAction(stopBtn, stopBackupJob);
   }
 
   function startJobPoll(where) {
+    ensureBackupWatch();
     clearTimeout(state.jobTimer);
     const tick = async () => {
       const onPage = state.view === "restore";
       if (!onPage) return;
       try {
         const bk = await api("/api/backup/status");
-        const sel = "#job-live";
-        paintJob(bk.job, sel);
+        paintJob(bk.job, "#job-live");
         const btn = document.querySelector("#bak-now");
+        const running = jobIsLive(bk, bk.job);
         if (btn) {
-          const running = !!(bk.job && bk.job.status === "running");
-          btn.disabled = running;
+          btn.disabled = running || !bk.enabled;
           btn.dataset.lock = running ? "1" : "0";
         }
-        if (bk.job && bk.job.status === "running") {
+        if (running) {
           state.jobWasRunning = true;
           state.jobTimer = setTimeout(tick, 1000);
-        } else if (state.jobWasRunning && bk.job && bk.job.status !== "running") {
-          state.jobWasRunning = false;
-          if (where !== "settings" && state.view === "restore") {
-            state.jobTimer = setTimeout(() => { if (state.view === "restore") renderRestore(); }, 800);
+        } else {
+          state.jobTimer = setTimeout(tick, 2500);
+          if (state.jobWasRunning && !running) {
+            state.jobWasRunning = false;
+            if (where !== "settings" && state.view === "restore") {
+              setTimeout(() => { if (state.view === "restore") renderRestore(); }, 800);
+            }
           }
         }
       } catch {
@@ -2833,6 +3132,24 @@ docker save -o myapp.tar myapp:latest`;
       }
     };
     tick();
+  }
+
+  function ensureBackupWatch() {
+    if (state._bakWatch) return;
+    state._bakWatch = setInterval(async () => {
+      if (state.me?.kind !== "owner") return;
+      try {
+        const bk = await api("/api/backup/status");
+        const running = jobIsLive(bk, bk.job);
+        document.querySelector('[data-go="restore"]')?.classList.toggle("nav-busy", running);
+        if (running) state.jobWasRunning = true;
+        if (state.view === "restore" && running) {
+          paintJob(bk.job, "#job-live");
+          const btn = document.querySelector("#bak-now");
+          if (btn) btn.disabled = true;
+        }
+      } catch {}
+    }, 2000);
   }
 
   async function renderRestore() {
@@ -2853,7 +3170,8 @@ docker save -o myapp.tar myapp:latest`;
     state.backupReady = !!bk.configured;
     const job = bk.job;
     const snaps = bk.snapshots || [];
-    const canResume = !!bk.can_resume && (job?.status !== "running");
+    const live = jobIsLive(bk, job);
+    const canResume = !!bk.can_resume && !live;
     const resumeKind = bk.resume_kind || "";
     const bakLabel = canResume && resumeKind === "backup" ? "Resume backup" : "Backup now";
     const resumeNote = canResume
@@ -2865,7 +3183,7 @@ docker save -o myapp.tar myapp:latest`;
       const resumeThis = canResume && resumeKind === "restore" && bk.resume_snapshot && s.id === bk.resume_snapshot;
       return `<tr>
       <td><strong>${esc(s.label || s.id)}</strong><div class="muted" style="font-size:0.8rem">${esc(s.description || "")}</div></td>
-      <td class="muted">${esc(s.created_at || "")}</td>
+      <td class="muted">${esc(fmtWhen(s.created_at || ""))}</td>
       <td><span class="badge ${s.status === "ok" ? "ok" : "miss"}">${esc(s.status || "")}</span></td>
       <td><button class="btn sm primary action" data-restore="${esc(s.id)}" ${bk.configured ? "" : "disabled"}>${resumeThis ? "Resume" : "Restore"}</button></td>
     </tr>`;
@@ -2874,14 +3192,15 @@ docker save -o myapp.tar myapp:latest`;
     const jobHTML = `<div id="job-live">${job ? jobPanelHTML(job) : ""}</div>`;
 
     shell(`
-      <div class="topbar restore-hero ${job && job.status === "running" ? "is-running" : ""}">
+      <div class="topbar restore-hero ${live ? "is-running" : ""}">
         <div>
           <h2>Backup</h2>
           <div class="sub restore-sub"><span class="restore-live" aria-hidden="true"></span>${esc(resumeNote)}</div>
         </div>
         <div class="topbar-actions">
           ${canResume && resumeKind === "restore" ? `<button class="btn action" id="resume-restore">Resume restore</button>` : ""}
-          <button class="btn primary action bak-now-btn" id="bak-now" ${!bk.enabled || (job && job.status === "running") ? "disabled" : ""}>
+          <button class="btn danger action" id="bak-stop-top">Cancel</button>
+          <button class="btn primary action bak-now-btn" id="bak-now" ${!bk.enabled || live ? "disabled" : ""}>
             <span class="bak-now-ring" aria-hidden="true"></span>
             ${esc(bakLabel)}
           </button>
@@ -2908,7 +3227,7 @@ docker save -o myapp.tar myapp:latest`;
           </div>
         </form>
         <p class="error" id="gherr"></p>
-        <p class="muted" id="ghstatus" style="margin-top:8px">${bk.enabled ? `On · @${esc(bk.github_user || "?")} · last ${esc(bk.last_backup_at || "never")}` : "Off — paste a key and test it to turn on."}</p>
+        <p class="muted" id="ghstatus" style="margin-top:8px">${bk.enabled ? `On · @${esc(bk.github_user || "?")} · last ${esc(fmtWhen(bk.last_backup_at || "never"))}` : "Off — paste a key and test it to turn on."}</p>
         <div class="field" style="margin-top:14px">
           <label>Automatic backup</label>
           <select id="bak-interval">
@@ -2929,8 +3248,8 @@ docker save -o myapp.tar myapp:latest`;
           <h3>Status</h3>
           <table class="table">
             <tr><th>GitHub user</th><td class="mono">${esc(bk.github_user || "—")}</td></tr>
-            <tr><th>Last backup</th><td>${esc(bk.last_backup_at || "never")}</td></tr>
-            <tr><th>Next due</th><td>${esc(bk.next_backup_at || "—")}</td></tr>
+            <tr><th>Last backup</th><td>${esc(fmtWhen(bk.last_backup_at || "never"))}</td></tr>
+            <tr><th>Next due</th><td>${esc(fmtWhen(bk.next_backup_at || "—"))}</td></tr>
           </table>
           <p class="error">${esc(bk.last_error || "")}</p>
         </div>
@@ -3013,9 +3332,7 @@ docker save -o myapp.tar myapp:latest`;
       renderRestore();
     });
 
-    if (job && job.status === "running") {
-      startJobPoll("restore");
-    }
+    startJobPoll("restore");
 
     const startRestore = async (snapshotId, token) => {
       const err = document.querySelector("#bakerr");
@@ -3038,6 +3355,8 @@ docker save -o myapp.tar myapp:latest`;
     bindAction(document.querySelector("#resume-restore"), async () => {
       await startRestore(bk.resume_snapshot || "latest");
     });
+
+    bindAction(document.querySelector("#bak-stop-top"), stopBackupJob);
 
     bindAction(document.querySelector("#bak-now"), async () => {
       const err = document.querySelector("#bakerr");
@@ -3103,7 +3422,8 @@ docker save -o myapp.tar myapp:latest`;
     const secret = t.secret || opts.secret || "";
     const prompt = t.prompt || opts.prompt || "";
     const apiSheet = t.api || opts.api || "";
-    const script = t.script || opts.script || "";
+    const script = t.script || t.script_single || opts.script || "";
+    const scriptMulti = t.script_multi || opts.scriptMulti || "";
     const fresh = opts.fresh ? " tok-fresh" : "";
     const copyVal = secret || "";
     const roomLabel = "all rooms";
@@ -3114,9 +3434,10 @@ docker save -o myapp.tar myapp:latest`;
           <span class="badge ok">${esc(roomLabel)}</span>
         </div>
         <div class="row-actions">
-          <button class="btn sm action" type="button" data-copy-prompt ${prompt ? "" : "disabled"} title="Full AI prompt: all API commands + GitHub YAML + ROOM_ID">Copy prompt</button>
+          <button class="btn sm action" type="button" data-copy-prompt ${prompt ? "" : "disabled"} title="Full AI prompt">Copy prompt</button>
           <button class="btn sm action" type="button" data-copy-api ${apiSheet ? "" : "disabled"} title="BASE and TOKEN only">Copy API</button>
-          <button class="btn sm action" type="button" data-copy-script ${script ? "" : "disabled"} title="GitHub Action YAML — set ROOM_ID">Copy script</button>
+          <button class="btn sm action" type="button" data-copy-script ${script ? "" : "disabled"} title="GitHub Action — single .tar">Copy single script</button>
+          <button class="btn sm action" type="button" data-copy-script-multi ${scriptMulti ? "" : "disabled"} title="GitHub Action — multi .tar.gz">Copy multi script</button>
           <button class="btn sm danger action" data-del-tok="${esc(t.id)}">Revoke</button>
         </div>
       </div>
@@ -3126,6 +3447,7 @@ docker save -o myapp.tar myapp:latest`;
       ${prompt ? `<textarea class="hidden tok-prompt" readonly>${esc(prompt)}</textarea>` : ""}
       ${apiSheet ? `<textarea class="hidden tok-api" readonly>${esc(apiSheet)}</textarea>` : ""}
       ${script ? `<textarea class="hidden tok-script" readonly>${esc(script)}</textarea>` : ""}
+      ${scriptMulti ? `<textarea class="hidden tok-script-multi" readonly>${esc(scriptMulti)}</textarea>` : ""}
       <div class="muted" style="font-size:0.75rem;margin-top:6px">one API · all rooms · set ROOM_ID in the script · created ${esc(t.created_at || "")}${t.last_used_at ? " · last used " + esc(t.last_used_at) : ""}</div>
     </div>`;
   }
@@ -3195,6 +3517,12 @@ docker save -o myapp.tar myapp:latest`;
           await copyText(pre ? pre.value || pre.textContent : "");
         };
       });
+      document.querySelectorAll("[data-copy-script-multi]").forEach((b) => {
+        b.onclick = async () => {
+          const pre = b.closest(".tok-card")?.querySelector(".tok-script-multi");
+          await copyText(pre ? pre.value || pre.textContent : "");
+        };
+      });
       document.querySelectorAll("[data-del-tok]").forEach((btn) => bindAction(btn, async () => {
         if (!confirm("Revoke this API token?")) return;
         await api(`/api/settings/tokens/${btn.dataset.delTok}`, { method: "DELETE" });
@@ -3215,11 +3543,12 @@ docker save -o myapp.tar myapp:latest`;
         stillHere: () => state.view === "tokens",
         aiPath: "/api/tokens/ai",
         hello: TOKEN_HELLO,
+        toolScope: "tokens",
         onToken: (res) => {
-          const tok = Object.assign({}, res.token || {}, { secret: res.secret, prompt: res.prompt, api: res.api, script: res.script });
+          const tok = Object.assign({}, res.token || {}, { secret: res.secret, prompt: res.prompt, api: res.api, script: res.script, script_multi: res.script_multi });
           if (!tok.id) return;
           list = [tok, ...list.filter((t) => t.id !== tok.id && String(t.name || "").toLowerCase() !== String(tok.name || "").toLowerCase())];
-          paintList(list, { token: tok, secret: tok.secret, prompt: res.prompt || tok.prompt, api: res.api || tok.api, script: res.script || tok.script });
+          paintList(list, { token: tok, secret: tok.secret, prompt: res.prompt || tok.prompt, api: res.api || tok.api, script: res.script || tok.script, scriptMulti: res.script_multi || tok.script_multi });
         },
       });
   }
@@ -3241,12 +3570,13 @@ docker save -o myapp.tar myapp:latest`;
         </div>
         <div id="tok-create-done" class="hidden">
           <h3>API created</h3>
-          <p class="muted" id="tok-create-done-note">Copy prompt = AI instructions + YAML. Copy script = GitHub Action (set ROOM_ID). Copy API = BASE and TOKEN only.</p>
+          <p class="muted" id="tok-create-done-note">Copy prompt = AI brief. Copy single / multi script = GitHub YAML. Copy API = BASE and TOKEN.</p>
           <div class="secret-row" style="margin-top:12px">
             <code class="tok-plain" id="tok-create-secret"></code>
           </div>
-          <div class="row-actions" style="margin-top:16px">
-            <button class="btn primary action" type="button" data-copy-script>Copy script</button>
+          <div class="row-actions" style="margin-top:16px;flex-wrap:wrap">
+            <button class="btn primary action" type="button" data-copy-script>Copy single script</button>
+            <button class="btn action" type="button" data-copy-script-multi>Copy multi script</button>
             <button class="btn action" type="button" data-copy-api>Copy API</button>
             <button class="btn action" type="button" data-copy-prompt>Copy prompt</button>
             <button class="btn ghost" type="button" data-close>Done</button>
@@ -3272,7 +3602,7 @@ docker save -o myapp.tar myapp:latest`;
       saveBtn.disabled = true;
       try {
         const res = await api("/api/settings/tokens", { method: "POST", body: JSON.stringify({ name }) });
-        const tok = Object.assign({}, res.token || {}, { secret: res.secret, prompt: res.prompt, api: res.api, script: res.script });
+        const tok = Object.assign({}, res.token || {}, { secret: res.secret, prompt: res.prompt, api: res.api, script: res.script, script_multi: res.script_multi });
         const secret = res.secret || tok.secret || "";
         modal.querySelector("#tok-create-form").classList.add("hidden");
         const done = modal.querySelector("#tok-create-done");
@@ -3282,9 +3612,11 @@ docker save -o myapp.tar myapp:latest`;
         const promptText = res.prompt || tok.prompt || "";
         const apiText = res.api || tok.api || "";
         const scriptText = res.script || tok.script || "";
+        const scriptMultiText = res.script_multi || tok.script_multi || "";
         modal.querySelector("[data-copy-prompt]").onclick = async () => { await copyText(promptText); };
         modal.querySelector("[data-copy-api]").onclick = async () => { await copyText(apiText); };
         modal.querySelector("[data-copy-script]").onclick = async () => { await copyText(scriptText); };
+        modal.querySelector("[data-copy-script-multi]").onclick = async () => { await copyText(scriptMultiText); };
         modal.querySelector("[data-close]").onclick = () => close(tok);
       } catch (ex) {
         saveBtn.disabled = false;
@@ -3389,18 +3721,50 @@ docker save -o myapp.tar myapp:latest`;
     state.roomId = id;
     const tab = state.roomTab || "overview";
     const projs = room.projects || [];
+    const containers = (room.containers && room.containers.length) ? room.containers : projs.map((p, i) => ({
+      ordinal: i + 1, id: p.id, name: p.name, image: p.image, status: p.status,
+      host_port: p.host_port, docker_id: p.container_id,
+    }));
+    const images = room.images || [];
+    const volumes = room.volumes || [];
     const mainProj = projs[0];
-    const emptyRoom = !mainProj;
+    const emptyRoom = !mainProj && !containers.length;
+    const anyRun = containers.some((c) => c.status === "running") || (mainProj && mainProj.status === "running");
     let st = null;
     try { st = await api("/api/storage"); } catch {}
 
     let body = "";
     if (tab === "overview") {
-      const qgb = room.quota_bytes ? gb(room.quota_bytes).toFixed(2) : "";
+    const qgb = room.quota_bytes ? gb(room.quota_bytes).toFixed(2) : "";
+    if (emptyRoom) {
+      body = `<div class="panel"><h3>First deploy</h3>
+        <p class="muted" style="margin:0 0 12px">This room is empty. Upload <strong>one</strong> file:</p>
+        <ul class="muted" style="margin:0 0 14px;padding-left:18px;line-height:1.6">
+          <li><code>.tar</code> — single image (<code>docker save -o app.tar image:tag</code>)</li>
+          <li><code>.tar.gz</code> — multi stack (<code>compose.yml</code> + <code>images/*.tar</code>)</li>
+        </ul>
+        <form id="tar-update-form">
+          <label class="dropzone" id="tar-dz">
+            <input type="file" name="file" accept=".tar,.tar.gz,.tgz,.vps.tar.gz" />
+            <div class="dz-icon">▣</div>
+            <div class="dz-title">Drop .tar or .tar.gz</div>
+            <div class="dz-sub">Single = one image .tar · Multi = compose + images .tar.gz</div>
+            <div class="dz-file" id="tar-fname"></div>
+          </label>
+          <div class="row-actions" style="margin-top:12px">
+            <button class="btn primary action" type="submit">Upload</button>
+          </div>
+        </form>
+        <p class="error" id="tarerr"></p>
+        <div class="logs-viewer" style="margin-top:12px;min-height:120px">
+          <div class="logs-body" id="tar-log">(waiting for upload)</div>
+        </div>
+      </div>`;
+    } else {
       body = `
         <div class="proj-hero">
           <div class="proj-hero-top">
-            ${projectIconHTML((mainProj && mainProj.status === "running") ? "ok" : (emptyRoom ? "empty" : "stop"))}
+            ${projectIconHTML(anyRun ? "ok" : (emptyRoom ? "empty" : "stop"))}
             <div class="proj-ident">
               <h4>${esc(room.name)}</h4>
               <button type="button" class="proj-id-btn copyable" data-copy="${esc(id)}" title="Copy id">
@@ -3408,12 +3772,12 @@ docker save -o myapp.tar myapp:latest`;
                 <code>${esc(id)}</code>
               </button>
             </div>
-            <span class="badge ${(mainProj && mainProj.status === "running") ? "ok" : (emptyRoom ? "warn" : "stop")}">${esc(emptyRoom ? "empty" : ((mainProj && mainProj.status) || "stopped"))}</span>
+            <span class="badge ${anyRun ? "ok" : (emptyRoom ? "warn" : "stop")}">${esc(emptyRoom ? "empty" : anyRun ? "running" : "stopped")}</span>
           </div>
         </div>
         <div class="grid grid-3">
-          <div class="stat"><div class="label">Project disk</div><div class="value">${fmtBytes(room.usage_bytes)}</div><div class="muted">quota ${room.quota_bytes ? fmtBytes(room.quota_bytes) : "not set"}</div></div>
-          <div class="stat"><div class="label">Image</div><div class="value" style="font-size:0.92rem">${esc((mainProj && mainProj.image) || "—")}</div><div class="muted">${mainProj && mainProj.host_port ? "port " + mainProj.host_port : "no host port"}</div></div>
+          <div class="stat"><div class="label">Containers</div><div class="value">${containers.length}</div><div class="muted">${images.length} images · ${volumes.length} volumes</div></div>
+          <div class="stat"><div class="label">Room disk</div><div class="value">${fmtBytes(room.usage_bytes)}</div><div class="muted">quota ${room.quota_bytes ? fmtBytes(room.quota_bytes) : "not set"}</div></div>
           <div class="stat"><div class="label">Password</div><div class="value" style="font-size:1rem">${room.password
             ? `<div class="secret-row"><span class="secret-mask">••••••••</span><button type="button" class="btn sm action" data-copy="${esc(room.password)}">Copy</button></div>`
             : `<span class="muted">hidden until unlock</span>`}</div></div>
@@ -3468,13 +3832,13 @@ docker save -o myapp.tar myapp:latest`;
         </div>`;
         })()}
         <div class="panel"><h3>Containers</h3>
-          <table class="table"><thead><tr><th>Name</th><th>ID</th><th>Status</th><th>Port</th><th>Image</th></tr></thead>
-          <tbody id="containers-live">${projs.map((p) => `<tr data-cid="${esc(p.id)}"><td>${esc(p.name)}</td><td><code class="copyable" data-copy="${esc(p.id)}">${esc(p.id)}</code></td><td><span class="badge ${p.status === "running" ? "ok" : "stop"}" data-cstatus>${esc(p.status)}</span></td><td data-cport>${p.host_port || "—"}</td><td class="mono muted">${esc(p.image)}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">No containers</td></tr>`}</tbody></table>
+          <table class="table"><thead><tr><th>#</th><th>Container</th><th>Docker</th><th>Status</th><th>Port</th><th>Image</th></tr></thead>
+          <tbody id="containers-live">${containers.map((p) => `<tr data-cid="${esc(p.id)}" class="ctr-row" style="cursor:pointer"><td class="mono">${ctrNum(p)}</td><td>${esc(ctrLabel(p))}<div class="muted" style="font-size:0.75rem">${esc(p.name || "")}</div></td><td><code class="copyable" data-copy="${esc(p.docker_id || p.id)}">${esc(shortDocker(p.docker_id || p.id))}</code></td><td><span class="badge ${p.status === "running" ? "ok" : "stop"}" data-cstatus>${esc(p.status)}</span></td><td data-cport>${p.host_port || "—"}</td><td class="mono muted">${esc(p.image)}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">No containers</td></tr>`}</tbody></table>
         </div>
-        <div class="panel"><h3>${emptyRoom ? "First image" : "Update image"}</h3>
+        <div class="panel"><h3>${emptyRoom ? "First deploy" : "Update"}</h3>
           <p class="muted" style="margin:0 0 10px">${emptyRoom
-            ? `No container yet. Drop a <code>docker save</code> .tar here, or set <code>ROOM_ID</code> to <code>${esc(id)}</code> in GitHub and push.`
-            : "Upload a <code>docker save</code> .tar. Same project id, ports, domain, and env. Watch the log below."}</p>
+            ? `Empty room. Drop a single <code>image.tar</code> (docker save) or a <code>project.vps.tar.gz</code> (compose.yml + images/). Room id <code>${esc(id)}</code>.`
+            : "Upload <code>.tar</code> for a single image, or <code>.tar.gz</code> for a multi stack (compose.yml + images/)."}</p>
           <form id="tar-update-form">
             <label class="dropzone" id="tar-dz">
               <input type="file" name="file" accept=".tar,.tar.gz,.tgz" />
@@ -3512,6 +3876,98 @@ docker save -o myapp.tar myapp:latest`;
           <p class="ok-text hidden" id="rok">Saved.</p>
           <p class="error" id="rerr"></p>
         </div>`;
+    }
+    } else if (tab === "container") {
+      const ct = containers.find((c) => c.id === state.ctrId) || containers[0];
+      const sub = state.ctrTab || "files";
+      if (!ct) {
+        body = `<div class="panel"><p class="muted">No container selected.</p><button class="btn sm action" id="back-ctrs">Back to containers</button></div>`;
+      } else {
+        const subnav = `<div class="tabs" style="margin-bottom:12px">
+          <button data-ctr-tab="files" class="${sub === "files" ? "active" : ""}">Files</button>
+          <button data-ctr-tab="logs" class="${sub === "logs" ? "active" : ""}">Logs</button>
+          <button data-ctr-tab="update" class="${sub === "update" ? "active" : ""}">Update image</button>
+        </div>
+        <p class="muted" style="margin:0 0 12px">${esc(ctrNum(ct))} ${esc(ctrLabel(ct))} · <code>${esc(shortDocker(ct.docker_id))}</code> · ${esc(ct.image || "")}</p>`;
+        if (sub === "logs") {
+          let lg = { log: "" };
+          try { lg = await api(`/api/rooms/${id}/logs?container=${encodeURIComponent(ct.id)}`); } catch {}
+          body = `<div class="panel"><div class="head-row"><h3>Logs · ${esc(ctrLabel(ct))}</h3>
+            <div class="row-actions"><button class="btn sm action" id="back-ctrs">Containers</button><button class="btn sm action" id="copylog">Copy</button><button class="btn sm action" id="reflog">Refresh</button></div></div>
+            ${subnav}
+            <div class="logs-viewer room-logs-viewer"><div class="logs-body" id="rlog">${formatLogHTML(lg.log || "(empty)")}</div></div></div>`;
+        } else if (sub === "update") {
+          body = `<div class="panel"><div class="head-row"><h3>Update ${esc(ctrLabel(ct))}</h3>
+            <button class="btn sm action" id="back-ctrs">Containers</button></div>
+            ${subnav}
+            <p class="muted">Upload a <code>.tar</code> (<code>docker save</code>) for this container only. Other containers in the room stay running.</p>
+            <form id="ctr-tar-form">
+              <label class="dropzone" id="ctr-tar-dz">
+                <input type="file" name="file" accept=".tar,.tar.gz,.tgz" />
+                <div class="dz-title">Drop .tar for this container</div>
+                <div class="dz-file" id="ctr-tar-fname"></div>
+              </label>
+              <div class="row-actions" style="margin-top:12px"><button class="btn primary action" type="submit">Update this container</button></div>
+            </form>
+            <p class="error" id="tarerr"></p>
+            <div class="logs-viewer" style="margin-top:12px;min-height:120px"><div class="logs-body" id="tar-log">(waiting)</div></div>
+          </div>`;
+        } else {
+          const fpath = state.filePath || "/";
+          let listing = { entries: [], path: fpath };
+          try { listing = await api(`/api/rooms/${id}/containers/${encodeURIComponent(ct.id)}/files?path=${encodeURIComponent(fpath)}`); } catch (e) { listing.note = e.message; }
+          if (listing.binary) {
+            body = `<div class="panel"><div class="head-row"><h3>${esc(listing.path)}</h3>
+              <div class="row-actions"><button class="btn sm action" id="back-ctrs">Containers</button><button class="btn sm action" id="backfiles">Back</button></div></div>
+              ${subnav}<p class="muted">${esc(listing.note || "Binary file")}</p></div>`;
+          } else if (listing.content != null) {
+            body = `<div class="panel"><div class="head-row"><h3>${esc(listing.path)}</h3>
+              <div class="row-actions"><button class="btn sm action" id="back-ctrs">Containers</button><button class="btn sm action" id="backfiles">Back</button><button class="btn sm primary action" id="savefile">Save</button><button class="btn sm danger action" id="delfile">Delete</button></div></div>
+              ${subnav}<textarea class="file-editor" id="fedit">${esc(listing.content)}</textarea></div>`;
+          } else {
+            const base = listing.path === "/" ? "" : listing.path;
+            body = `<div class="panel"><div class="head-row"><h3>Files · ${esc(ctrLabel(ct))} · ${esc(listing.path || "/")}</h3>
+              <div class="row-actions"><button class="btn sm action" id="back-ctrs">Containers</button><button class="btn sm action" id="updir">Up</button></div></div>
+              ${subnav}
+              <ul class="file-list">${(listing.entries || []).map((e) => `<li><a href="#" data-path="${esc((base === "" ? "" : base) + "/" + e.name)}">${e.dir ? "📁" : "📄"} ${esc(e.name)}</a><span class="muted">${e.dir ? "dir" : fmtBytes(e.size)}</span></li>`).join("") || `<li class="muted">${esc(listing.note || "Empty")}</li>`}</ul></div>`;
+          }
+        }
+      }
+    } else if (tab === "images") {
+      body = `<div class="panel"><h3>Images</h3>
+        <table class="table"><thead><tr><th>#</th><th>Image</th><th>Ref</th><th>Size</th></tr></thead>
+        <tbody>${(images || []).map((im) => `<tr><td class="mono">#${String(im.ordinal || 1).padStart(3,"0")}</td><td>${esc(im.name || "image")}</td><td class="mono muted">${esc(im.ref || "")}</td><td>${fmtBytes(im.size_bytes || 0)}</td></tr>`).join("") || `<tr><td colspan="4" class="muted">No images in this room.</td></tr>`}</tbody></table>
+      </div>`;
+    } else if (tab === "volume") {
+      const vol = volumes.find((v) => v.id === state.volId) || volumes[0];
+      if (!vol) {
+        body = `<div class="panel"><p class="muted">No volume selected.</p><button class="btn sm action" id="back-vols">Back to volumes</button></div>`;
+      } else {
+        const fpath = state.filePath && state.filePath !== "." ? state.filePath : "/";
+        let listing = { entries: [], path: fpath };
+        try { listing = await api(`/api/rooms/${id}/volumes/${encodeURIComponent(vol.id)}/files?path=${encodeURIComponent(fpath)}`); } catch (e) { listing.note = e.message; }
+        if (listing.binary) {
+          body = `<div class="panel"><div class="head-row"><h3>${esc(listing.path)}</h3>
+            <div class="row-actions"><button class="btn sm action" id="back-vols">Volumes</button><button class="btn sm action" id="backfiles">Back</button></div></div>
+            <p class="muted">${esc(listing.note || "Binary file")}</p></div>`;
+        } else if (listing.content != null) {
+          body = `<div class="panel"><div class="head-row"><h3>${esc(vol.name || "volume")} · ${esc(listing.path)}</h3>
+            <div class="row-actions"><button class="btn sm action" id="back-vols">Volumes</button><button class="btn sm action" id="backfiles">Back</button></div></div>
+            <pre class="file-editor" style="white-space:pre-wrap">${esc(listing.content)}</pre></div>`;
+        } else {
+          const base = listing.path === "/" ? "" : listing.path;
+          body = `<div class="panel"><div class="head-row"><h3>Volume · ${esc(vol.name || "volume")} · ${esc(listing.path || "/")}</h3>
+            <div class="row-actions"><button class="btn sm action" id="back-vols">Volumes</button><button class="btn sm action" id="updir">Up</button></div></div>
+            <p class="muted" style="margin:0 0 10px"><code>${esc(vol.docker_name || "")}</code></p>
+            <ul class="file-list">${(listing.entries || []).map((e) => `<li><a href="#" data-vol-path="${esc((base === "" ? "" : base) + "/" + e.name)}">${e.dir ? "📁" : "📄"} ${esc(e.name)}</a><span class="muted">${e.dir ? "dir" : fmtBytes(e.size)}</span></li>`).join("") || `<li class="muted">${esc(listing.note || "Empty")}</li>`}</ul></div>`;
+        }
+      }
+    } else if (tab === "volumes") {
+      body = `<div class="panel"><h3>Volumes</h3>
+        <p class="muted">Click a volume to browse files inside it.</p>
+        <table class="table"><thead><tr><th>#</th><th>Volume</th><th>Source</th></tr></thead>
+        <tbody>${(volumes || []).map((v) => `<tr data-vid="${esc(v.id)}" class="vol-row" style="cursor:pointer"><td class="mono">#${String(v.ordinal || 1).padStart(3,"0")}</td><td>${esc(v.name || "volume")}</td><td class="mono muted">${esc(v.docker_name || v.name || "")}</td></tr>`).join("") || `<tr><td colspan="3" class="muted">No volumes in this room.</td></tr>`}</tbody></table>
+      </div>`;
     } else if (tab === "files") {
       let listing = { entries: [], path: state.filePath || "." };
       try { listing = await api(`/api/rooms/${id}/files?path=${encodeURIComponent(state.filePath || ".")}`); } catch {}
@@ -3530,20 +3986,26 @@ docker save -o myapp.tar myapp:latest`;
           <ul class="file-list">${(listing.entries || []).map((e) => `<li><a href="#" data-path="${esc((listing.path === "." ? "" : listing.path + "/") + e.name)}">${e.dir ? "📁" : "📄"} ${esc(e.name)}</a><span class="muted">${e.dir ? "dir" : fmtBytes(e.size)}</span></li>`).join("") || "<li class='muted'>Empty</li>"}</ul></div>`;
       }
     } else if (tab === "logs") {
-      let lg = { log: "" };
-      try { lg = await api(`/api/rooms/${id}/logs`); } catch {}
-      body = `<div class="panel"><div class="head-row"><h3>Room logs</h3>
+      const pick = state.roomLogCtr || (containers[0] && containers[0].id) || "";
+      let lg = { log: "", containers };
+      try { lg = await api(`/api/rooms/${id}/logs?container=${encodeURIComponent(pick)}`); } catch {}
+      const list = lg.containers && lg.containers.length ? lg.containers : containers;
+      if (lg.container_id) state.roomLogCtr = lg.container_id;
+      body = `<div class="panel"><div class="head-row"><h3>Logs</h3>
         <div class="row-actions"><button class="btn sm action" id="copylog">Copy</button><button class="btn sm action" id="reflog">Refresh</button></div></div>
-        <p class="muted" style="margin:0 0 8px;font-size:0.78rem">Fixed height · scroll · newest at bottom · live</p>
+        <div class="row-actions" style="flex-wrap:wrap;margin:0 0 10px" id="log-ctrs">${list.map((c) => `<button type="button" class="btn sm action ${(state.roomLogCtr || pick) === c.id ? "primary" : ""}" data-log-ctr="${esc(c.id)}">${esc(ctrNum(c))} ${esc(ctrLabel(c))}</button>`).join("") || `<span class="muted">No containers</span>`}</div>
+        <p class="muted" style="margin:0 0 8px;font-size:0.78rem">One container at a time · newest at bottom · live</p>
         <div class="logs-viewer room-logs-viewer">
           <div class="logs-body" id="rlog">${formatLogHTML(lg.log || "(empty)")}</div>
         </div></div>`;
     } else if (tab === "env") {
       let envMeta = { content: "" };
-      try { if (mainProj) envMeta = await api(`/api/projects/${mainProj.id}/env`); } catch {}
+      try { envMeta = await api(`/api/rooms/${id}/env`); } catch {
+        try { if (mainProj) envMeta = await api(`/api/projects/${mainProj.id}/env`); } catch {}
+      }
       const rows = parseEnvForm(envMeta.content || "");
       body = `<div class="panel">
-        <div class="head-row"><h3>.env editor</h3>
+        <div class="head-row"><h3>Project secrets</h3>
           <div class="row-actions">
             <button class="btn sm action" id="env-add">Add row</button>
             <button class="btn sm action" id="env-mode">Raw editor</button>
@@ -3551,7 +4013,7 @@ docker save -o myapp.tar myapp:latest`;
           </div>
         </div>
         <p class="muted mono" style="margin-bottom:6px">${esc(envMeta.path || "")}</p>
-        <p class="muted" style="margin:0 0 10px;font-size:0.82rem">These are the project secrets the container started with. If this page was empty, the panel now fills it from the running container. After you save, pause then resume so the app reloads the new values.</p>
+        <p class="muted" style="margin:0 0 10px;font-size:0.82rem">Shared secrets for this room (all containers). After save, pause then resume so services reload the values.</p>
         <form id="env-form" class="env-form">
           ${rows.map((r) => `<div class="env-row">
             <input name="key" placeholder="KEY" value="${esc(r.key)}" />
@@ -3564,10 +4026,12 @@ docker save -o myapp.tar myapp:latest`;
         <p class="ok-text hidden" id="envok">Saved.</p>
       </div>`;
     } else if (tab === "terminal") {
-      const lines = (state.termLines || []).join("") || "Linux shell for this room. Commands run in room files or project container.\n";
+      const pick = state.termCtr || (containers.find((c) => c.status === "running") || containers[0] || {}).id || "";
+      state.termCtr = pick;
+      const lines = (state.termLines || []).join("") || "Shell for this room. Commands run inside the selected container.\n";
       const prompt = `root@${room.name}:~#`;
-      body = agentDeskHTML({
-        title: "Agent",
+      body = `<div class="panel" style="margin-bottom:10px"><div class="row-actions" style="flex-wrap:wrap" id="term-ctrs">${containers.map((c) => `<button type="button" class="btn sm action ${pick === c.id ? "primary" : ""}" data-term-ctr="${esc(c.id)}">${esc(ctrNum(c))} ${esc(ctrLabel(c))}</button>`).join("")}</div></div>` + agentDeskHTML({
+        title: "Terminal",
         prompt,
         termLines: lines,
         showTerm: true,
@@ -3581,18 +4045,19 @@ docker save -o myapp.tar myapp:latest`;
         <div class="sub"><span class="mono">${esc(id)}</span></div>
       </div>
         <div class="row-actions">
-          ${powerToggleHTML(id, (projs[0] && projs[0].status) || "stopped")}
+          ${emptyRoom ? "" : powerToggleHTML(id, anyRun ? "running" : ((projs[0] && projs[0].status) || "stopped"))}
           <button class="btn sm danger action" data-act="delete">Delete</button>
-          <button class="btn sm primary action" id="backrooms">Projects</button>
+          <button class="btn sm primary action" id="backrooms">Rooms</button>
         </div>
       </div>
-      <div class="tabs">
-        <button data-tab="overview" class="${tab === "overview" ? "active" : ""}">Overview</button>
-        <button data-tab="files" class="${tab === "files" ? "active" : ""}">Files</button>
+      ${emptyRoom ? "" : `<div class="tabs">
+        <button data-tab="overview" class="${tab === "overview" || tab === "container" ? "active" : ""}">Containers</button>
+        <button data-tab="images" class="${tab === "images" ? "active" : ""}">Images</button>
+        <button data-tab="volumes" class="${tab === "volumes" || tab === "volume" ? "active" : ""}">Volumes</button>
+        <button data-tab="env" class="${tab === "env" ? "active" : ""}">Secrets</button>
         <button data-tab="logs" class="${tab === "logs" ? "active" : ""}">Logs</button>
-        <button data-tab="env" class="${tab === "env" ? "active" : ""}">Env</button>
-        <button data-tab="terminal" class="${tab === "terminal" ? "active" : ""}">Ai Agent | Terminal</button>
-      </div>
+        <button data-tab="terminal" class="${tab === "terminal" ? "active" : ""}">Terminal</button>
+      </div>`}
       ${body}`, "room");
 
     document.querySelectorAll("[data-tab]").forEach((b) => b.onclick = () => setView("room", { roomTab: b.dataset.tab, filePath: b.dataset.tab === "files" ? (state.filePath || ".") : state.filePath }));
@@ -3607,7 +4072,7 @@ docker save -o myapp.tar myapp:latest`;
     document.querySelectorAll("[data-act]").forEach((b) => bindAction(b, async () => {
       if (b.dataset.act === "delete") {
         if (!await confirmAction({
-          title: "Delete this project?",
+          title: "Delete this room?",
           body: "This removes the room and its data. This cannot be undone.",
           ok: "Delete",
           danger: true,
@@ -3773,6 +4238,117 @@ docker save -o myapp.tar myapp:latest`;
       clearInterval(state._containersPoll);
       state._containersPoll = null;
     }
+    document.querySelectorAll("tr.vol-row").forEach((tr) => {
+      tr.addEventListener("click", () => {
+        setView("room", { roomTab: "volume", volId: tr.dataset.vid, filePath: "/" });
+      });
+    });
+    if (tab === "volume") {
+      document.querySelector("#back-vols")?.addEventListener("click", () => setView("room", { roomTab: "volumes" }));
+      document.querySelectorAll("[data-vol-path]").forEach((a) => a.onclick = (e) => {
+        e.preventDefault();
+        setView("room", { roomTab: "volume", volId: state.volId, filePath: a.dataset.volPath });
+      });
+      document.querySelector("#updir")?.addEventListener("click", () => {
+        const parts = (state.filePath || "/").split("/").filter(Boolean);
+        parts.pop();
+        setView("room", { roomTab: "volume", volId: state.volId, filePath: "/" + parts.join("/") });
+      });
+      document.querySelector("#backfiles")?.addEventListener("click", () => {
+        const parts = (state.filePath || "/").split("/").filter(Boolean);
+        parts.pop();
+        setView("room", { roomTab: "volume", volId: state.volId, filePath: "/" + parts.join("/") });
+      });
+    }
+    document.querySelectorAll("tr.ctr-row").forEach((tr) => {
+      tr.addEventListener("click", (e) => {
+        if (e.target.closest(".copyable")) return;
+        setView("room", { roomTab: "container", ctrId: tr.dataset.cid, ctrTab: "files", filePath: "/" });
+      });
+    });
+    if (tab === "container") {
+      document.querySelector("#back-ctrs")?.addEventListener("click", () => setView("room", { roomTab: "overview" }));
+      document.querySelectorAll("[data-ctr-tab]").forEach((b) => {
+        b.onclick = () => setView("room", { roomTab: "container", ctrId: state.ctrId, ctrTab: b.dataset.ctrTab, filePath: state.filePath || "/" });
+      });
+      document.querySelectorAll("[data-path]").forEach((a) => a.onclick = (e) => {
+        e.preventDefault();
+        setView("room", { roomTab: "container", ctrId: state.ctrId, ctrTab: "files", filePath: a.dataset.path });
+      });
+      document.querySelector("#updir")?.addEventListener("click", () => {
+        const p = state.filePath || "/";
+        const parts = p.split("/").filter(Boolean);
+        parts.pop();
+        setView("room", { roomTab: "container", ctrId: state.ctrId, ctrTab: "files", filePath: "/" + parts.join("/") });
+      });
+      document.querySelector("#backfiles")?.addEventListener("click", () => {
+        const p = state.filePath || "/";
+        const parts = p.split("/").filter(Boolean);
+        parts.pop();
+        setView("room", { roomTab: "container", ctrId: state.ctrId, ctrTab: "files", filePath: "/" + parts.join("/") });
+      });
+      bindAction(document.querySelector("#savefile"), async () => {
+        await api(`/api/rooms/${id}/containers/${encodeURIComponent(state.ctrId)}/files?path=${encodeURIComponent(state.filePath || "/")}`, {
+          method: "PUT", body: JSON.stringify({ content: document.querySelector("#fedit").value }),
+        });
+      });
+      bindAction(document.querySelector("#delfile"), async () => {
+        if (!confirm("Delete file?")) return;
+        await api(`/api/rooms/${id}/containers/${encodeURIComponent(state.ctrId)}/files?path=${encodeURIComponent(state.filePath || "/")}`, { method: "DELETE" });
+        const parts = (state.filePath || "/").split("/").filter(Boolean);
+        parts.pop();
+        setView("room", { roomTab: "container", ctrId: state.ctrId, ctrTab: "files", filePath: "/" + parts.join("/") });
+      });
+      const rlog = document.querySelector("#rlog");
+      if (rlog) {
+        pinLogBottom(rlog);
+        document.querySelector("#copylog")?.addEventListener("click", () => copyText(rlog.innerText || ""));
+        document.querySelector("#reflog")?.addEventListener("click", () => render());
+        startLogLive(async () => {
+          if (state.view !== "room" || state.roomTab !== "container" || state.ctrTab !== "logs") {
+            stopLogLive();
+            return;
+          }
+          try {
+            const lg = await api(`/api/rooms/${id}/logs?container=${encodeURIComponent(state.ctrId || "")}`);
+            const el = document.querySelector("#rlog");
+            if (!el) return;
+            const html = formatLogHTML(lg.log || "(empty)");
+            if (el.innerHTML !== html) {
+              el.innerHTML = html;
+              pinLogBottom(el);
+            }
+          } catch {}
+        });
+      }
+      const form = document.querySelector("#ctr-tar-form");
+      if (form) {
+        const dz = document.querySelector("#ctr-tar-dz");
+        const finp = dz?.querySelector("input[type=file]");
+        const fname = document.querySelector("#ctr-tar-fname");
+        finp?.addEventListener("change", () => { if (fname) fname.textContent = finp.files?.[0]?.name || ""; });
+        form.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const err = document.querySelector("#tarerr");
+          const logEl = document.querySelector("#tar-log");
+          const file = finp && finp.files && finp.files[0];
+          if (!file) { if (err) err.textContent = "Choose a .tar"; return; }
+          const fd = new FormData();
+          fd.append("file", file);
+          fd.append("container_id", state.ctrId || "");
+          if (logEl) logEl.textContent = "Uploading...\n";
+          try {
+            await streamFetch(`/api/rooms/${id}/image-tar`, { method: "POST", body: fd }, (chunk) => {
+              if (!logEl) return;
+              logEl.textContent += chunk;
+              logEl.scrollTop = logEl.scrollHeight;
+            });
+          } catch (ex) {
+            if (err) err.textContent = ex.message || "Update failed";
+          }
+        });
+      }
+    }
     if (tab === "files") {
       document.querySelectorAll("[data-path]").forEach((a) => a.onclick = (e) => {
         e.preventDefault();
@@ -3811,6 +4387,13 @@ docker save -o myapp.tar myapp:latest`;
         if (!el) return;
         state._logPinBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
       });
+      document.querySelectorAll("[data-log-ctr]").forEach((b) => {
+        b.onclick = () => {
+          state.roomLogCtr = b.dataset.logCtr;
+          state._logPinBottom = true;
+          render();
+        };
+      });
       document.querySelector("#copylog")?.addEventListener("click", () => copyText(document.querySelector("#rlog")?.innerText || ""));
       document.querySelector("#reflog")?.addEventListener("click", () => {
         state._logPinBottom = true;
@@ -3822,7 +4405,8 @@ docker save -o myapp.tar myapp:latest`;
           return;
         }
         try {
-          const lg = await api(`/api/rooms/${id}/logs`);
+          if (!state.roomLogCtr) return;
+          const lg = await api(`/api/rooms/${id}/logs?container=${encodeURIComponent(state.roomLogCtr)}`);
           const el = document.querySelector("#rlog");
           if (!el) return;
           const html = formatLogHTML(lg.log || "(empty)");
@@ -3833,7 +4417,7 @@ docker save -o myapp.tar myapp:latest`;
         } catch {}
       });
     }
-    if (tab === "env" && mainProj) {
+    if (tab === "env") {
       const form = document.querySelector("#env-form");
       const raw = document.querySelector("#env-raw");
       let rawMode = false;
@@ -3870,37 +4454,46 @@ docker save -o myapp.tar myapp:latest`;
       };
       bindAction(document.querySelector("#env-save"), async () => {
         const content = rawMode ? raw.value : envToText(form);
-        await api(`/api/projects/${mainProj.id}/env`, { method: "PUT", body: JSON.stringify({ content }) });
+        await api(`/api/rooms/${id}/env`, { method: "PUT", body: JSON.stringify({ content }) });
         document.querySelector("#envok").classList.remove("hidden");
         setTimeout(() => document.querySelector("#envok")?.classList.add("hidden"), 1500);
       });
     }
     if (tab === "terminal") {
+      document.querySelectorAll("[data-term-ctr]").forEach((b) => {
+        b.onclick = () => {
+          state.termCtr = b.dataset.termCtr;
+          render();
+        };
+      });
       const termOut = document.querySelector("#term-out");
       const prompt = `root@${room.name}:~# `;
       const persist = (line) => {
         state.termLines = state.termLines || [];
         state.termLines.push(line);
       };
+      const execBody = (cmd) => JSON.stringify({
+        command: cmd,
+        container_id: state.termCtr || "",
+        project_id: mainProj?.id || "",
+        timeout_sec: 600,
+      });
       const agent = bindAgentChat({
         key: id,
         stillHere: () => state.view === "room" && state.roomId === id && (state.roomTab || "") === "terminal",
         aiPath: `/api/rooms/${id}/ai`,
         execFn: (cmd) => api(`/api/rooms/${id}/exec`, {
           method: "POST",
-          body: JSON.stringify({
-            command: cmd,
-            project_id: mainProj?.id || "",
-            timeout_sec: 120,
-            host: true,
-          }),
+          body: execBody(cmd),
         }),
         termOut,
         prompt,
         hello: ROOM_HELLO,
-        seedContext: `SYSTEM CONTEXT (do not ask again): You are inside room "${room.name}". id=${id} project_id=${mainProj?.id || id}. ` +
+        toolScope: "room",
+        roomId: id,
+        seedContext: `SYSTEM CONTEXT (do not ask again): You are inside room "${room.name}". id=${id}. ` +
           `Disk used ${fmtBytes(room.usage_bytes)} of quota ${room.quota_bytes ? fmtBytes(room.quota_bytes) : "not set"}. ` +
-          `Projects: ${(projs || []).map((p) => `${p.name} id=${p.id} image=${p.image} status=${p.status} port=${p.host_port || 0} domain=${p.domain || "-"}`).join("; ") || "none"}. ` +
+          `Containers: ${(containers || []).map((c) => `${ctrNum(c)} ${ctrLabel(c)} image=${c.image} status=${c.status}`).join("; ") || "none"}. ` +
           `If they ask for usage, answer with those numbers in one say. You may publish a Docker update on this same id (image + start). They can also drop a docker save .tar on Overview → Update image. GitHub: Tokens → pick this project → Copy script into .github/workflows/vps-deploy.yml. You may edit files via the terminal after reading them. Refuse deleting this room.`,
         onQuota: (gb) => api(`/api/rooms/${id}/quota`, { method: "POST", body: JSON.stringify({ quota_gb: gb }) }),
         onStart: async (image) => {
@@ -3934,11 +4527,7 @@ docker save -o myapp.tar myapp:latest`;
         try {
           const res = await api(`/api/rooms/${id}/exec`, {
             method: "POST",
-            body: JSON.stringify({
-              command: cmd,
-              project_id: mainProj?.id || "",
-              timeout_sec: 120,
-            }),
+            body: execBody(cmd),
           });
           const where = res.where ? `[${res.where}] ` : "";
           const out = where + (res.output || "") + (res.error ? `\n${res.error}` : "");
@@ -3983,6 +4572,7 @@ docker save -o myapp.tar myapp:latest`;
     if (!state.me) await loadMe();
     if (!state.me) { renderUnlock(); return; }
     if (state.me.kind === "owner") {
+      ensureBackupWatch();
       if (state.view === "rooms") return renderRooms();
       if (state.view === "deploy") return renderDeploy();
       if (state.view === "logs") return renderLogs();
@@ -4001,10 +4591,13 @@ docker save -o myapp.tar myapp:latest`;
   const boot = parsePath(location.pathname);
   if (boot) Object.assign(state, boot);
   window.addEventListener("popstate", () => {
+    saveChatDraft();
     const parsed = parsePath(location.pathname) || { view: "server" };
     state.view = parsed.view;
     if (parsed.roomId) state.roomId = parsed.roomId;
     if (parsed.roomTab) state.roomTab = parsed.roomTab;
+    if (parsed.ctrId) state.ctrId = parsed.ctrId;
+    if (parsed.volId) state.volId = parsed.volId;
     state._gen = (state._gen || 0) + 1;
     stopLogLive();
     markNav(state.view);

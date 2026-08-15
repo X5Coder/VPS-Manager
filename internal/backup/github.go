@@ -123,6 +123,28 @@ func (g *GitHub) EnsureRepo(name, description string) error {
 	return nil
 }
 
+func (g *GitHub) DeleteRepo(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" || name == IndexRepo || name == SystemRepo || sharedBackupRepo(name) {
+		return nil
+	}
+	if g.User == "" {
+		return fmt.Errorf("github user missing")
+	}
+	req, _ := http.NewRequest("DELETE", "https://api.github.com/repos/"+g.User+"/"+name, nil)
+	g.auth(req)
+	res, err := g.Client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode == 204 || res.StatusCode == 404 {
+		return nil
+	}
+	body, _ := io.ReadAll(res.Body)
+	return fmt.Errorf("delete repo %s (%d): %s", name, res.StatusCode, truncate(string(body), 200))
+}
+
 func (g *GitHub) CloneOrPull(repo, dir string) error {
 	url := fmt.Sprintf("https://x-access-token:%s@github.com/%s/%s.git", g.Token, g.User, repo)
 	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
@@ -155,7 +177,7 @@ func (g *GitHub) CommitPush(dir, message string) error {
 	if _, err := gitRun(30*time.Second, env, "git", "-C", dir, "config", "user.name", "VPS MANAGE Backup"); err != nil {
 		return err
 	}
-	if out, err := gitRun(15*time.Minute, env, "git", "-C", dir, "add", "-A"); err != nil {
+	if out, err := gitRun(45*time.Minute, env, "git", "-C", dir, "add", "-A"); err != nil {
 		return fmt.Errorf("git add: %s", truncate(string(out)+" "+err.Error(), 200))
 	}
 	st, _ := gitRun(30*time.Second, env, "git", "-C", dir, "status", "--porcelain")

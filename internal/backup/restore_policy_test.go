@@ -1,0 +1,141 @@
+package backup
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/x5coder/vps-rooms/internal/store"
+)
+
+func TestStopJobUnlocksBackupButton(t *testing.T) {
+	s := &Service{}
+	s.running = true
+	s.activeGen = s.stopGen.Load()
+	s.liveJob = &Job{Kind: "backup", Status: "running", Message: "Backup started"}
+	if err := s.StopJob(); err != nil {
+		t.Fatal(err)
+	}
+	if s.running {
+		t.Fatal("running flag must clear so Backup now is enabled")
+	}
+	j := s.CurrentJob()
+	if j == nil || j.Status == "running" {
+		t.Fatalf("job still running: %+v", j)
+	}
+	if err := s.errIfStopped(); err == nil {
+		t.Fatal("in-flight backup must see stop")
+	}
+}
+
+func TestStaleRunningJobUnlocksBackupNow(t *testing.T) {
+	s := &Service{}
+	s.running = false
+	s.liveJob = &Job{Kind: "backup", Status: "running", Message: "Backup started"}
+	j := s.CurrentJob()
+	if j == nil || j.Status == "running" {
+		t.Fatalf("stale job must not stay running: %+v", j)
+	}
+}
+
+func TestHashFileRejectsDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if _, _, err := HashFile(dir); err == nil {
+		t.Fatal("directory must not be hashed as a file")
+	}
+	p := filepath.Join(dir, "a.txt")
+	if err := os.WriteFile(p, []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, n, err := HashFile(p); err != nil || n != 2 {
+		t.Fatalf("file hash n=%d err=%v", n, err)
+	}
+}
+
+func TestAcceptedBackupFormat(t *testing.T) {
+	if !acceptedBackupFormat(FormatMagic) || !acceptedBackupFormat(FormatMagicV2) {
+		t.Fatal("InspectRemote must accept v1 and v2 FORMAT")
+	}
+	if acceptedBackupFormat("VPS-MANAGE-BACKUP-v3") || acceptedBackupFormat("") {
+		t.Fatal("unknown FORMAT must be rejected")
+	}
+}
+
+func TestRestoreNeverPullsFromRegistry(t *testing.T) {
+	if restoreComposePullEnabled() {
+		t.Fatal("restore must call ComposeUp with pull=false, not ComposePullUp")
+	}
+}
+
+func TestAddImageErrorFailsBackup(t *testing.T) {
+	err := backupImageErr("nginx:latest", fmt.Errorf("docker save failed"))
+	if err == nil {
+		t.Fatal("addImage error must fail executeBackup")
+	}
+}
+
+func TestValidateBackupCompleteRequiresImageKeys(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	r := store.Room{ID: "room-aaaaaaaa", Name: "admin", Kind: store.KindSingle}
+	if err := st.UpsertRoom(r); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertContainer(store.Container{
+		ID: "c1", RoomID: r.ID, Ordinal: 1, Name: "admin-1", Image: "nginx:latest",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{Store: st}
+	m := &Manifest{
+		Format: FormatMagicV2, Version: 2,
+		SystemFiles: []FileEntry{{Path: "system/panel.db", Size: 10, Chunks: []string{"x"}}},
+		Layout: &BackupLayout{
+			Rooms: []RoomLayout{{ID: r.ID, Name: r.Name, Short: "aaaaaaaa", ImageKeys: nil}},
+		},
+	}
+	if err := svc.validateBackupComplete(m, []store.Room{r}); err == nil {
+		t.Fatal("expected error when ImageKeys empty for a room with containers")
+	}
+}
+
+func TestValidateBackupCompleteOKWithLayers(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	r := store.Room{ID: "room-bbbbbbbb", Name: "admin", Kind: store.KindSingle}
+	if err := st.UpsertRoom(r); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertContainer(store.Container{
+		ID: "c1", RoomID: r.ID, Ordinal: 1, Name: "admin-1", Image: "nginx:latest",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{Store: st}
+	m := &Manifest{
+		Format: FormatMagicV2, Version: 2,
+		SystemFiles: []FileEntry{{Path: "system/panel.db", Size: 10, Chunks: []string{"x"}}},
+		Layout: &BackupLayout{
+			Rooms: []RoomLayout{{ID: r.ID, Name: r.Name, ImageKeys: []string{"abc"}}},
+			Images: []ImageLayout{{
+				Key:    "abc",
+				Layers: []ImageLayerUse{{Rel: "blobs/sha256/x", Digest: "sha256:deadbeef"}},
+			}},
+			Layers: []LayerLayout{{
+				Digest: "sha256:deadbeef", Assets: []string{"l-deadbeef.part"},
+			}},
+		},
+	}
+	if err := svc.validateBackupComplete(m, []store.Room{r}); err != nil {
+		t.Fatal(err)
+	}
+}

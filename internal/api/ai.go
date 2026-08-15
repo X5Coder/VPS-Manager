@@ -70,6 +70,12 @@ func (s *Server) handleRoomAI(w http.ResponseWriter, r *http.Request, roomID str
 		writeErr(w, 502, err.Error())
 		return
 	}
+	if ai.LooksLikeRemoteLogin(rep.Command) {
+		rep.Command = ""
+		rep.TypeOnly = false
+		rep.Say = strings.TrimSpace(rep.Say + " You are already on this VPS inside this room. I will not SSH. Use a local command.")
+		rep.Done = true
+	}
 	if ai.RoomForbidden(rep.Command) {
 		rep.Say = strings.TrimSpace(rep.Say + " That command is not allowed in this room agent.")
 		rep.Command = ""
@@ -104,6 +110,8 @@ func (s *Server) handleRoomAI(w http.ResponseWriter, r *http.Request, roomID str
 		"action":    rep.Action,
 		"done":      rep.Done,
 		"type_only": rep.TypeOnly,
+		"tool":      rep.Tool,
+		"tool_arg":  rep.ToolArg,
 		"raw":       raw,
 	})
 }
@@ -144,6 +152,14 @@ func (s *Server) handleDeployAI(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, 502, err.Error())
 		return
+	}
+	if ai.LooksLikeRemoteLogin(rep.Command) {
+		rep.Command = ""
+		rep.TypeOnly = false
+		if strings.TrimSpace(rep.Say) == "" || strings.Contains(strings.ToLower(rep.Say), "ssh") {
+			rep.Say = "You are already on this VPS. The panel terminal is a root shell here — I will not SSH. Tell me the local command (docker ps, df -h, ls, …)."
+		}
+		rep.Done = true
 	}
 	if ai.Dangerous(rep.Command) {
 		rep.Say = strings.TrimSpace(rep.Say + " That command is not allowed.")
@@ -187,6 +203,8 @@ func (s *Server) handleDeployAI(w http.ResponseWriter, r *http.Request) {
 		"start":     rep.Start,
 		"done":      rep.Done,
 		"type_only": rep.TypeOnly,
+		"tool":      rep.Tool,
+		"tool_arg":  rep.ToolArg,
 		"raw":       raw,
 	})
 }
@@ -308,6 +326,8 @@ func (s *Server) handleTokensAI(w http.ResponseWriter, r *http.Request) {
 		"done":         rep.Done,
 		"create_token": false,
 		"create_room":  false,
+		"tool":         rep.Tool,
+		"tool_arg":     rep.ToolArg,
 		"raw":          raw,
 	}
 	if rep.CreateRoom && strings.TrimSpace(rep.RoomName) != "" && rep.QuotaGB > 0 {
@@ -323,7 +343,7 @@ func (s *Server) handleTokensAI(w http.ResponseWriter, r *http.Request) {
 			}
 			out["ask"] = []string{"Room password?"}
 			out["done"] = false
-		} else if rm, _, err := s.createEmptyRoom(rep.RoomName, rep.QuotaGB, cPort, 0, pass); err != nil {
+		} else if rm, _, err := s.createEmptyRoom(rep.RoomName, rep.QuotaGB, cPort, 0, pass, "", "", false, ""); err != nil {
 			out["say"] = strings.TrimSpace(rep.Say + " Could not create the room: " + err.Error())
 			out["done"] = false
 		} else {
@@ -365,6 +385,8 @@ func (s *Server) handleTokensAI(w http.ResponseWriter, r *http.Request) {
 				out["prompt"] = pub["prompt"]
 				out["api"] = pub["api"]
 				out["script"] = pub["script"]
+				out["script_single"] = pub["script_single"]
+				out["script_multi"] = pub["script_multi"]
 				out["say"] = strings.TrimSpace(rep.Say)
 				if out["say"] == "" {
 					out["say"] = "API created for all rooms. Copy script, set ROOM_ID for the room you update. Copy API is BASE and TOKEN only."
@@ -550,6 +572,8 @@ func (s *Server) handleUsageAI(w http.ResponseWriter, r *http.Request) {
 		"choices":  rep.Choices,
 		"quota_gb": 0,
 		"done":     rep.Done,
+		"tool":     rep.Tool,
+		"tool_arg": rep.ToolArg,
 		"raw":      raw,
 	})
 }

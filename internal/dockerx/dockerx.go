@@ -399,6 +399,51 @@ func (c *Client) Remove(id string, force bool) error {
 	return c.run(context.Background(), nil, args...)
 }
 
+func (c *Client) ContainerBrief(ref string) (id, status, image string) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", "missing", ""
+	}
+	out, err := c.output("inspect", "-f", "{{.Id}}\t{{.State.Status}}\t{{.Config.Image}}", ref)
+	if err != nil {
+		return ref, "missing", ""
+	}
+	parts := strings.Split(strings.TrimSpace(out), "\t")
+	id = parts[0]
+	if len(parts) > 1 {
+		status = parts[1]
+	}
+	if len(parts) > 2 {
+		image = parts[2]
+	}
+	if status == "running" {
+		status = "running"
+	} else if status != "" && status != "missing" {
+		status = "stopped"
+	}
+	return id, status, image
+}
+
+func (c *Client) ImageSize(ref string) int64 {
+	out, err := c.output("image", "inspect", "--format", "{{.Size}}", ref)
+	if err != nil {
+		return 0
+	}
+	n, _ := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	return n
+}
+
+func (c *Client) InspectJSON(id string) ([]byte, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, fmt.Errorf("missing container")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, c.bin, "inspect", id)
+	return cmd.Output()
+}
+
 func (c *Client) InspectStatus(id string) (string, error) {
 	if id == "" {
 		return "missing", nil
@@ -699,12 +744,17 @@ func (c *Client) ImportFilesystem(srcTar, image string) error {
 	return nil
 }
 
-// CopyVolumeToDir copies a named Docker volume into destDir using a helper container.
+// CopyVolumeToDir copies a named Docker volume into destDir.
 func (c *Client) CopyVolumeToDir(volume, destDir string) error {
 	if err := os.MkdirAll(destDir, 0o750); err != nil {
 		return err
 	}
-	// alpine helper: mount volume and bind dest
+	if mp := c.volumeMountpoint(volume); mp != "" {
+		if err := hostCopyTree(mp, destDir); err != nil {
+			return fmt.Errorf("copy volume %s: %w", volume, err)
+		}
+		return nil
+	}
 	args := []string{"run", "--rm",
 		"-v", volume + ":/from:ro",
 		"-v", destDir + ":/to",
@@ -720,6 +770,13 @@ func (c *Client) CopyVolumeToDir(volume, destDir string) error {
 // CopyDirToVolume copies destDir contents into a named Docker volume.
 func (c *Client) CopyDirToVolume(srcDir, volume string) error {
 	_ = c.run(context.Background(), nil, "volume", "create", volume)
+	if mp := c.volumeMountpoint(volume); mp != "" {
+		_ = exec.Command("sh", "-c", "rm -rf "+mp+"/* "+mp+"/.[!.]* 2>/dev/null; true").Run()
+		if err := hostCopyTree(srcDir, mp); err != nil {
+			return fmt.Errorf("restore volume %s: %w", volume, err)
+		}
+		return nil
+	}
 	args := []string{"run", "--rm",
 		"-v", volume + ":/to",
 		"-v", srcDir + ":/from:ro",
@@ -728,6 +785,33 @@ func (c *Client) CopyDirToVolume(srcDir, volume string) error {
 	b, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("restore volume %s: %s: %w", volume, strings.TrimSpace(string(b)), err)
+	}
+	return nil
+}
+
+func (c *Client) volumeMountpoint(volume string) string {
+	out, err := c.output("volume", "inspect", "-f", "{{.Mountpoint}}", volume)
+	if err != nil {
+		return ""
+	}
+	mp := strings.TrimSpace(out)
+	if mp == "" || mp == "<no value>" {
+		return ""
+	}
+	if st, err := os.Stat(mp); err != nil || !st.IsDir() {
+		return ""
+	}
+	return mp
+}
+
+func hostCopyTree(src, dest string) error {
+	if err := os.MkdirAll(dest, 0o750); err != nil {
+		return err
+	}
+	cmd := exec.Command("cp", "-a", src+"/.", dest)
+	b, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("cp: %s: %w", strings.TrimSpace(string(b)), err)
 	}
 	return nil
 }
@@ -750,6 +834,19 @@ func ComposeFile(dir string) string {
 		p := filepath.Join(dir, n)
 		if _, err := os.Stat(p); err == nil {
 			return p
+		}
+	}
+	ents, _ := os.ReadDir(dir)
+	for _, e := range ents {
+		if e.IsDir() {
+			continue
+		}
+		n := strings.ToLower(e.Name())
+		if strings.Contains(n, "override") {
+			continue
+		}
+		if strings.HasSuffix(n, ".yml") || strings.HasSuffix(n, ".yaml") {
+			return filepath.Join(dir, e.Name())
 		}
 	}
 	return ""

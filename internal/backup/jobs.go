@@ -45,29 +45,47 @@ func (s *Service) flushJob(j Job) {
 	_ = s.Store.SetMeta("backup_job", string(b))
 }
 
+func (s *Service) markStaleLocked() bool {
+	if s.liveJob == nil || s.running {
+		return false
+	}
+	if s.liveJob.Status != "running" && s.liveJob.Status != "queued" {
+		return false
+	}
+	s.liveJob.Status = "error"
+	s.liveJob.Error = "Cancelled"
+	s.liveJob.Message = "Cancelled"
+	s.liveJob.Progress = "Cancelled"
+	s.liveJob.EndedAt = time.Now().UTC().Format(time.RFC3339)
+	s.liveJob.Logs = append(append([]string{}, s.liveJob.Logs...), time.Now().UTC().Format(time.RFC3339)+"  Cancelled (job was not running)")
+	return true
+}
+
 func (s *Service) CurrentJob() *Job {
 	s.mu.Lock()
-	if s.liveJob != nil {
-		cp := *s.liveJob
-		cp.Logs = append([]string{}, s.liveJob.Logs...)
+	if s.liveJob == nil && s.Store != nil {
 		s.mu.Unlock()
-		return &cp
+		raw, ok, _ := s.Store.GetMeta("backup_job")
+		s.mu.Lock()
+		if s.liveJob == nil && ok && raw != "" {
+			var j Job
+			if json.Unmarshal([]byte(raw), &j) == nil {
+				s.liveJob = &j
+			}
+		}
 	}
-	s.mu.Unlock()
-	raw, ok, _ := s.Store.GetMeta("backup_job")
-	if !ok || raw == "" {
-		return nil
-	}
-	var j Job
-	if err := json.Unmarshal([]byte(raw), &j); err != nil {
-		return nil
-	}
-	s.mu.Lock()
 	if s.liveJob == nil {
-		s.liveJob = &j
+		s.mu.Unlock()
+		return nil
 	}
+	stale := s.markStaleLocked()
+	cp := *s.liveJob
+	cp.Logs = append([]string{}, s.liveJob.Logs...)
 	s.mu.Unlock()
-	return &j
+	if stale && s.Store != nil {
+		s.flushJob(cp)
+	}
+	return &cp
 }
 
 func (s *Service) report(percent int, format string, args ...any) {
@@ -82,7 +100,7 @@ func (s *Service) report(percent int, format string, args ...any) {
 	}
 	if msg != "" {
 		j.Progress = msg
-		line := time.Now().UTC().Format("15:04:05") + "  " + msg
+		line := time.Now().UTC().Format(time.RFC3339) + "  " + msg
 		j.Logs = append(j.Logs, line)
 	}
 	s.setJob(*j)
@@ -100,12 +118,10 @@ func (s *Service) StartBackupAsync(label, description string, scheduled bool) (*
 	s.mu.Lock()
 	if s.running {
 		s.mu.Unlock()
-		if j := s.CurrentJob(); j != nil {
-			return j, nil
-		}
-		return nil, fmt.Errorf("a backup/restore job is already running")
+		return nil, fmt.Errorf("a backup/restore job is already running — press Cancel first")
 	}
 	s.running = true
+	s.activeGen = s.stopGen.Load()
 	s.mu.Unlock()
 
 	j := Job{
@@ -121,12 +137,18 @@ func (s *Service) StartBackupAsync(label, description string, scheduled bool) (*
 	s.report(1, "Inspecting last point")
 
 	go func() {
+		gen := s.stopGen.Load()
 		defer func() {
 			s.mu.Lock()
-			s.running = false
+			if s.stopGen.Load() == gen {
+				s.running = false
+			}
 			s.mu.Unlock()
 		}()
 		rec, err := s.executeBackup(label, description, scheduled)
+		if s.stopGen.Load() != gen {
+			return
+		}
 		cur := s.CurrentJob()
 		if cur == nil {
 			cur = &j
@@ -137,7 +159,7 @@ func (s *Service) StartBackupAsync(label, description string, scheduled bool) (*
 			cur.Error = err.Error()
 			cur.Message = "Backup failed"
 			cur.Progress = "Failed"
-			cur.Logs = append(cur.Logs, time.Now().UTC().Format("15:04:05")+"  FAILED: "+err.Error())
+			cur.Logs = append(cur.Logs, time.Now().UTC().Format(time.RFC3339)+"  FAILED: "+err.Error())
 			s.setJob(*cur)
 			s.logf("FAILED: %s", err.Error())
 			_ = s.Store.SetMeta("backup_last_error", err.Error())
@@ -149,7 +171,7 @@ func (s *Service) StartBackupAsync(label, description string, scheduled bool) (*
 		cur.Percent = 100
 		cur.SnapshotID = rec.ID
 		cur.Error = ""
-		cur.Logs = append(cur.Logs, time.Now().UTC().Format("15:04:05")+"  Backup finished ("+rec.ID[:8]+")")
+		cur.Logs = append(cur.Logs, time.Now().UTC().Format(time.RFC3339)+"  Backup finished ("+rec.ID[:8]+")")
 		s.setJob(*cur)
 		s.logf("backup ok %s", rec.ID)
 	}()
@@ -160,12 +182,10 @@ func (s *Service) StartRestoreAsync(token, snapshotID string) (*Job, error) {
 	s.mu.Lock()
 	if s.running {
 		s.mu.Unlock()
-		if j := s.CurrentJob(); j != nil {
-			return j, nil
-		}
-		return nil, fmt.Errorf("a backup/restore job is already running")
+		return nil, fmt.Errorf("a backup/restore job is already running — press Cancel first")
 	}
 	s.running = true
+	s.activeGen = s.stopGen.Load()
 	s.mu.Unlock()
 
 	j := Job{
@@ -179,12 +199,18 @@ func (s *Service) StartRestoreAsync(token, snapshotID string) (*Job, error) {
 	s.report(1, "Inspecting last restore point")
 
 	go func() {
+		gen := s.stopGen.Load()
 		defer func() {
 			s.mu.Lock()
-			s.running = false
+			if s.stopGen.Load() == gen {
+				s.running = false
+			}
 			s.mu.Unlock()
 		}()
 		err := s.executeRestore(token, snapshotID)
+		if s.stopGen.Load() != gen {
+			return
+		}
 		cur := s.CurrentJob()
 		if cur == nil {
 			cur = &j
@@ -195,7 +221,7 @@ func (s *Service) StartRestoreAsync(token, snapshotID string) (*Job, error) {
 			cur.Error = err.Error()
 			cur.Message = "Restore failed"
 			cur.Progress = "Failed"
-			cur.Logs = append(cur.Logs, time.Now().UTC().Format("15:04:05")+"  FAILED: "+err.Error())
+			cur.Logs = append(cur.Logs, time.Now().UTC().Format(time.RFC3339)+"  FAILED: "+err.Error())
 			s.setJob(*cur)
 			s.logf("FAILED: %s", err.Error())
 			return
@@ -205,7 +231,7 @@ func (s *Service) StartRestoreAsync(token, snapshotID string) (*Job, error) {
 		cur.Progress = "Done"
 		cur.Percent = 100
 		cur.Error = ""
-		cur.Logs = append(cur.Logs, time.Now().UTC().Format("15:04:05")+"  Restore finished")
+		cur.Logs = append(cur.Logs, time.Now().UTC().Format(time.RFC3339)+"  Restore finished")
 		s.setJob(*cur)
 		s.logf("restore ok")
 	}()

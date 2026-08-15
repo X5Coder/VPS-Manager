@@ -49,7 +49,7 @@ func (s *Server) readRoomPending(roomID string) (cPort, hPort int) {
 	return cPort, p.HostPort
 }
 
-func (s *Server) createEmptyRoom(name string, quotaGB float64, cPort, hPort int, password string) (*store.Room, string, error) {
+func (s *Server) createEmptyRoom(name string, quotaGB float64, cPort, hPort int, password, kind, domain string, ssl bool, sshCert string) (*store.Room, string, error) {
 	quota, err := s.allocateQuota(quotaGB, 0)
 	if err != nil {
 		return nil, "", err
@@ -62,7 +62,7 @@ func (s *Server) createEmptyRoom(name string, quotaGB float64, cPort, hPort int,
 	if pass == "" {
 		pass = randomPass(10)
 	}
-	rm, err := s.Rooms.Create(rooms.CreateInput{Name: roomName, Password: pass, QuotaBytes: quota})
+	rm, err := s.Rooms.Create(rooms.CreateInput{Name: roomName, Password: pass, QuotaBytes: quota, Kind: kind})
 	if err != nil {
 		return nil, "", err
 	}
@@ -70,6 +70,16 @@ func (s *Server) createEmptyRoom(name string, quotaGB float64, cPort, hPort int,
 		cPort = 8080
 	}
 	s.writeRoomPending(rm.ID, cPort, hPort)
+	if strings.TrimSpace(domain) != "" || ssl {
+		rm.Domain = strings.TrimSpace(domain)
+		rm.SSL = ssl
+		_ = s.Store.UpdateRoom(*rm)
+	}
+	if strings.TrimSpace(sshCert) != "" {
+		p := filepath.Join(s.Cfg.RuntimeDir, rm.ID, "ssh.crt")
+		_ = os.MkdirAll(filepath.Dir(p), 0o700)
+		_ = os.WriteFile(p, []byte(sshCert), 0o600)
+	}
 	return rm, pass, nil
 }
 

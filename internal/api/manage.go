@@ -16,9 +16,11 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/x5coder/vps-rooms/internal/ai"
 	"github.com/x5coder/vps-rooms/internal/auth"
 	"github.com/x5coder/vps-rooms/internal/projects"
 	"github.com/x5coder/vps-rooms/internal/rooms"
+	"github.com/x5coder/vps-rooms/internal/stack"
 	"github.com/x5coder/vps-rooms/internal/store"
 )
 
@@ -342,22 +344,34 @@ func (s *Server) hostSnapshotLog() string {
 	return b.String()
 }
 
-func (s *Server) handleHostLogs(w http.ResponseWriter, r *http.Request) {
-	if s.requireOwner(w, r) == nil {
-		return
-	}
-	kind := r.URL.Query().Get("kind")
-	if kind == "" {
-		kind = "panel"
+func (s *Server) hostLogBundle(kind string) (outKind, text string) {
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	if kind == "" || kind == "vps" || kind == "all" {
+		var b strings.Builder
+		for _, k := range []string{"host", "panel", "api", "deploy"} {
+			_, t := s.hostLogBundle(k)
+			if strings.TrimSpace(t) == "" || strings.HasPrefix(strings.TrimSpace(t), "(empty") {
+				continue
+			}
+			b.WriteString("===== ")
+			b.WriteString(k)
+			b.WriteString(" =====\n")
+			b.WriteString(strings.TrimSpace(t))
+			b.WriteString("\n\n")
+		}
+		text = strings.TrimSpace(b.String())
+		if text == "" {
+			text = "(empty — panel events will appear here as you use the panel)"
+		}
+		return "vps", text
 	}
 	switch kind {
 	case "panel", "host", "api", "deploy":
-		// ok
 	default:
 		kind = "panel"
 	}
 
-	text, _ := tailFile(logPath(s.Cfg.DataDir, kind), 200*1024)
+	text, _ = tailFile(logPath(s.Cfg.DataDir, kind), 200*1024)
 
 	switch kind {
 	case "panel":
@@ -384,8 +398,20 @@ func (s *Server) handleHostLogs(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(text) == "" {
 		text = "(empty — panel events will appear here as you use the panel)"
 	}
+	return kind, text
+}
+
+func (s *Server) handleHostLogs(w http.ResponseWriter, r *http.Request) {
+	if s.requireOwner(w, r) == nil {
+		return
+	}
+	kind := r.URL.Query().Get("kind")
+	if kind == "" {
+		kind = "panel"
+	}
+	outKind, text := s.hostLogBundle(kind)
 	writeJSON(w, 200, map[string]any{
-		"kind":  kind,
+		"kind":  outKind,
 		"log":   text,
 		"kinds": []string{"panel", "api", "deploy", "host"},
 	})
@@ -707,13 +733,18 @@ func (s *Server) handleRoomExec(w http.ResponseWriter, r *http.Request, roomID s
 		return
 	}
 	var body struct {
-		Command    string `json:"command"`
-		ProjectID  string `json:"project_id"`
-		TimeoutSec int    `json:"timeout_sec"`
-		Host       bool   `json:"host"`
+		Command     string `json:"command"`
+		ProjectID   string `json:"project_id"`
+		ContainerID string `json:"container_id"`
+		TimeoutSec  int    `json:"timeout_sec"`
+		Host        bool   `json:"host"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Command) == "" {
 		writeErr(w, 400, "command required")
+		return
+	}
+	if ai.Dangerous(body.Command) {
+		writeErr(w, 400, "command not allowed")
 		return
 	}
 	cmdLine := body.Command
@@ -723,20 +754,34 @@ func (s *Server) handleRoomExec(w http.ResponseWriter, r *http.Request, roomID s
 	if body.TimeoutSec > 0 {
 		timeout = time.Duration(body.TimeoutSec) * time.Second
 	}
-	if timeout > 3*time.Minute {
-		timeout = 3 * time.Minute
+	maxT := 3 * time.Minute
+	if body.Host {
+		maxT = 10 * time.Minute
+	}
+	if timeout > maxT {
+		timeout = maxT
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 
 	var cmd *exec.Cmd
 	where := "room-fs"
-	if !body.Host && body.ProjectID != "" && s.Docker != nil {
-		p, _ := s.Store.GetProject(body.ProjectID)
-		if p != nil && p.RoomID == roomID && p.ContainerID != "" {
-			st, _ := s.Docker.InspectStatus(p.ContainerID)
+	dockerID := ""
+	if !body.Host && s.Docker != nil {
+		ct := s.resolveRoomContainer(roomID, body.ContainerID)
+		if ct != nil {
+			dockerID = ct.DockerID
+		}
+		if dockerID == "" && body.ProjectID != "" {
+			p, _ := s.Store.GetProject(body.ProjectID)
+			if p != nil && p.RoomID == roomID {
+				dockerID = p.ContainerID
+			}
+		}
+		if dockerID != "" {
+			st, _ := s.Docker.InspectStatus(dockerID)
 			if st == "running" {
-				cmd = exec.CommandContext(ctx, "docker", "exec", p.ContainerID, "sh", "-lc", cmdLine)
+				cmd = exec.CommandContext(ctx, "docker", "exec", dockerID, "sh", "-lc", cmdLine)
 				where = "container"
 			}
 		}
@@ -773,34 +818,151 @@ func (s *Server) handleRoomExec(w http.ResponseWriter, r *http.Request, roomID s
 	writeJSON(w, 200, res)
 }
 
-func (s *Server) handleRoomLogs(w http.ResponseWriter, r *http.Request, roomID string) {
-	if _, room := s.roomAccess(w, r, roomID); room == nil {
-		return
-	}
-	projs, _ := s.Store.ListProjects(roomID)
-	var b strings.Builder
-	for _, p := range projs {
-		b.WriteString("=== " + p.Name + " (" + p.Status + ") ===\n")
-		if s.Docker != nil && p.ContainerID != "" {
-			out, err := s.Docker.Logs(p.ContainerID, 200)
-			if err != nil {
-				b.WriteString(err.Error() + "\n")
-			} else {
-				b.WriteString(out)
+func (s *Server) resolveRoomContainer(roomID, want string) *store.Container {
+	list, _ := s.Store.ListContainers(roomID)
+	want = strings.TrimSpace(want)
+	if want != "" {
+		low := strings.ToLower(want)
+		for i := range list {
+			c := list[i]
+			if c.ID == want || c.DockerID == want || strings.EqualFold(c.Name, want) || strings.EqualFold(c.Service, want) {
+				return &c
+			}
+			did := strings.ToLower(strings.TrimPrefix(c.DockerID, "sha256:"))
+			if len(did) >= 12 && (did == low || strings.HasPrefix(did, low) || strings.HasPrefix(low, did[:12])) {
+				return &c
 			}
 		}
-		b.WriteString("\n")
+		return nil
 	}
-	panelLog, _ := tailFile(logPath(s.Cfg.DataDir, "room-"+roomID[:8]), 80*1024)
-	if panelLog != "" {
-		b.WriteString("=== panel exec log ===\n")
-		b.WriteString(panelLog)
+	for i := range list {
+		c := list[i]
+		if s.Docker != nil && c.DockerID != "" {
+			if st, err := s.Docker.InspectStatus(c.DockerID); err == nil && st == "running" {
+				return &c
+			}
+		}
+		if c.Status == "running" {
+			return &c
+		}
+	}
+	if len(list) > 0 {
+		return &list[0]
+	}
+	return nil
+}
+
+func (s *Server) containerLogsJSON(roomID, want string) (map[string]any, int) {
+	list := s.roomContainersJSON(roomID)
+	want = strings.TrimSpace(want)
+	if want == "" {
+		return map[string]any{
+			"ok": false, "error": "pass name=CONTAINER_NAME or container=CONTAINER_ID",
+			"code": "logs_target_required", "containers": list,
+		}, 400
+	}
+	ct := s.resolveRoomContainer(roomID, want)
+	if ct == nil {
+		return map[string]any{
+			"ok": false, "error": "container not found", "code": "container_not_found",
+			"containers": list,
+		}, 404
+	}
+	name := ct.Name
+	if ct.Service != "" {
+		name = ct.Service
+	}
+	var b strings.Builder
+	if s.Docker != nil && ct.DockerID != "" {
+		out, err := s.Docker.Logs(ct.DockerID, 300)
+		if err != nil {
+			b.WriteString(err.Error())
+		} else {
+			b.WriteString(out)
+		}
 	}
 	text := b.String()
 	if len(text) > 200000 {
 		text = text[len(text)-200000:]
 	}
-	writeJSON(w, 200, map[string]string{"log": text})
+	return map[string]any{
+		"log":          text,
+		"container_id": ct.ID,
+		"container":    name,
+		"name":         name,
+		"containers":   list,
+	}, 200
+}
+
+func (s *Server) writeContainerLogs(w http.ResponseWriter, roomID, want string) {
+	payload, code := s.containerLogsJSON(roomID, want)
+	writeJSON(w, code, payload)
+}
+
+func logsQueryTarget(r *http.Request) string {
+	q := r.URL.Query()
+	if name := strings.TrimSpace(q.Get("name")); name != "" {
+		return name
+	}
+	return strings.TrimSpace(q.Get("container"))
+}
+
+func (s *Server) handleRoomLogs(w http.ResponseWriter, r *http.Request, roomID string) {
+	if _, room := s.roomAccess(w, r, roomID); room == nil {
+		return
+	}
+	s.handleV1Logs(w, r, roomID)
+}
+
+func (s *Server) handleRoomEnv(w http.ResponseWriter, r *http.Request, roomID string) {
+	if _, room := s.roomAccess(w, r, roomID); room == nil {
+		return
+	}
+	_ = s.Rooms.EnsureUnlocked(roomID)
+	path := filepath.Join(s.Cfg.RuntimeDir, roomID, ".env")
+	projs, _ := s.Store.ListProjects(roomID)
+	var first *store.Project
+	if len(projs) > 0 {
+		first = &projs[0]
+	}
+	if r.Method == http.MethodGet {
+		b, _ := os.ReadFile(path)
+		text := string(b)
+		if strings.TrimSpace(text) == "" && first != nil {
+			if t, err := s.Projects.ReadEnv(first.ID); err == nil {
+				text = t
+			}
+		}
+		writeJSON(w, 200, map[string]any{
+			"editable": true,
+			"content":  text,
+			"path":     path,
+		})
+		return
+	}
+	if r.Method == http.MethodPut || r.Method == http.MethodPost {
+		var body struct {
+			Content string `json:"content"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeErr(w, 400, "invalid request")
+			return
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		if err := os.WriteFile(path, []byte(body.Content), 0o600); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		if first != nil {
+			_ = s.Projects.WriteEnv(first.ID, body.Content)
+		}
+		writeJSON(w, 200, map[string]string{"ok": "1"})
+		return
+	}
+	writeErr(w, 405, "method")
 }
 
 func (s *Server) handleRoomQuota(w http.ResponseWriter, r *http.Request, roomID string) {
@@ -984,7 +1146,11 @@ func (s *Server) handleRoomImageTar(w http.ResponseWriter, r *http.Request, room
 		return
 	}
 	defer os.RemoveAll(tmp)
-	dest := filepath.Join(tmp, "image.tar")
+	safe := filepath.Base(fname)
+	if safe == "" || safe == "." {
+		safe = "image.tar"
+	}
+	dest := filepath.Join(tmp, safe)
 	out, err := os.Create(dest)
 	if err != nil {
 		fmt.Fprintf(logw, "error: %v\n", err)
@@ -997,7 +1163,45 @@ func (s *Server) handleRoomImageTar(w http.ResponseWriter, r *http.Request, room
 		fmt.Fprintf(logw, "error: %v\n", err)
 		return
 	}
-	fmt.Fprintf(logw, "Saved %d bytes\nLoading image (large files can take a while)...\n", n)
+	fmt.Fprintf(logw, "Saved %d bytes\n", n)
+	ctrID := strings.TrimSpace(r.FormValue("container_id"))
+	if ctrID == "" {
+		ctrID = strings.TrimSpace(r.FormValue("container"))
+	}
+	if err := stack.CheckUpload(fname, dest, room.Kind, ctrID, s.roomIsEmpty(room.ID)); err != nil {
+		fmt.Fprintf(logw, "error: %v\n", err)
+		return
+	}
+	if ctrID != "" {
+		ct := s.resolveRoomContainer(room.ID, ctrID)
+		if ct == nil {
+			fmt.Fprintf(logw, "error: container not found\n")
+			return
+		}
+		fmt.Fprintf(logw, "Updating only %s — other containers stay up.\n", ct.Name)
+		if err := s.applyImageTarOneContainer(room, ct, dest, logw); err != nil {
+			fmt.Fprintf(logw, "error: %v\n", err)
+			return
+		}
+		fmt.Fprintf(logw, "Updated. Container is running. The rest of the room is unchanged.\n")
+		return
+	}
+	if s.Stack != nil && (stack.LooksLikeMultiPackage(fname) || stack.ArchiveHasCompose(dest)) {
+		fmt.Fprintf(logw, "Multi-container package detected. Loading stack...\n")
+		jobKey := room.ID
+		if err := s.tryBeginJob(jobKey, "deploy"); err != nil {
+			fmt.Fprintf(logw, "error: %v\n", err)
+			return
+		}
+		defer s.endJob(jobKey)
+		if err := s.Stack.DeployMulti(room, dest, logw); err != nil {
+			fmt.Fprintf(logw, "error: %v\n", err)
+			return
+		}
+		_ = appendLog(s.Cfg.DataDir, "deploy", "MULTI-DEPLOY room="+room.ID+" file="+fname)
+		return
+	}
+	fmt.Fprintf(logw, "Loading image (large files can take a while)...\n")
 	if s.Docker == nil || !s.Docker.Available() {
 		fmt.Fprintf(logw, "error: Docker unavailable\n")
 		return

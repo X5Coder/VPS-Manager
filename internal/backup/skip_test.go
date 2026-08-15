@@ -1,6 +1,10 @@
 package backup
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestSkipBackupKeepsImagesAndAppData(t *testing.T) {
 	if !backupHasPath([]FileEntry{{Path: "runtime/p/__container_image.tar.gz", Size: 10, Chunks: []string{"a"}}}, "__container_image.tar") {
@@ -36,7 +40,26 @@ func TestSkipBackupKeepsImagesAndAppData(t *testing.T) {
 	if !skipBackupRel("app/__pycache__/x") {
 		t.Fatal("pycache still skipped")
 	}
-	if !skipBackupRel("volumes/db/data/base") {
-		t.Fatal("live postgres files skipped when dump exists path")
+	if skipBackupRel("volumes/db/data/base") {
+		t.Fatal("live postgres files must be copied when no dump (catalog skipPG is separate)")
+	}
+}
+
+func TestTarGzPathPacksBindTree(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "libraries", "venv")
+	if err := os.MkdirAll(sub, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "x.py"), []byte("print(1)\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(dir, "tree.tar.gz")
+	if err := tarGzPath(filepath.Join(dir, "libraries"), dest); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(dest)
+	if err != nil || st.Size() < 20 {
+		t.Fatalf("archive missing size=%v err=%v", st, err)
 	}
 }

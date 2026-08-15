@@ -21,6 +21,9 @@ type Room struct {
 	PassPlain   string    `json:"password,omitempty"` // admin-only reveal
 	NetworkName string    `json:"network_name"`
 	QuotaBytes  int64     `json:"quota_bytes"`
+	Kind        string    `json:"kind"` // single | multi
+	Domain      string    `json:"domain,omitempty"`
+	SSL         bool      `json:"ssl"`
 	CreatedAt   time.Time `json:"created_at"`
 }
 
@@ -126,7 +129,7 @@ CREATE TABLE IF NOT EXISTS api_tokens (
 	_, _ = s.DB.Exec(`ALTER TABLE projects ADD COLUMN external_url TEXT NOT NULL DEFAULT ''`)
 	_, _ = s.DB.Exec(`ALTER TABLE api_tokens ADD COLUMN token_plain TEXT NOT NULL DEFAULT ''`)
 	_, _ = s.DB.Exec(`ALTER TABLE api_tokens ADD COLUMN room_id TEXT NOT NULL DEFAULT ''`)
-	return nil
+	return s.migrateV2()
 }
 
 func (s *Store) GetMeta(key string) (string, bool, error) {
@@ -145,8 +148,15 @@ func (s *Store) SetMeta(key, value string) error {
 }
 
 func (s *Store) CreateRoom(r Room) error {
-	_, err := s.DB.Exec(`INSERT INTO rooms(id,name,pass_hash,pass_plain,network_name,quota_bytes,created_at)
-		VALUES(?,?,?,?,?,?,?)`, r.ID, r.Name, r.PassHash, r.PassPlain, r.NetworkName, r.QuotaBytes, r.CreatedAt.UTC().Format(time.RFC3339))
+	if r.Kind == "" {
+		r.Kind = KindSingle
+	}
+	ssl := 0
+	if r.SSL {
+		ssl = 1
+	}
+	_, err := s.DB.Exec(`INSERT INTO rooms(id,name,pass_hash,pass_plain,network_name,quota_bytes,created_at,kind,domain,ssl)
+		VALUES(?,?,?,?,?,?,?,?,?,?)`, r.ID, r.Name, r.PassHash, r.PassPlain, r.NetworkName, r.QuotaBytes, r.CreatedAt.UTC().Format(time.RFC3339), r.Kind, r.Domain, ssl)
 	return err
 }
 
@@ -155,16 +165,23 @@ func scanRoom(rows interface {
 }) (Room, error) {
 	var r Room
 	var ts string
-	err := rows.Scan(&r.ID, &r.Name, &r.PassHash, &r.PassPlain, &r.NetworkName, &r.QuotaBytes, &ts)
+	var ssl int
+	err := rows.Scan(&r.ID, &r.Name, &r.PassHash, &r.PassPlain, &r.NetworkName, &r.QuotaBytes, &ts, &r.Kind, &r.Domain, &ssl)
 	if err != nil {
 		return r, err
+	}
+	r.SSL = ssl != 0
+	if r.Kind == "" {
+		r.Kind = KindSingle
 	}
 	r.CreatedAt, _ = time.Parse(time.RFC3339, ts)
 	return r, nil
 }
 
+const roomCols = `id,name,pass_hash,pass_plain,network_name,quota_bytes,created_at,COALESCE(kind,'single'),COALESCE(domain,''),COALESCE(ssl,0)`
+
 func (s *Store) ListRooms() ([]Room, error) {
-	rows, err := s.DB.Query(`SELECT id,name,pass_hash,pass_plain,network_name,quota_bytes,created_at FROM rooms ORDER BY created_at`)
+	rows, err := s.DB.Query(`SELECT ` + roomCols + ` FROM rooms ORDER BY created_at`)
 	if err != nil {
 		return nil, err
 	}
@@ -181,7 +198,7 @@ func (s *Store) ListRooms() ([]Room, error) {
 }
 
 func (s *Store) GetRoom(id string) (*Room, error) {
-	row := s.DB.QueryRow(`SELECT id,name,pass_hash,pass_plain,network_name,quota_bytes,created_at FROM rooms WHERE id=?`, id)
+	row := s.DB.QueryRow(`SELECT `+roomCols+` FROM rooms WHERE id=?`, id)
 	r, err := scanRoom(row)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -193,7 +210,7 @@ func (s *Store) GetRoom(id string) (*Room, error) {
 }
 
 func (s *Store) GetRoomByName(name string) (*Room, error) {
-	row := s.DB.QueryRow(`SELECT id,name,pass_hash,pass_plain,network_name,quota_bytes,created_at FROM rooms WHERE name=?`, name)
+	row := s.DB.QueryRow(`SELECT `+roomCols+` FROM rooms WHERE name=?`, name)
 	r, err := scanRoom(row)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -205,22 +222,39 @@ func (s *Store) GetRoomByName(name string) (*Room, error) {
 }
 
 func (s *Store) UpdateRoom(r Room) error {
-	_, err := s.DB.Exec(`UPDATE rooms SET name=?, pass_hash=?, pass_plain=?, network_name=?, quota_bytes=? WHERE id=?`,
-		r.Name, r.PassHash, r.PassPlain, r.NetworkName, r.QuotaBytes, r.ID)
+	if r.Kind == "" {
+		r.Kind = KindSingle
+	}
+	ssl := 0
+	if r.SSL {
+		ssl = 1
+	}
+	_, err := s.DB.Exec(`UPDATE rooms SET name=?, pass_hash=?, pass_plain=?, network_name=?, quota_bytes=?, kind=?, domain=?, ssl=? WHERE id=?`,
+		r.Name, r.PassHash, r.PassPlain, r.NetworkName, r.QuotaBytes, r.Kind, r.Domain, ssl, r.ID)
 	return err
 }
 
 // UpsertRoom inserts or updates a room by id (used by full restore).
 func (s *Store) UpsertRoom(r Room) error {
-	_, err := s.DB.Exec(`INSERT INTO rooms(id,name,pass_hash,pass_plain,network_name,quota_bytes,created_at)
-		VALUES(?,?,?,?,?,?,?)
+	if r.Kind == "" {
+		r.Kind = KindSingle
+	}
+	ssl := 0
+	if r.SSL {
+		ssl = 1
+	}
+	_, err := s.DB.Exec(`INSERT INTO rooms(id,name,pass_hash,pass_plain,network_name,quota_bytes,created_at,kind,domain,ssl)
+		VALUES(?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET
 			name=excluded.name,
 			pass_hash=excluded.pass_hash,
 			pass_plain=excluded.pass_plain,
 			network_name=excluded.network_name,
-			quota_bytes=excluded.quota_bytes`,
-		r.ID, r.Name, r.PassHash, r.PassPlain, r.NetworkName, r.QuotaBytes, r.CreatedAt.UTC().Format(time.RFC3339))
+			quota_bytes=excluded.quota_bytes,
+			kind=excluded.kind,
+			domain=excluded.domain,
+			ssl=excluded.ssl`,
+		r.ID, r.Name, r.PassHash, r.PassPlain, r.NetworkName, r.QuotaBytes, r.CreatedAt.UTC().Format(time.RFC3339), r.Kind, r.Domain, ssl)
 	return err
 }
 
@@ -266,7 +300,11 @@ func (s *Store) CreateProject(p Project) error {
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		p.ID, p.RoomID, p.Name, p.Image, p.ContainerID, p.HostPort, p.ContainerPort, p.Domain, p.Status, p.CreatedAt.UTC().Format(time.RFC3339),
 		den, p.SSLStatus, p.ExternalURL)
-	return err
+	if err != nil {
+		return err
+	}
+	s.SyncContainerFromProject(p)
+	return nil
 }
 
 func boolInt(v bool) int {
@@ -349,10 +387,12 @@ func (s *Store) UpdateProject(p Project) error {
 	if n == 0 {
 		return fmt.Errorf("project not found")
 	}
+	s.SyncContainerFromProject(p)
 	return nil
 }
 
 func (s *Store) DeleteProject(id string) error {
+	_, _ = s.DB.Exec(`DELETE FROM containers WHERE id=?`, id)
 	_, err := s.DB.Exec(`DELETE FROM projects WHERE id=?`, id)
 	return err
 }

@@ -69,6 +69,24 @@ func TestSanitizeSayDump(t *testing.T) {
 	}
 }
 
+func TestLooksLikeRemoteLogin(t *testing.T) {
+	if !LooksLikeRemoteLogin("ssh root@13.140.164.29 -p 22") {
+		t.Fatal("ssh")
+	}
+	if !LooksLikeRemoteLogin("sshpass -p x ssh root@host") {
+		t.Fatal("sshpass")
+	}
+	if LooksLikeRemoteLogin("ssh-keygen -t ed25519") {
+		t.Fatal("ssh-keygen must be allowed")
+	}
+	if LooksLikeRemoteLogin("docker ps") {
+		t.Fatal("docker")
+	}
+	if !Dangerous("ssh user@host") {
+		t.Fatal("Dangerous ssh")
+	}
+}
+
 func contains(s, sub string) bool {
 	return indexOf(s, sub) >= 0
 }
