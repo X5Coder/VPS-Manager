@@ -1908,6 +1908,7 @@
             <nav class="nav" id="nav"></nav>
           </div>
           <div class="sidebar-foot">
+            <button class="btn danger sidebar-cancel action" id="bak-stop-nav" type="button" hidden>Cancel backup</button>
             <div class="meta">Panel :9090</div>
             <button class="btn ghost sidebar-out" id="logout">Sign out</button>
           </div>
@@ -2025,6 +2026,14 @@
     root.querySelector("#sidebar").classList.toggle("open", state.sidebarOpen);
     root.querySelector("#backdrop").classList.toggle("show", state.sidebarOpen);
     document.body.classList.toggle("nav-open", state.sidebarOpen);
+    const navCancel = root.querySelector("#bak-stop-nav");
+    if (navCancel) {
+      navCancel.hidden = !isOwner;
+      if (isOwner && !navCancel.dataset.bound) {
+        navCancel.dataset.bound = "1";
+        bindAction(navCancel, stopBackupJob);
+      }
+    }
     return root.querySelector("#main");
   }
 
@@ -3072,7 +3081,7 @@ Never DELETE via API. One token = all rooms.`;
           </div>
           <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px">
             <div class="job-pct mono">${pct}%</div>
-            ${job.status === "running" || job.status === "queued" ? `<button class="btn sm danger action" type="button" id="bak-stop">Cancel</button>` : ""}
+            ${`<button class="btn sm danger action" type="button" id="bak-stop">Cancel</button>`}
           </div>
         </div>
         <div class="job-bar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><span style="width:${pct}%"></span></div>

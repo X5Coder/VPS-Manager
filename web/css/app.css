@@ -1130,6 +1130,10 @@ button, input, textarea, select { font: inherit; color: inherit; }
 }
 .ai-stop:hover { background: #b71c1c; }
 .nav button.nav-busy { position: relative; }
+.sidebar-cancel {
+  width: 100%;
+  justify-content: center;
+}
 .nav button.nav-busy::after {
   content: "";
   width: 7px;
