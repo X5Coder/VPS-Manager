@@ -390,21 +390,18 @@ func (c *cataloger) addImage(roomID, ref, existingTar string) (string, error) {
 		}
 	}
 	tarPath := existingTar
-	if tarPath == "" {
-		tarPath = filepath.Join(c.work, "img-"+slugFile(ref)+".tar")
-		c.s.report(-1, "Saving image layers %s", ref)
-		if err := c.s.Docker.SaveImagePlain(ref, tarPath); err != nil {
-			gz := tarPath + ".gz"
-			if err2 := c.s.Docker.SaveImage(ref, gz); err2 != nil {
-				return "", err2
-			}
-			tarPath = gz
-		}
-	}
 	unpacked := filepath.Join(c.work, "unpacked-"+slugFile(ref))
 	_ = os.RemoveAll(unpacked)
-	if err := unpackSaveArchive(tarPath, unpacked); err != nil {
-		return "", err
+	if tarPath != "" {
+		if err := unpackSaveArchive(tarPath, unpacked); err != nil {
+			return "", err
+		}
+		_ = os.Remove(tarPath)
+	} else {
+		c.s.report(-1, "Streaming image layers %s", ref)
+		if err := c.s.Docker.ExtractSave(ref, unpacked); err != nil {
+			return "", err
+		}
 	}
 	meta, blobs, format, tags, err := splitImageTree(unpacked)
 	if err != nil {
@@ -413,10 +410,15 @@ func (c *cataloger) addImage(roomID, ref, existingTar string) (string, error) {
 	if len(tags) == 0 {
 		tags = []string{ref}
 	}
-	keySum, _, _ := HashFile(tarPath)
-	key := keySum
+	key := strings.TrimPrefix(dockerID, "sha256:")
 	if len(key) > 16 {
 		key = key[:16]
+	}
+	if key == "" {
+		key = slugFile(ref)
+		if len(key) > 16 {
+			key = key[:16]
+		}
 	}
 	if idx, ok := c.imageByKey[key]; ok {
 		img := c.layout.Images[idx]
@@ -451,6 +453,7 @@ func (c *cataloger) addImage(roomID, ref, existingTar string) (string, error) {
 			c.layout.Layers = append(c.layout.Layers, lay)
 			c.persist()
 		}
+		_ = os.Remove(src)
 		uses = append(uses, ImageLayerUse{Rel: rel, Digest: digest})
 	}
 	img := ImageLayout{Key: key, DockerID: dockerID, Tags: tags, RoomIDs: []string{roomID}, Format: format, TreePath: filepath.ToSlash(treePath), Layers: uses}
@@ -458,9 +461,6 @@ func (c *cataloger) addImage(roomID, ref, existingTar string) (string, error) {
 	c.layout.Images = append(c.layout.Images, img)
 	c.persist()
 	_ = os.RemoveAll(unpacked)
-	if existingTar == "" {
-		_ = os.Remove(tarPath)
-	}
 	return key, nil
 }
 

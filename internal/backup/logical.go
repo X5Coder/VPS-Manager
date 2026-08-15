@@ -75,21 +75,7 @@ func (s *Service) captureLogicalRoom(room store.Room, destDir string) error {
 		if ref == "" {
 			continue
 		}
-		if s.imageAlreadyOnBackup(ref) {
-			s.report(-1, "Image %s already on GitHub — skip docker save", ref)
-			continue
-		}
-		dest := filepath.Join(destDir, fmt.Sprintf("room-%s-image-%02d.tar", short, ord))
-		s.report(-1, "Saving image %s → %s", ref, filepath.Base(dest))
-		if err := s.Docker.SaveImagePlain(ref, dest); err != nil {
-			s.report(-1, "image %s: %v — trying gzip save", ref, err)
-			gz := dest + ".gz"
-			if err2 := s.Docker.SaveImage(ref, gz); err2 != nil {
-				_ = os.Remove(dest)
-				_ = os.Remove(gz)
-				return backupImageErr(ref, err2)
-			}
-		}
+		// Image layers are saved once in cataloger.addImage — do not write a second tar here.
 		if c.DockerID != "" {
 			if rw := s.Docker.SizeRw(c.DockerID); rw > 1024 && rw < 256*1024*1024 {
 				rwDest := filepath.Join(destDir, fmt.Sprintf("room-%s-container-%02d-rw.tar.gz", short, ord))

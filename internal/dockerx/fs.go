@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path"
 	"strconv"
@@ -165,6 +166,38 @@ func (c *Client) SaveImagePlain(imageTag, destTar string) error {
 	b, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("docker save: %s: %w", strings.TrimSpace(string(b)), err)
+	}
+	return nil
+}
+
+// ExtractSave streams `docker save` into dest so the image is not stored twice on disk.
+func (c *Client) ExtractSave(imageTag, dest string) error {
+	if strings.TrimSpace(imageTag) == "" {
+		return fmt.Errorf("missing image")
+	}
+	if err := os.MkdirAll(dest, 0o750); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+	defer cancel()
+	save := exec.CommandContext(ctx, c.bin, "save", imageTag)
+	untar := exec.CommandContext(ctx, "tar", "-C", dest, "-x")
+	pr, pw := io.Pipe()
+	save.Stdout = pw
+	untar.Stdin = pr
+	saveErr := make(chan error, 1)
+	go func() {
+		err := save.Run()
+		_ = pw.Close()
+		saveErr <- err
+	}()
+	out, err := untar.CombinedOutput()
+	se := <-saveErr
+	if se != nil {
+		return fmt.Errorf("docker save: %w", se)
+	}
+	if err != nil {
+		return fmt.Errorf("untar image: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	return nil
 }
