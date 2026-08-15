@@ -24,8 +24,51 @@ func TestStopJobUnlocksBackupButton(t *testing.T) {
 	if j == nil || j.Status == "running" {
 		t.Fatalf("job still running: %+v", j)
 	}
+	if j.Status != "paused" {
+		t.Fatalf("cancel must pause, not wipe: %+v", j)
+	}
 	if err := s.errIfStopped(); err == nil {
 		t.Fatal("in-flight backup must see stop")
+	}
+}
+
+func TestStopJobKeepsCheckpoint(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	s := &Service{Store: st}
+	s.saveCheckpoint(&Checkpoint{Kind: "backup", RoomsDone: []string{"room-1"}})
+	s.running = true
+	s.activeGen = s.stopGen.Load()
+	s.liveJob = &Job{Kind: "backup", Status: "running"}
+	if err := s.StopJob(); err != nil {
+		t.Fatal(err)
+	}
+	cp := s.loadCheckpoint()
+	if cp == nil || len(cp.RoomsDone) != 1 {
+		t.Fatalf("checkpoint must stay so Start can resume: %+v", cp)
+	}
+}
+
+func TestImageAlreadyOnBackup(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	s := &Service{Store: st}
+	if s.imageAlreadyOnBackup("nginx:latest") {
+		t.Fatal("no docker / no layout must not skip")
+	}
+	s.saveCheckpoint(&Checkpoint{Kind: "backup", Layout: &BackupLayout{
+		Images: []ImageLayout{{Key: "abc", DockerID: "sha256:deadbeef"}},
+	}})
+	if s.imageAlreadyOnBackup("nginx:latest") {
+		t.Fatal("without docker id match must not skip")
 	}
 }
 

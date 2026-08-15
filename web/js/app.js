@@ -1908,7 +1908,6 @@
             <nav class="nav" id="nav"></nav>
           </div>
           <div class="sidebar-foot">
-            <button class="btn danger sidebar-cancel action" id="bak-stop-nav" type="button" hidden>Cancel backup</button>
             <div class="meta">Panel :9090</div>
             <button class="btn ghost sidebar-out" id="logout">Sign out</button>
           </div>
@@ -2026,14 +2025,6 @@
     root.querySelector("#sidebar").classList.toggle("open", state.sidebarOpen);
     root.querySelector("#backdrop").classList.toggle("show", state.sidebarOpen);
     document.body.classList.toggle("nav-open", state.sidebarOpen);
-    const navCancel = root.querySelector("#bak-stop-nav");
-    if (navCancel) {
-      navCancel.hidden = !isOwner;
-      if (isOwner && !navCancel.dataset.bound) {
-        navCancel.dataset.bound = "1";
-        bindAction(navCancel, stopBackupJob);
-      }
-    }
     return root.querySelector("#main");
   }
 
@@ -3049,20 +3040,47 @@ Never DELETE via API. One token = all rooms.`;
     if (err) err.textContent = "";
     try {
       await api("/api/backup/stop", { method: "POST", body: "{}" });
-      toast("Backup cancelled");
+      toast("Backup paused");
       const nowBtn = document.querySelector("#bak-now");
       if (nowBtn) { nowBtn.disabled = false; nowBtn.dataset.lock = "0"; }
       document.querySelector(".restore-hero")?.classList.remove("is-running");
       paintJob({
-        kind: "backup", status: "error", message: "Cancelled", progress: "Cancelled",
-        percent: 0, error: "Cancelled by owner", logs: ["Cancelled by owner"],
+        kind: "backup", status: "paused", message: "Paused — press Start to continue from this point",
+        progress: "Paused", percent: 0, logs: ["Paused — checkpoint kept"],
       }, "#job-live");
-      setTimeout(() => { if (state.view === "restore") renderRestore(); }, 1500);
+      setTimeout(() => { if (state.view === "restore") renderRestore(); }, 800);
     } catch (ex) {
       const msg = ex.message || "Cancel failed";
       if (err) err.textContent = msg;
       else toast(msg);
     }
+  }
+
+  async function startBackupNow() {
+    const err = document.querySelector("#bakerr");
+    const ok = document.querySelector("#bakok");
+    if (err) err.textContent = "";
+    ok?.classList.add("hidden");
+    const res = await api("/api/backup/now", {
+      method: "POST",
+      body: JSON.stringify({
+        label: "Resume backup",
+        description: "Verify uploaded files and continue from last point",
+      }),
+    });
+    if (ok) {
+      ok.textContent = res.message || "Backup started on server.";
+      ok.classList.remove("hidden");
+    }
+    const nowBtn = document.querySelector("#bak-now");
+    if (nowBtn) { nowBtn.dataset.lock = "1"; nowBtn.disabled = true; }
+    document.querySelector(".restore-hero")?.classList.add("is-running");
+    paintJob({
+      kind: "backup", status: "running", percent: 1,
+      message: "Backup started — verifying last point",
+      progress: "Inspecting last point…", logs: ["Inspecting last point…"],
+    }, "#job-live");
+    startJobPoll("restore");
   }
 
   function jobPanelHTML(job) {
@@ -3081,7 +3099,11 @@ Never DELETE via API. One token = all rooms.`;
           </div>
           <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px">
             <div class="job-pct mono">${pct}%</div>
-            ${`<button class="btn sm danger action" type="button" id="bak-stop">Cancel</button>`}
+            ${job.status === "running" || job.status === "queued"
+              ? `<button class="btn sm danger action" type="button" id="bak-stop">Cancel</button>`
+              : (job.status === "paused" || job.status === "cancelled"
+                ? `<button class="btn sm primary action" type="button" id="bak-resume">Start</button>`
+                : "")}
           </div>
         </div>
         <div class="job-bar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><span style="width:${pct}%"></span></div>
@@ -3107,6 +3129,10 @@ Never DELETE via API. One token = all rooms.`;
     }
     const stopBtn = el.querySelector("#bak-stop");
     if (stopBtn) bindAction(stopBtn, stopBackupJob);
+    const resumeBtn = el.querySelector("#bak-resume");
+    if (resumeBtn) bindAction(resumeBtn, async () => {
+      try { await startBackupNow(); } catch (ex) { toast(ex.message || "Start failed"); }
+    });
   }
 
   function startJobPoll(where) {
@@ -3208,7 +3234,6 @@ Never DELETE via API. One token = all rooms.`;
         </div>
         <div class="topbar-actions">
           ${canResume && resumeKind === "restore" ? `<button class="btn action" id="resume-restore">Resume restore</button>` : ""}
-          <button class="btn danger action" id="bak-stop-top">Cancel</button>
           <button class="btn primary action bak-now-btn" id="bak-now" ${!bk.enabled || live ? "disabled" : ""}>
             <span class="bak-now-ring" aria-hidden="true"></span>
             ${esc(bakLabel)}
@@ -3365,32 +3390,11 @@ Never DELETE via API. One token = all rooms.`;
       await startRestore(bk.resume_snapshot || "latest");
     });
 
-    bindAction(document.querySelector("#bak-stop-top"), stopBackupJob);
-
     bindAction(document.querySelector("#bak-now"), async () => {
       const err = document.querySelector("#bakerr");
-      const ok = document.querySelector("#bakok");
-      err.textContent = ""; ok.classList.add("hidden");
       try {
-        const res = await api("/api/backup/now", {
-          method: "POST",
-          body: JSON.stringify({
-            label: canResume && resumeKind === "backup" ? "Resume backup" : "Manual backup",
-            description: canResume && resumeKind === "backup" ? "Resume from last point" : "Manual backup — does not change the schedule",
-          }),
-        });
-        ok.textContent = res.message || "Backup started on server.";
-        ok.classList.remove("hidden");
-        const nowBtn = document.querySelector("#bak-now");
-        if (nowBtn) { nowBtn.dataset.lock = "1"; nowBtn.disabled = true; }
-        document.querySelector(".restore-hero")?.classList.add("is-running");
-        paintJob({
-          kind: "backup", status: "running", percent: 1,
-          message: "Backup started — this can take several minutes",
-          progress: "Inspecting last point…", logs: ["Inspecting last point…"],
-        }, "#job-live");
-        startJobPoll("restore");
-      } catch (ex) { err.textContent = ex.message; }
+        await startBackupNow();
+      } catch (ex) { if (err) err.textContent = ex.message; }
     });
 
     document.querySelector("#inspect-form").onsubmit = async (e) => {

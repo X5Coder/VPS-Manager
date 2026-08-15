@@ -145,19 +145,19 @@ func (s *Service) StopJob() error {
 	s.mu.Lock()
 	s.running = false
 	j := Job{
-		Kind: "backup", Status: "error", Label: "Cancelled",
-		Message: "Backup cancelled", Progress: "Cancelled",
-		Error:   "Cancelled by owner",
+		Kind: "backup", Status: "paused", Label: "Paused",
+		Message: "Paused — press Start to continue from this point",
+		Progress: "Paused",
 		EndedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	if s.liveJob != nil {
 		j = *s.liveJob
-		j.Status = "error"
-		j.Message = "Cancelled"
-		j.Progress = "Cancelled"
-		j.Error = "Cancelled by owner"
+		j.Status = "paused"
+		j.Message = "Paused — press Start to continue from this point"
+		j.Progress = "Paused"
+		j.Error = ""
 		j.EndedAt = time.Now().UTC().Format(time.RFC3339)
-		j.Logs = append(append([]string{}, j.Logs...), time.Now().UTC().Format(time.RFC3339)+"  Cancelled by owner")
+		j.Logs = append(append([]string{}, j.Logs...), time.Now().UTC().Format(time.RFC3339)+"  Paused by owner — checkpoint kept")
 	}
 	cp := j
 	cp.Logs = append([]string{}, j.Logs...)
@@ -165,8 +165,7 @@ func (s *Service) StopJob() error {
 	s.mu.Unlock()
 	if s.Store != nil {
 		s.flushJob(j)
-		s.clearCheckpoint()
-		_ = s.Store.SetMeta("backup_last_error", "Cancelled by owner")
+		_ = s.Store.SetMeta("backup_last_error", "")
 	}
 	return nil
 }
@@ -426,7 +425,12 @@ func (s *Service) executeBackup(label, description string, scheduled bool) (*Sna
 	s.report(1, "Inspecting last backup point")
 	cp := s.loadCheckpoint()
 	if cp != nil && cp.Kind == "backup" {
-		s.report(2, "Resuming backup from last point (%d rooms already uploaded)", len(cp.RoomsDone))
+		n := len(cp.RoomsDone)
+		layers := 0
+		if cp.Layout != nil {
+			layers = len(cp.Layout.Layers)
+		}
+		s.report(2, "Resuming from last point (%d rooms, %d image layers already on GitHub)", n, layers)
 	} else {
 		cp = &Checkpoint{Kind: "backup", RoomsDone: []string{}, UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
 		s.saveCheckpoint(cp)
@@ -454,7 +458,7 @@ func (s *Service) executeBackup(label, description string, scheduled bool) (*Sna
 	}
 	_ = os.WriteFile(filepath.Join(indexDir, "FORMAT"), []byte(FormatMagicV2+"\n"), 0o644)
 
-	useV2 := cp.Layout != nil || len(cp.RoomsDone) == 0
+	useV2 := true
 
 	if cp.SystemDone {
 		s.report(12, "Panel database already uploaded — skipping")
@@ -505,7 +509,7 @@ func (s *Service) executeBackup(label, description string, scheduled bool) (*Sna
 		if cp.Layout != nil {
 			prevLayout = cp.Layout
 		}
-		s.report(19, "Opening images / containers / volume repos")
+		s.report(19, "Opening images / containers / volume repos (skipping files already on GitHub)")
 		var err error
 		cat, err = s.newCataloger(gh, work, prevLayout)
 		if err != nil {
@@ -1769,6 +1773,26 @@ func (s *Service) findPostgresContainer(p store.Project, composeProject string) 
 		return p.ContainerID
 	}
 	return ""
+}
+
+func (s *Service) imageAlreadyOnBackup(ref string) bool {
+	if s == nil || s.Docker == nil || strings.TrimSpace(ref) == "" {
+		return false
+	}
+	id := s.Docker.ImageID(ref)
+	if id == "" {
+		return false
+	}
+	cp := s.loadCheckpoint()
+	if cp == nil || cp.Layout == nil {
+		return false
+	}
+	for _, img := range cp.Layout.Images {
+		if img.DockerID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) loadCheckpoint() *Checkpoint {

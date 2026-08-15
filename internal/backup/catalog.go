@@ -18,6 +18,8 @@ type cataloger struct {
 	layout        *BackupLayout
 	layerByDigest map[string]LayerLayout
 	imageByKey    map[string]int
+	fileByPath    map[string]FileEntry
+	volumeByKey   map[string]VolumeLayout
 	containersDir string
 	imagesDir     string
 	releaseTag    string
@@ -35,6 +37,8 @@ func (s *Service) newCataloger(gh *GitHub, work string, prev *BackupLayout) (*ca
 		s: s, gh: gh, work: work,
 		layerByDigest: map[string]LayerLayout{},
 		imageByKey:    map[string]int{},
+		fileByPath:    map[string]FileEntry{},
+		volumeByKey:   map[string]VolumeLayout{},
 		releaseTag:    LayersRelease,
 		volIdx:        1,
 		knownVolRepos: map[string]bool{},
@@ -56,6 +60,15 @@ func (s *Service) newCataloger(gh *GitHub, work string, prev *BackupLayout) (*ca
 		}
 		for i := range c.layout.Images {
 			c.imageByKey[c.layout.Images[i].Key] = i
+		}
+		c.layout.Rooms = append([]RoomLayout{}, prev.Rooms...)
+		c.layout.Volumes = append([]VolumeLayout{}, prev.Volumes...)
+		c.layout.Files = append([]FileEntry{}, prev.Files...)
+		for _, f := range c.layout.Files {
+			c.fileByPath[f.Path] = f
+		}
+		for _, v := range c.layout.Volumes {
+			c.volumeByKey[v.Key] = v
 		}
 		if n := len(c.layout.VolumeRepos); n > 0 {
 			c.volRepo = c.layout.VolumeRepos[n-1]
@@ -92,6 +105,18 @@ func (s *Service) newCataloger(gh *GitHub, work string, prev *BackupLayout) (*ca
 		return nil, err
 	}
 	return c, nil
+}
+
+func (c *cataloger) persist() {
+	if c == nil || c.s == nil || c.s.Store == nil {
+		return
+	}
+	cp := c.s.loadCheckpoint()
+	if cp == nil {
+		cp = &Checkpoint{Kind: "backup", RoomsDone: []string{}}
+	}
+	cp.Layout = c.layout
+	c.s.saveCheckpoint(cp)
 }
 
 func (c *cataloger) ensureVolumeRepo() error {
@@ -139,6 +164,7 @@ func (c *cataloger) rotateVolumeRepo() error {
 
 func (c *cataloger) addRoom(room store.Room) (*ProjectMap, error) {
 	short := store.ShortRoomID(room.ID)
+	c.replaceRoomSlot(room.ID)
 	logicalDir := filepath.Join(c.work, "logical-"+short)
 	if err := c.s.captureLogicalRoom(room, logicalDir); err != nil {
 		return nil, err
@@ -222,6 +248,11 @@ func (c *cataloger) addRoom(room store.Room) (*ProjectMap, error) {
 		}
 		key := fmt.Sprintf("%s-volume-%02d", short, ord)
 		sum, _, _ := HashFile(src)
+		if prev, ok := c.volumeByKey[key]; ok && prev.SHA256 == sum && prev.Size == st.Size() {
+			c.s.report(-1, "Volume %s unchanged — skip upload", dockerName)
+			rl.VolumeKeys = append(rl.VolumeKeys, key)
+			continue
+		}
 		vl := VolumeLayout{Key: key, RoomID: room.ID, Name: dockerName, Size: st.Size(), SHA256: sum}
 		parts, err := c.addLargeFile(src, "volumes/"+short+"/"+e.Name(), st.Size())
 		if err != nil {
@@ -229,6 +260,7 @@ func (c *cataloger) addRoom(room store.Room) (*ProjectMap, error) {
 		}
 		vl.Parts = parts
 		c.layout.Volumes = append(c.layout.Volumes, vl)
+		c.volumeByKey[key] = vl
 		rl.VolumeKeys = append(rl.VolumeKeys, key)
 	}
 
@@ -345,6 +377,18 @@ func (c *cataloger) addImage(roomID, ref, existingTar string) (string, error) {
 	if c.s.Docker == nil || !c.s.Docker.Available() || strings.TrimSpace(ref) == "" {
 		return "", nil
 	}
+	dockerID := c.s.Docker.ImageID(ref)
+	if dockerID != "" {
+		for i, img := range c.layout.Images {
+			if img.DockerID == dockerID {
+				c.s.report(-1, "Image %s unchanged — skip save/upload", ref)
+				img.RoomIDs = appendUnique(img.RoomIDs, roomID)
+				c.layout.Images[i] = img
+				c.persist()
+				return img.Key, nil
+			}
+		}
+	}
 	tarPath := existingTar
 	if tarPath == "" {
 		tarPath = filepath.Join(c.work, "img-"+slugFile(ref)+".tar")
@@ -405,12 +449,14 @@ func (c *cataloger) addImage(roomID, ref, existingTar string) (string, error) {
 			}
 			c.layerByDigest[digest] = lay
 			c.layout.Layers = append(c.layout.Layers, lay)
+			c.persist()
 		}
 		uses = append(uses, ImageLayerUse{Rel: rel, Digest: digest})
 	}
-	img := ImageLayout{Key: key, Tags: tags, RoomIDs: []string{roomID}, Format: format, TreePath: filepath.ToSlash(treePath), Layers: uses}
+	img := ImageLayout{Key: key, DockerID: dockerID, Tags: tags, RoomIDs: []string{roomID}, Format: format, TreePath: filepath.ToSlash(treePath), Layers: uses}
 	c.imageByKey[key] = len(c.layout.Images)
 	c.layout.Images = append(c.layout.Images, img)
+	c.persist()
 	_ = os.RemoveAll(unpacked)
 	if existingTar == "" {
 		_ = os.Remove(tarPath)
@@ -495,11 +541,39 @@ func (c *cataloger) addLargeFile(src, logical string, size int64) ([]VolumePart,
 	return parts, nil
 }
 
+func (c *cataloger) replaceRoomSlot(roomID string) {
+	rooms := c.layout.Rooms[:0]
+	for _, r := range c.layout.Rooms {
+		if r.ID != roomID {
+			rooms = append(rooms, r)
+		}
+	}
+	c.layout.Rooms = rooms
+}
+
 func (c *cataloger) putGitFile(src, logical string, index int, size int64) (VolumePart, error) {
 	sum, _, err := HashFile(src)
 	if err != nil {
 		return VolumePart{}, err
 	}
+	if prev, ok := c.fileByPath[logical]; ok && prev.SHA256 == sum && (size == 0 || prev.Size == size) {
+		c.s.report(-1, "Unchanged on GitHub — skip %s", logical)
+		p := VolumePart{Index: index, Size: prev.Size, SHA256: prev.SHA256}
+		if len(prev.Chunks) > 0 {
+			if repo, _, ok := splitRef(prev.Chunks[0]); ok {
+				p.Repo = repo
+			}
+			p.Chunks = prev.Chunks
+		}
+		return p, nil
+	}
+	files := c.layout.Files[:0]
+	for _, f := range c.layout.Files {
+		if f.Path != logical {
+			files = append(files, f)
+		}
+	}
+	c.layout.Files = files
 	need := size
 	if need == 0 {
 		st, _ := os.Stat(src)
@@ -531,6 +605,7 @@ func (c *cataloger) putGitFile(src, logical string, index int, size int64) (Volu
 	}
 	c.volSize += added
 	c.layout.Files = append(c.layout.Files, FileEntry{Path: logical, Size: need, SHA256: sum, Chunks: p.Chunks})
+	c.fileByPath[logical] = c.layout.Files[len(c.layout.Files)-1]
 	if c.volSize >= MaxRepoBytes {
 		if err := c.rotateVolumeRepo(); err != nil {
 			return p, err

@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -285,12 +284,7 @@ func (s *Server) handleBackupStop(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	// Kill a hung backup goroutine by restarting the panel only — does not touch other containers.
-	go func() {
-		time.Sleep(400 * time.Millisecond)
-		_ = exec.Command("systemctl", "restart", "vps-rooms.service").Start()
-	}()
-	writeJSON(w, 200, map[string]any{"ok": "1", "message": "Backup cancelled", "job": s.Backup.CurrentJob()})
+	writeJSON(w, 200, map[string]any{"ok": "1", "message": "Backup paused — press Start to continue", "job": s.Backup.CurrentJob()})
 }
 
 func (s *Server) handleBackupSchedule(w http.ResponseWriter, r *http.Request) {

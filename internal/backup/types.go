@@ -64,6 +64,7 @@ type RoomLayout struct {
 
 type ImageLayout struct {
 	Key      string          `json:"key"`
+	DockerID string          `json:"docker_id,omitempty"`
 	Tags     []string        `json:"tags,omitempty"`
 	RoomIDs  []string        `json:"room_ids,omitempty"`
 	Format   string          `json:"format"`

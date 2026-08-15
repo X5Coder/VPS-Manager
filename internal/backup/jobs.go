@@ -12,7 +12,7 @@ import (
 type Job struct {
 	ID         string   `json:"id"`
 	Kind       string   `json:"kind"`   // backup | restore
-	Status     string   `json:"status"` // queued | running | done | error
+	Status     string   `json:"status"` // queued | running | paused | done | error
 	Label      string   `json:"label"`
 	Message    string   `json:"message"`
 	Progress   string   `json:"progress"`
@@ -126,9 +126,21 @@ func (s *Service) StartBackupAsync(label, description string, scheduled bool) (*
 
 	j := Job{
 		ID: uuid.NewString(), Kind: "backup", Status: "running",
-		Label: label, Message: "Backup started — this can take several minutes",
+		Label: label, Message: "Backup started — verifying last point",
 		Progress: "Inspecting last point…", Percent: 1, Logs: []string{},
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if cp := s.loadCheckpoint(); cp != nil && cp.Kind == "backup" {
+		n := len(cp.RoomsDone)
+		layers := 0
+		if cp.Layout != nil {
+			layers = len(cp.Layout.Layers)
+		}
+		if n > 0 || layers > 0 || cp.SystemDone {
+			j.Message = fmt.Sprintf("Resuming — %d room(s) done, verifying GitHub", n)
+			j.Progress = "Resuming from last point"
+			j.Percent = 8
+		}
 	}
 	if j.Label == "" {
 		j.Label = "Backup now"

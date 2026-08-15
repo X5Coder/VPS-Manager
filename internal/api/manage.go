@@ -80,11 +80,8 @@ func (s *Server) handleHostPassword(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "password must be at least 8 characters")
 		return
 	}
-	cmd := exec.Command("chpasswd")
-	cmd.Stdin = strings.NewReader("root:" + body.Password + "\n")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		writeErr(w, 500, strings.TrimSpace(string(out))+" "+err.Error())
+	if err := setHostRootPassword(body.Password); err != nil {
+		writeErr(w, 500, err.Error())
 		return
 	}
 	saveHostPass(s.Cfg.DataDir, body.Password)

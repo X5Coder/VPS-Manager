@@ -75,6 +75,10 @@ func (s *Service) captureLogicalRoom(room store.Room, destDir string) error {
 		if ref == "" {
 			continue
 		}
+		if s.imageAlreadyOnBackup(ref) {
+			s.report(-1, "Image %s already on GitHub — skip docker save", ref)
+			continue
+		}
 		dest := filepath.Join(destDir, fmt.Sprintf("room-%s-image-%02d.tar", short, ord))
 		s.report(-1, "Saving image %s → %s", ref, filepath.Base(dest))
 		if err := s.Docker.SaveImagePlain(ref, dest); err != nil {
