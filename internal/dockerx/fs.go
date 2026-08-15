@@ -202,6 +202,45 @@ func (c *Client) ExtractSave(imageTag, dest string) error {
 	return nil
 }
 
+// LoadImageDir streams a docker-save directory into `docker load` without a second tar on disk.
+func (c *Client) LoadImageDir(dir string) error {
+	st, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if !st.IsDir() {
+		return fmt.Errorf("image tree is not a directory: %s", dir)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Hour)
+	defer cancel()
+	pack := exec.CommandContext(ctx, "tar", "-C", dir, "-c", ".")
+	load := exec.CommandContext(ctx, c.bin, "load")
+	pr, pw := io.Pipe()
+	pack.Stdout = pw
+	var packErr bytes.Buffer
+	pack.Stderr = &packErr
+	load.Stdin = pr
+	var loadOut bytes.Buffer
+	load.Stdout = &loadOut
+	load.Stderr = &loadOut
+	loadErr := make(chan error, 1)
+	go func() {
+		err := load.Run()
+		_ = pr.Close()
+		loadErr <- err
+	}()
+	err = pack.Run()
+	_ = pw.Close()
+	le := <-loadErr
+	if err != nil {
+		return fmt.Errorf("tar image tree: %s: %w", strings.TrimSpace(packErr.String()), err)
+	}
+	if le != nil {
+		return fmt.Errorf("docker load: %s: %w", strings.TrimSpace(loadOut.String()), le)
+	}
+	return nil
+}
+
 func (c *Client) ComposeUpService(dir, project, service string, w io.Writer) error {
 	file := ComposeFile(dir)
 	if file == "" {

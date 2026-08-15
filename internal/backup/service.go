@@ -57,6 +57,9 @@ func (s *Service) SaveToken(token string) error {
 	if err != nil {
 		return err
 	}
+	if err := gh.ProbeCreateUploadDelete(); err != nil {
+		return err
+	}
 	dir := filepath.Dir(s.secretsPath())
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
@@ -200,19 +203,19 @@ func (s *Service) StopJob() error {
 	}
 	s.running = false
 	j := Job{
-		Kind: "backup", Status: "paused", Label: "Paused",
-		Message:  "Paused — press Start to continue from this point",
-		Progress: "Paused",
+		Kind: "backup", Status: "paused", Label: "Cancelled",
+		Message:  "Cancelled — the previous GitHub snapshot was kept",
+		Progress: "Cancelled",
 		EndedAt:  time.Now().UTC().Format(time.RFC3339),
 	}
 	if s.liveJob != nil {
 		j = *s.liveJob
 		j.Status = "paused"
-		j.Message = "Paused — press Start to continue from this point"
-		j.Progress = "Paused"
+		j.Message = "Cancelled — the previous GitHub snapshot was kept"
+		j.Progress = "Cancelled"
 		j.Error = ""
 		j.EndedAt = time.Now().UTC().Format(time.RFC3339)
-		j.Logs = append(append([]string{}, j.Logs...), time.Now().UTC().Format(time.RFC3339)+"  Paused by owner — checkpoint kept")
+		j.Logs = append(append([]string{}, j.Logs...), time.Now().UTC().Format(time.RFC3339)+"  Cancelled — incomplete new repo is dropped, old snapshot kept")
 	}
 	cp := j
 	cp.Logs = append([]string{}, j.Logs...)
@@ -235,54 +238,39 @@ func (s *Service) Status() map[string]any {
 	s.mu.Lock()
 	running := s.running
 	s.mu.Unlock()
-	snaps, _ := s.ListSnapshotsLocal()
-	cp := s.loadCheckpoint()
-	resumeKind := ""
-	resumeSnap := ""
-	resumeRooms := 0
-	resumeSystem := false
-	if cp != nil {
-		resumeKind = cp.Kind
-		resumeSnap = cp.SnapshotID
-		resumeRooms = len(cp.RoomsDone)
-		resumeSystem = cp.SystemDone
+	hours := s.IntervalHours()
+	days := hours / 24
+	if days < 1 && hours > 0 {
+		days = 1
 	}
 	return map[string]any{
-		"configured":      token != "",
-		"enabled":         enabled == "1" && token != "",
-		"github_user":     user,
-		"token_saved":     token != "",
-		"token_hint":      maskToken(token),
-		"last_backup_at":  last,
-		"next_backup_at":  next,
-		"last_error":      lastErr,
-		"running":         running,
-		"can_cancel":      true,
-		"last_log":        s.lastLog,
-		"interval_hours":  s.IntervalHours(),
-		"snapshots":       snaps,
-		"job":             job,
-		"can_resume":      cp != nil && (cp.Kind == "backup" || cp.Kind == "restore"),
-		"resume_kind":     resumeKind,
-		"resume_snapshot": resumeSnap,
-		"resume_rooms":    resumeRooms,
-		"resume_system":   resumeSystem,
-		"full_backup":     true,
+		"configured":     token != "",
+		"enabled":        enabled == "1" && token != "",
+		"github_user":    user,
+		"token_saved":    token != "",
+		"token_hint":     maskToken(token),
+		"last_backup_at": last,
+		"next_backup_at": next,
+		"last_error":     lastErr,
+		"running":        running,
+		"can_cancel":     true,
+		"last_log":       s.lastLog,
+		"interval_hours": hours,
+		"interval_days":  days,
+		"mode":           "room-snap",
+		"rooms":          s.listRoomSnapViews(),
+		"job":            job,
+		"can_resume":     false,
+		"full_backup":    false,
 		"includes": []string{
-			"panel.db (rooms, projects, API tokens, settings)",
-			"telegram & github secrets",
-			"owner password",
-			"room vaults + runtime files + project data (.env, sqlite, dumps)",
-			"Postgres dumps (Supabase auth/db + any Postgres in a project)",
-			"object storage files and model caches",
-			"docker named volumes (repos max 4GiB, files over 100GiB split)",
-			"docker image layers on GitHub Releases (max 2GiB per asset, content-addressed)",
-			"container configs in vps-manage-containers",
-			"stable layout.json / map.json for full restore",
-			"proxy Caddyfile",
-			"panel logs",
+			"each room as its own GitHub repository",
+			"container images (single and multi)",
+			"room secrets unchanged",
+			"each container's inspect/settings",
+			"named volumes and volume settings",
+			"room name, domain, password, network, quota",
 		},
-		"token_help": "Create a classic Personal Access Token with the repo scope: GitHub → Settings → Developer settings → Personal access tokens (classic).",
+		"token_help": "Classic PAT with repo and delete_repo. On save we create a test repo, upload a file, then delete it. If that fails the key is rejected.",
 	}
 }
 
@@ -516,8 +504,13 @@ func (s *Service) SetIntervalHours(hours int) error {
 	if hours < 0 {
 		hours = 0
 	}
-	if hours > 24*365 {
-		hours = 24 * 365
+	if hours >= 1 && hours <= 3 {
+		hours = hours * 24
+	}
+	switch hours {
+	case 0, 24, 48, 72:
+	default:
+		hours = 24
 	}
 	_ = s.Store.SetMeta("backup_interval_hours", strconv.Itoa(hours))
 	if hours <= 0 {
@@ -546,7 +539,7 @@ func (s *Service) RunBackup(label, description string) (*SnapshotRecord, error) 
 		s.running = false
 		s.mu.Unlock()
 	}()
-	return s.executeBackup(label, description, false)
+	return s.runRoomSnapshots(false)
 }
 
 func (s *Service) executeBackup(label, description string, scheduled bool) (*SnapshotRecord, error) {

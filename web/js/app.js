@@ -3041,7 +3041,7 @@ Never DELETE via API. One token = all rooms.`;
     const lastPct = Math.max(0, Number(document.querySelector(".job-pct")?.textContent) || 0);
     try {
       await api("/api/backup/stop", { method: "POST", body: "{}" });
-      toast("Backup paused");
+      toast("Cancelled — previous snapshot kept");
       const nowBtn = document.querySelector("#bak-now");
       if (nowBtn) { nowBtn.disabled = false; nowBtn.dataset.lock = "0"; }
       document.querySelector(".restore-hero")?.classList.remove("is-running");
@@ -3069,8 +3069,8 @@ Never DELETE via API. One token = all rooms.`;
     const res = await api("/api/backup/now", {
       method: "POST",
       body: JSON.stringify({
-        label: "Resume backup",
-        description: "Verify uploaded files and continue from last point",
+        label: "Backup now",
+        description: "Full per-room snapshot to a new GitHub repository",
       }),
     });
     if (ok) {
@@ -3083,8 +3083,8 @@ Never DELETE via API. One token = all rooms.`;
     const lastPct = Math.max(0, Number(document.querySelector(".job-pct")?.textContent) || 0);
     paintJob({
       kind: "backup", status: "running", percent: lastPct || 2,
-      message: "Backup started — verifying last point",
-      progress: "Continuing from last point…", logs: ["Continuing from last point…"],
+      message: "Room backup started",
+      progress: "Checking rooms…", logs: ["Checking rooms…"],
     }, "#job-live");
     startJobPoll("restore");
   }
@@ -3199,7 +3199,7 @@ Never DELETE via API. One token = all rooms.`;
       <div class="topbar restore-hero">
         <div>
           <h2>Backup</h2>
-          <div class="sub restore-sub"><span class="restore-live" aria-hidden="true"></span>Enable with a tested GitHub key · runs on the server</div>
+          <div class="sub restore-sub"><span class="restore-live" aria-hidden="true"></span>Per-room snapshots · new GitHub repo each time</div>
         </div>
       </div>${skel(3)}`, "restore");
     let bk = {};
@@ -3210,47 +3210,46 @@ Never DELETE via API. One token = all rooms.`;
     if (!alive("restore", gen)) return;
     state.backupReady = !!bk.configured;
     const job = bk.job;
-    const snaps = bk.snapshots || [];
     const live = jobIsLive(bk, job);
-    const canResume = !!bk.can_resume && !live;
-    const resumeKind = bk.resume_kind || "";
-    const bakLabel = canResume && resumeKind === "backup" ? "Resume backup" : "Backup now";
-    const resumeNote = canResume
-      ? (resumeKind === "backup"
-        ? `Interrupted backup — ${bk.resume_rooms || 0} room(s) already uploaded. Click Resume to inspect and continue.`
-        : `Interrupted restore — ${bk.resume_rooms || 0} room(s) already applied. Click Resume restore to continue.`)
-      : (bk.enabled ? "Backup is on — leave anytime and check status here" : "Backup is off until you test a GitHub PAT with repo scope");
-    const rows = snaps.map((s) => {
-      const resumeThis = canResume && resumeKind === "restore" && bk.resume_snapshot && s.id === bk.resume_snapshot;
-      return `<tr>
-      <td><strong>${esc(s.label || s.id)}</strong><div class="muted" style="font-size:0.8rem">${esc(s.description || "")}</div></td>
-      <td class="muted">${esc(fmtWhen(s.created_at || ""))}</td>
-      <td><span class="badge ${s.status === "ok" ? "ok" : "miss"}">${esc(s.status || "")}</span></td>
-      <td><button class="btn sm primary action" data-restore="${esc(s.id)}" ${bk.configured ? "" : "disabled"}>${resumeThis ? "Resume" : "Restore"}</button></td>
-    </tr>`;
-    }).join("") || `<tr><td colspan="4" class="muted">No local snapshots yet — enable backup, then run Backup now.</td></tr>`;
-
-    const jobHTML = `<div id="job-live">${job ? jobPanelHTML(job) : ""}</div>`;
+    const rooms = bk.rooms || [];
+    const days = Number(bk.interval_days) === 2 || Number(bk.interval_hours) === 48 ? 2
+      : (Number(bk.interval_days) === 3 || Number(bk.interval_hours) === 72 ? 3 : 1);
+    const note = bk.enabled
+      ? `On · @${bk.github_user || "?"} · next ${fmtWhen(bk.next_backup_at || "—")}`
+      : "Paste a classic PAT with repo + delete_repo. We test create, upload, and delete before saving.";
+    const roomCards = rooms.map((r) => {
+      const ok = r.ok && r.repo;
+      return `<article class="snap-card ${ok ? "ok" : "miss"}">
+        <div class="snap-card-top">
+          <div>
+            <h3>${esc(r.name || r.room_id)}</h3>
+            <div class="muted">${esc(r.kind || "room")}</div>
+          </div>
+          <span class="snap-mark" title="${ok ? "Last snapshot ok" : "No snapshot yet"}">${ok ? "✓" : "–"}</span>
+        </div>
+        <div class="mono snap-repo">${esc(r.repo || "no repository yet")}</div>
+        <div class="muted">${ok ? `Last backup ${esc(fmtWhen(r.at || ""))}` : "Not backed up yet"}</div>
+      </article>`;
+    }).join("") || `<p class="muted">No rooms on this VPS yet.</p>`;
 
     shell(`
       <div class="topbar restore-hero ${live ? "is-running" : ""}">
         <div>
           <h2>Backup</h2>
-          <div class="sub restore-sub"><span class="restore-live" aria-hidden="true"></span>${esc(resumeNote)}</div>
+          <div class="sub restore-sub"><span class="restore-live" aria-hidden="true"></span>${esc(note)}</div>
         </div>
         <div class="topbar-actions">
-          ${canResume && resumeKind === "restore" ? `<button class="btn action" id="resume-restore">Resume restore</button>` : ""}
           <button class="btn primary action bak-now-btn" id="bak-now" ${!bk.enabled || live ? "disabled" : ""}>
             <span class="bak-now-ring" aria-hidden="true"></span>
-            ${esc(bakLabel)}
+            Backup now
           </button>
         </div>
       </div>
       <div class="panel bak-switch-card">
         <div class="bak-switch-row">
           <div>
-            <h3>GitHub backup</h3>
-            <p class="muted">Classic PAT with <span class="mono">repo</span> scope. Tested before it turns on. Creates private repos and pushes files.</p>
+            <h3>GitHub key</h3>
+            <p class="muted">Classic PAT with <span class="mono">repo</span> and <span class="mono">delete_repo</span>. Tested (create → upload → delete) before it is saved.</p>
           </div>
           <label class="switch" title="Enable backup">
             <input type="checkbox" id="bak-enable" ${bk.enabled ? "checked" : ""} />
@@ -3262,53 +3261,36 @@ Never DELETE via API. One token = all rooms.`;
           <div class="field full"><label>Account key (GitHub PAT)</label>
             <input name="token" type="password" placeholder="${bk.configured ? "Paste a new key only to replace" : "ghp_…"}" autocomplete="off" /></div>
           <div class="full" style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="btn primary action" type="submit">Test & enable</button>
+            <button class="btn primary action" type="submit">Test & save</button>
             ${bk.configured ? `<button class="btn sm danger action" type="button" id="gh-clear">Remove key</button>` : ""}
           </div>
         </form>
         <p class="error" id="gherr"></p>
-        <p class="muted" id="ghstatus" style="margin-top:8px">${bk.enabled ? `On · @${esc(bk.github_user || "?")} · last ${esc(fmtWhen(bk.last_backup_at || "never"))}` : "Off — paste a key and test it to turn on."}</p>
         <div class="field" style="margin-top:14px">
-          <label>Automatic backup</label>
+          <label>Check every</label>
           <select id="bak-interval">
-            <option value="0"${Number(bk.interval_hours) === 0 ? " selected" : ""}>Only when I press Backup now</option>
-            <option value="6"${Number(bk.interval_hours) === 6 ? " selected" : ""}>Every 6 hours</option>
-            <option value="12"${Number(bk.interval_hours) === 12 ? " selected" : ""}>Every 12 hours</option>
-            <option value="24"${![0,6,12,48,168,336].includes(Number(bk.interval_hours)) ? " selected" : ""}>Every 24 hours</option>
-            <option value="48"${Number(bk.interval_hours) === 48 ? " selected" : ""}>Every 2 days</option>
-            <option value="168"${Number(bk.interval_hours) === 168 ? " selected" : ""}>Every week</option>
-            <option value="336"${Number(bk.interval_hours) === 336 ? " selected" : ""}>Every 2 weeks</option>
+            <option value="1"${days === 1 ? " selected" : ""}>1 day</option>
+            <option value="2"${days === 2 ? " selected" : ""}>2 days</option>
+            <option value="3"${days === 3 ? " selected" : ""}>3 days</option>
           </select>
-          <p class="muted" style="margin-top:6px">After you save the key, the next run is 24 hours later. Backup now also resets that daily clock.</p>
+          <p class="muted" style="margin-top:6px">Each due run scans rooms one after another. Unchanged rooms are skipped. Changed rooms get a new repo, a full upload, then the previous repo is deleted.</p>
         </div>
       </div>
-      ${jobHTML}
-      <div class="grid-2">
-        <div class="panel">
-          <h3>Status</h3>
-          <table class="table">
-            <tr><th>GitHub user</th><td class="mono">${esc(bk.github_user || "—")}</td></tr>
-            <tr><th>Last backup</th><td>${esc(fmtWhen(bk.last_backup_at || "never"))}</td></tr>
-            <tr><th>Next due</th><td>${esc(fmtWhen(bk.next_backup_at || "—"))}</td></tr>
-          </table>
-          <p class="error">${esc(bk.last_error || "")}</p>
-        </div>
-        <div class="panel">
-          <h3>Fetch from GitHub</h3>
-          <p class="muted">Inspect remote map. Wrong format is refused.</p>
-          <form id="inspect-form" class="form-grid" style="margin-top:10px">
-            <div class="field full"><label>PAT (optional if saved)</label><input name="token" type="password" placeholder="ghp_…" /></div>
-            <div class="full"><button class="btn action" type="submit">Inspect remote backups</button></div>
-          </form>
-          <div id="remote-box" class="muted" style="margin-top:10px"></div>
-        </div>
+      <div id="job-live">${job ? jobPanelHTML(job) : ""}</div>
+      <div class="panel" style="margin-top:12px">
+        <h3>Rooms</h3>
+        <div class="snap-grid">${roomCards}</div>
+        <p class="error" id="bakerr">${esc(bk.last_error || "")}</p>
+        <p class="ok-text hidden" id="bakok"></p>
       </div>
       <div class="panel" style="margin-top:12px">
-        <h3>Snapshots</h3>
-        <table class="table"><thead><tr><th>Name / description</th><th>When</th><th>Status</th><th></th></tr></thead>
-        <tbody>${rows}</tbody></table>
-        <p class="error" id="bakerr"></p>
-        <p class="ok-text hidden" id="bakok"></p>
+        <h3>Restore a room</h3>
+        <p class="muted">Paste a PAT (or use the saved one). Rooms appear by name. Restore keeps the original room ID even if the name or password changed. Other rooms stay as they are.</p>
+        <form id="inspect-form" class="form-grid" style="margin-top:10px">
+          <div class="field full"><label>PAT (optional if saved)</label><input name="token" type="password" placeholder="ghp_…" /></div>
+          <div class="full"><button class="btn action" type="submit">Find rooms on GitHub</button></div>
+        </form>
+        <div id="remote-box" class="muted" style="margin-top:10px"></div>
       </div>`, "restore");
 
     const setBakErr = (msg) => {
@@ -3316,10 +3298,10 @@ Never DELETE via API. One token = all rooms.`;
       if (el) el.textContent = msg || "";
     };
     document.querySelector("#bak-interval")?.addEventListener("change", async (e) => {
-      const hours = Number(e.target.value);
+      const daysN = Number(e.target.value);
       try {
-        await api("/api/backup/schedule", { method: "POST", body: JSON.stringify({ hours }) });
-        toast(hours <= 0 ? "Automatic backup off — use Backup now" : "Schedule saved");
+        await api("/api/backup/schedule", { method: "POST", body: JSON.stringify({ days: daysN }) });
+        toast("Schedule saved");
         renderRestore();
       } catch (ex) {
         setBakErr(ex.message);
@@ -3331,7 +3313,7 @@ Never DELETE via API. One token = all rooms.`;
       const raw = String(document.querySelector("#gh-form [name=token]")?.value || "").trim();
       if (on && !bk.configured && !raw) {
         e.target.checked = false;
-        setBakErr("Paste a GitHub classic PAT with repo scope, then turn it on.");
+        setBakErr("Paste a GitHub classic PAT with repo and delete_repo, then turn it on.");
         return;
       }
       try {
@@ -3352,7 +3334,7 @@ Never DELETE via API. One token = all rooms.`;
       setBakErr("");
       const raw = String(new FormData(e.target).get("token") || "").trim();
       if (!raw && !bk.configured) {
-        setBakErr("Paste a GitHub classic PAT with repo scope.");
+        setBakErr("Paste a GitHub classic PAT with repo and delete_repo.");
         return;
       }
       try {
@@ -3361,7 +3343,7 @@ Never DELETE via API. One token = all rooms.`;
           body: JSON.stringify({ enabled: true, token: raw }),
         });
         state.backupReady = !!res.configured;
-        toast("Key tested — backup is on");
+        toast("Key tested — create, upload, and delete succeeded");
         renderRestore();
       } catch (ex) { setBakErr(ex.message); }
     });
@@ -3373,28 +3355,6 @@ Never DELETE via API. One token = all rooms.`;
     });
 
     startJobPoll("restore");
-
-    const startRestore = async (snapshotId, token) => {
-      const err = document.querySelector("#bakerr");
-      const ok = document.querySelector("#bakok");
-      if (err) err.textContent = "";
-      ok?.classList.add("hidden");
-      const r = await api("/api/backup/restore", { method: "POST", body: JSON.stringify({ token: token || "", snapshot_id: snapshotId }) });
-      if (ok) {
-        ok.textContent = r.message || "Restore started — inspecting last point.";
-        ok.classList.remove("hidden");
-      }
-      paintJob({
-        kind: "restore", status: "running", percent: 1,
-        message: "Restore started — this can take several minutes",
-        progress: "Inspecting last restore point…", logs: ["Inspecting last restore point…"],
-      }, "#job-live");
-      startJobPoll("restore");
-    };
-
-    bindAction(document.querySelector("#resume-restore"), async () => {
-      await startRestore(bk.resume_snapshot || "latest");
-    });
 
     bindAction(document.querySelector("#bak-now"), async () => {
       const err = document.querySelector("#bakerr");
@@ -3410,31 +3370,33 @@ Never DELETE via API. One token = all rooms.`;
       box.textContent = "Checking…";
       try {
         const res = await api("/api/backup/inspect", { method: "POST", body: JSON.stringify({ token: tok }) });
-        const list = res.snapshots || [];
-        box.innerHTML = `<p class="ok-text">Format OK · latest: ${esc(res.latest?.label || res.latest?.snapshot_id || "")}</p>
-          <div class="row-actions" style="margin-top:8px">${list.slice(0, 8).map((s) =>
-            `<button class="btn sm action" data-remote="${esc(s.id)}">${esc(s.label || s.id.slice(0, 8))}</button>`).join("")}
-            <button class="btn sm primary action" data-remote="latest">Restore latest</button>
-          </div>`;
+        const list = res.rooms || [];
+        if (!list.length) {
+          box.innerHTML = `<p class="muted">No room snapshots with format VPS-ROOM-SNAP-v1 on this account.</p>`;
+          return;
+        }
+        box.innerHTML = `<p class="ok-text">Format OK · ${list.length} room(s)</p>
+          <div class="snap-grid" style="margin-top:10px">${list.map((s) => `
+            <article class="snap-card ok">
+              <div class="snap-card-top">
+                <div>
+                  <h3>${esc(s.name || s.room_id)}</h3>
+                  <div class="mono snap-repo">${esc(s.repo)}</div>
+                </div>
+                <span class="snap-mark">✓</span>
+              </div>
+              <div class="muted">${esc(fmtWhen(s.at || ""))}</div>
+              <button class="btn sm primary action" style="margin-top:10px" data-remote="${esc(s.repo)}" data-name="${esc(s.name || s.room_id)}">Restore this room</button>
+            </article>`).join("")}</div>`;
         box.querySelectorAll("[data-remote]").forEach((b) => bindAction(b, async () => {
-          if (!confirm("Start restore on the server? You can leave and check status here.")) return;
-          const r = await api("/api/backup/restore", { method: "POST", body: JSON.stringify({ token: tok, snapshot_id: b.dataset.remote }) });
-          document.querySelector("#bakok").textContent = r.message || "Restore started.";
-          document.querySelector("#bakok").classList.remove("hidden");
+          if (!confirm(`Restore room "${b.dataset.name || b.dataset.remote}" only? The room ID stays the same. Other rooms stay as they are.`)) return;
+          const r = await api("/api/backup/restore", { method: "POST", body: JSON.stringify({ token: tok, repo: b.dataset.remote }) });
+          const ok = document.querySelector("#bakok");
+          if (ok) { ok.textContent = r.message || "Restore started."; ok.classList.remove("hidden"); }
           setTimeout(() => renderRestore(), 600);
         }));
       } catch (ex) { box.innerHTML = `<p class="error">${esc(ex.message)}</p>`; }
     };
-
-    document.querySelectorAll("[data-restore]").forEach((b) => bindAction(b, async () => {
-      if (!confirm("Start restore on the server?")) return;
-      try {
-        const r = await api("/api/backup/restore", { method: "POST", body: JSON.stringify({ snapshot_id: b.dataset.restore }) });
-        document.querySelector("#bakok").textContent = r.message || "Restore started.";
-        document.querySelector("#bakok").classList.remove("hidden");
-        setTimeout(() => renderRestore(), 600);
-      } catch (ex) { document.querySelector("#bakerr").textContent = ex.message; }
-    }));
   }
 
   function tokenCardHTML(t, opts = {}) {
@@ -3659,7 +3621,7 @@ Never DELETE via API. One token = all rooms.`;
           <button class="btn ghost action" id="rm-no">No</button>
         </div>
         <form id="rm-pat" class="hidden" style="margin-top:14px">
-          <div class="field"><label>GitHub PAT (classic · repo scope)</label>
+          <div class="field"><label>GitHub PAT (classic · repo + delete_repo)</label>
             <input name="token" type="password" required placeholder="ghp_…" autocomplete="off" /></div>
           <p class="error" id="rm-err"></p>
           <div class="row-actions">

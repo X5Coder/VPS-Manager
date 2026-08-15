@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -210,7 +211,7 @@ func (s *Store) GetRoom(id string) (*Room, error) {
 }
 
 func (s *Store) GetRoomByName(name string) (*Room, error) {
-	row := s.DB.QueryRow(`SELECT `+roomCols+` FROM rooms WHERE name=?`, name)
+	row := s.DB.QueryRow(`SELECT `+roomCols+` FROM rooms WHERE name = ? COLLATE NOCASE`, strings.TrimSpace(name))
 	r, err := scanRoom(row)
 	if err == sql.ErrNoRows {
 		return nil, nil

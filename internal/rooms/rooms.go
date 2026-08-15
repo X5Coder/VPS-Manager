@@ -46,7 +46,7 @@ func (s *Service) Create(in CreateInput) (*store.Room, error) {
 		return nil, fmt.Errorf("password too short")
 	}
 	if existing, _ := s.Store.GetRoomByName(name); existing != nil {
-		return nil, fmt.Errorf("room already exists")
+		return nil, fmt.Errorf("room name already in use — each room must have a unique name")
 	}
 	hash, err := auth.HashPassword(in.Password)
 	if err != nil {
@@ -288,7 +288,7 @@ func (s *Service) SetName(roomID, name string) error {
 		return fmt.Errorf("room not found")
 	}
 	if existing, _ := s.Store.GetRoomByName(name); existing != nil && existing.ID != roomID {
-		return fmt.Errorf("room already exists")
+		return fmt.Errorf("room name already in use — each room must have a unique name")
 	}
 	r.Name = name
 	p := s.paths(roomID)

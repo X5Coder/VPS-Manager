@@ -145,21 +145,9 @@ func (s *Service) StartBackupAsync(label, description string, scheduled bool) (*
 
 	j := Job{
 		ID: uuid.NewString(), Kind: "backup", Status: "running",
-		Label: label, Message: "Backup started — verifying last point",
-		Progress: "Inspecting last point…", Percent: 2, Logs: []string{},
+		Label: label, Message: "Room backup started",
+		Progress: "Checking rooms…", Percent: 2, Logs: []string{},
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
-	}
-	if cp := s.loadCheckpoint(); cp != nil && cp.Kind == "backup" {
-		n := len(cp.RoomsDone)
-		layers := 0
-		if cp.Layout != nil {
-			layers = len(cp.Layout.Layers)
-		}
-		if n > 0 || layers > 0 || cp.SystemDone {
-			j.Message = fmt.Sprintf("Resuming — %d room(s) already on GitHub", n)
-			j.Progress = "Resuming from last point"
-			j.Percent = s.resumePercent(cp)
-		}
 	}
 	if j.Label == "" {
 		j.Label = "Backup now"
@@ -177,7 +165,7 @@ func (s *Service) StartBackupAsync(label, description string, scheduled bool) (*
 			}
 			s.mu.Unlock()
 		}()
-		rec, err := s.executeBackup(label, description, scheduled)
+		rec, err := s.runRoomSnapshots(scheduled)
 		if s.stopGen.Load() != gen {
 			return
 		}
@@ -253,7 +241,7 @@ func (s *Service) StartRestoreAsync(token, snapshotID string) (*Job, error) {
 			}
 			s.mu.Unlock()
 		}()
-		err := s.executeRestore(token, snapshotID)
+		err := s.restoreRoomRepo(token, snapshotID)
 		if s.stopGen.Load() != gen {
 			return
 		}

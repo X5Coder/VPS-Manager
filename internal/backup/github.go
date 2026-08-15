@@ -79,7 +79,10 @@ func (g *GitHub) checkBackupScopes(scopes string) error {
 		return fmt.Errorf("this token has no classic scopes. Create a classic PAT with the repo scope (GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)). Fine-grained tokens are not accepted")
 	}
 	if !strings.Contains(sc, "repo") {
-		return fmt.Errorf("permissions are not enough (scopes: %s). Backup needs a classic PAT with repo so it can create private repos and push files", scopes)
+		return fmt.Errorf("missing repo scope (got: %s). Backup needs repo to create private repositories and push files", scopes)
+	}
+	if !strings.Contains(sc, "delete_repo") {
+		return fmt.Errorf("missing delete_repo scope (got: %s). Backup needs delete_repo so a successful new snapshot can remove the previous repo", scopes)
 	}
 	req, _ := http.NewRequest("GET", "https://api.github.com/user/repos?per_page=1&affiliation=owner", nil)
 	g.auth(req)
@@ -104,6 +107,27 @@ func (g *GitHub) auth(req *http.Request) {
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	req.Header.Set("User-Agent", "vps-manage-backup")
+}
+
+func (g *GitHub) RepoExists(name string) (bool, error) {
+	name = strings.TrimSpace(name)
+	if name == "" || g.User == "" {
+		return false, nil
+	}
+	req, _ := http.NewRequest("GET", "https://api.github.com/repos/"+g.User+"/"+name, nil)
+	g.auth(req)
+	res, err := g.Client.Do(req)
+	if err != nil {
+		return false, err
+	}
+	res.Body.Close()
+	if res.StatusCode == 200 {
+		return true, nil
+	}
+	if res.StatusCode == 404 {
+		return false, nil
+	}
+	return false, fmt.Errorf("check repo %s (%d)", name, res.StatusCode)
 }
 
 func (g *GitHub) EnsureRepo(name, description string) error {
@@ -175,7 +199,7 @@ func isManagedBackupRepo(name string) bool {
 	if n == IndexRepo || n == SystemRepo || n == ImagesRepo || n == ContainersRepo {
 		return true
 	}
-	return strings.HasPrefix(n, "vps-manage-")
+	return strings.HasPrefix(n, "vps-manage-") || strings.HasPrefix(n, "vps-room-") || strings.HasPrefix(n, "vps-pat-probe-")
 }
 
 func (g *GitHub) ListOwnerRepoNames() ([]string, error) {

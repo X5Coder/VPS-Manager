@@ -197,7 +197,7 @@ func (s *Server) handleBackupToken(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, 200, s.Backup.Status())
 				return
 			}
-			writeErr(w, 400, "GitHub Personal Access Token (classic) with repo scope is required")
+			writeErr(w, 400, "GitHub classic PAT with repo and delete_repo is required")
 			return
 		}
 		if err := s.Backup.SaveToken(tok); err != nil {
@@ -297,12 +297,17 @@ func (s *Server) handleBackupSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		Hours int `json:"hours"`
+		Days  int `json:"days"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, 400, "invalid request")
 		return
 	}
-	if err := s.Backup.SetIntervalHours(body.Hours); err != nil {
+	hours := body.Hours
+	if body.Days > 0 {
+		hours = body.Days * 24
+	}
+	if err := s.Backup.SetIntervalHours(hours); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
@@ -326,12 +331,12 @@ func (s *Server) handleBackupInspect(w http.ResponseWriter, r *http.Request) {
 		t, _, _ := s.Backup.LoadToken()
 		token = t
 	}
-	man, index, err := s.Backup.InspectRemote(token)
+	rooms, err := s.Backup.InspectRemoteRooms(token)
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"latest": man, "snapshots": index})
+	writeJSON(w, 200, map[string]any{"rooms": rooms, "format": "VPS-ROOM-SNAP-v1"})
 }
 
 func (s *Server) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
@@ -345,12 +350,17 @@ func (s *Server) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Token      string `json:"token"`
 		SnapshotID string `json:"snapshot_id"`
+		Repo       string `json:"repo"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, 400, "invalid request")
 		return
 	}
-	job, err := s.Backup.StartRestoreAsync(body.Token, body.SnapshotID)
+	repo := strings.TrimSpace(body.Repo)
+	if repo == "" {
+		repo = strings.TrimSpace(body.SnapshotID)
+	}
+	job, err := s.Backup.StartRestoreAsync(body.Token, repo)
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
