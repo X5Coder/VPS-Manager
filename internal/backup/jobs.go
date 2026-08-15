@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -89,13 +90,21 @@ func (s *Service) CurrentJob() *Job {
 }
 
 func (s *Service) report(percent int, format string, args ...any) {
+	if s.errIfStopped() != nil {
+		return
+	}
 	msg := strings.TrimSpace(fmt.Sprintf(format, args...))
-	s.logf("%s", msg)
+	if msg != "" {
+		s.logf("%s", msg)
+	}
 	j := s.CurrentJob()
 	if j == nil || (j.Status != "running" && j.Status != "queued") {
 		return
 	}
 	if percent >= 0 {
+		if percent < j.Percent {
+			percent = j.Percent
+		}
 		j.Percent = percent
 	}
 	if msg != "" {
@@ -115,6 +124,10 @@ func (s *Service) StartBackupAsync(label, description string, scheduled bool) (*
 	if err != nil || token == "" {
 		return nil, fmt.Errorf("GitHub PAT required — save and validate a classic token with repo scope first")
 	}
+	s.waitWorkers(25 * time.Second)
+	if s.workers.Load() > 0 {
+		return nil, fmt.Errorf("previous backup is still stopping — wait a few seconds and press Start")
+	}
 	s.mu.Lock()
 	if s.running {
 		s.mu.Unlock()
@@ -122,12 +135,18 @@ func (s *Service) StartBackupAsync(label, description string, scheduled bool) (*
 	}
 	s.running = true
 	s.activeGen = s.stopGen.Load()
+	ctx, cancel := context.WithCancel(context.Background())
+	if s.jobCancel != nil {
+		s.jobCancel()
+	}
+	s.jobCancel = cancel
+	s.jobCtx = ctx
 	s.mu.Unlock()
 
 	j := Job{
 		ID: uuid.NewString(), Kind: "backup", Status: "running",
 		Label: label, Message: "Backup started — verifying last point",
-		Progress: "Inspecting last point…", Percent: 1, Logs: []string{},
+		Progress: "Inspecting last point…", Percent: 2, Logs: []string{},
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	if cp := s.loadCheckpoint(); cp != nil && cp.Kind == "backup" {
@@ -137,20 +156,21 @@ func (s *Service) StartBackupAsync(label, description string, scheduled bool) (*
 			layers = len(cp.Layout.Layers)
 		}
 		if n > 0 || layers > 0 || cp.SystemDone {
-			j.Message = fmt.Sprintf("Resuming — %d room(s) done, verifying GitHub", n)
+			j.Message = fmt.Sprintf("Resuming — %d room(s) already on GitHub", n)
 			j.Progress = "Resuming from last point"
-			j.Percent = 8
+			j.Percent = s.resumePercent(cp)
 		}
 	}
 	if j.Label == "" {
 		j.Label = "Backup now"
 	}
 	s.setJob(j)
-	s.report(1, "Inspecting last point")
 
 	go func() {
 		gen := s.stopGen.Load()
+		s.workers.Add(1)
 		defer func() {
+			s.workers.Add(-1)
 			s.mu.Lock()
 			if s.stopGen.Load() == gen {
 				s.running = false
@@ -191,6 +211,10 @@ func (s *Service) StartBackupAsync(label, description string, scheduled bool) (*
 }
 
 func (s *Service) StartRestoreAsync(token, snapshotID string) (*Job, error) {
+	s.waitWorkers(25 * time.Second)
+	if s.workers.Load() > 0 {
+		return nil, fmt.Errorf("previous job is still stopping — wait a few seconds and press Start")
+	}
 	s.mu.Lock()
 	if s.running {
 		s.mu.Unlock()
@@ -198,21 +222,28 @@ func (s *Service) StartRestoreAsync(token, snapshotID string) (*Job, error) {
 	}
 	s.running = true
 	s.activeGen = s.stopGen.Load()
+	ctx, cancel := context.WithCancel(context.Background())
+	if s.jobCancel != nil {
+		s.jobCancel()
+	}
+	s.jobCancel = cancel
+	s.jobCtx = ctx
 	s.mu.Unlock()
 
 	j := Job{
 		ID: uuid.NewString(), Kind: "restore", Status: "running",
 		Label: "Restore", Message: "Restore started — this can take several minutes",
-		Progress: "Inspecting last restore point…", Percent: 1, Logs: []string{},
+		Progress: "Inspecting last restore point…", Percent: 2, Logs: []string{},
 		StartedAt:  time.Now().UTC().Format(time.RFC3339),
 		SnapshotID: snapshotID,
 	}
 	s.setJob(j)
-	s.report(1, "Inspecting last restore point")
 
 	go func() {
 		gen := s.stopGen.Load()
+		s.workers.Add(1)
 		defer func() {
+			s.workers.Add(-1)
 			s.mu.Lock()
 			if s.stopGen.Load() == gen {
 				s.running = false

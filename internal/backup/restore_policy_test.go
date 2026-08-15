@@ -9,6 +9,49 @@ import (
 	"github.com/x5coder/vps-rooms/internal/store"
 )
 
+func TestReportDoesNotDecrease(t *testing.T) {
+	s := &Service{}
+	s.running = true
+	s.activeGen = s.stopGen.Load()
+	s.liveJob = &Job{Kind: "backup", Status: "running", Percent: 40, Logs: []string{}}
+	s.report(12, "later step with a lower hardcoded percent")
+	if s.liveJob.Percent != 40 {
+		t.Fatalf("percent moved backwards: %d", s.liveJob.Percent)
+	}
+	s.report(61, "real progress")
+	if s.liveJob.Percent != 61 {
+		t.Fatalf("percent=%d", s.liveJob.Percent)
+	}
+}
+
+func TestReportIgnoresAfterCancel(t *testing.T) {
+	s := &Service{}
+	s.running = true
+	s.activeGen = s.stopGen.Load()
+	s.liveJob = &Job{Kind: "backup", Status: "running", Percent: 19, Logs: []string{}}
+	if err := s.StopJob(); err != nil {
+		t.Fatal(err)
+	}
+	s.report(55, "old worker still running")
+	if s.liveJob.Percent != 19 {
+		t.Fatalf("cancelled job must freeze percent, got %d", s.liveJob.Percent)
+	}
+	if s.liveJob.Status != "paused" {
+		t.Fatalf("status=%s", s.liveJob.Status)
+	}
+}
+
+func TestResumePercentUsesRoomsDone(t *testing.T) {
+	s := &Service{}
+	if p := s.resumePercent(nil); p != 2 {
+		t.Fatalf("fresh=%d", p)
+	}
+	p := s.resumePercent(&Checkpoint{Kind: "backup", SystemDone: true, RoomsDone: []string{"a", "b"}})
+	if p < 16 {
+		t.Fatalf("system+rooms should be well above inspect, got %d", p)
+	}
+}
+
 func TestStopJobUnlocksBackupButton(t *testing.T) {
 	s := &Service{}
 	s.running = true

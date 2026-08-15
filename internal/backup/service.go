@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -41,6 +42,9 @@ type Service struct {
 	liveJob   *Job
 	stopGen   atomic.Uint64
 	activeGen uint64
+	workers   atomic.Int64
+	jobCtx    context.Context
+	jobCancel context.CancelFunc
 }
 
 func (s *Service) secretsPath() string {
@@ -133,22 +137,74 @@ func maskToken(t string) string {
 func (s *Service) errIfStopped() error {
 	s.mu.Lock()
 	gen := s.activeGen
+	ctx := s.jobCtx
 	s.mu.Unlock()
 	if s.stopGen.Load() != gen {
+		return fmt.Errorf("backup stopped")
+	}
+	if ctx != nil && ctx.Err() != nil {
 		return fmt.Errorf("backup stopped")
 	}
 	return nil
 }
 
+func (s *Service) jobContext() context.Context {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.jobCtx != nil {
+		return s.jobCtx
+	}
+	return context.Background()
+}
+
+func (s *Service) waitWorkers(d time.Duration) {
+	deadline := time.Now().Add(d)
+	for s.workers.Load() > 0 && time.Now().Before(deadline) {
+		time.Sleep(40 * time.Millisecond)
+	}
+}
+
+func (s *Service) resumePercent(cp *Checkpoint) int {
+	if cp == nil || cp.Kind != "backup" {
+		return 2
+	}
+	n := 0
+	if s.Store != nil {
+		if rooms, err := s.Store.ListRooms(); err == nil {
+			n = len(rooms)
+		}
+	}
+	p := 4
+	if cp.SystemDone {
+		p = 16
+	}
+	if n > 0 {
+		p += 74 * len(cp.RoomsDone) / n
+	} else if len(cp.RoomsDone) > 0 {
+		p += 40
+	}
+	if p < 2 {
+		p = 2
+	}
+	if p > 92 {
+		p = 92
+	}
+	return p
+}
+
 func (s *Service) StopJob() error {
 	s.stopGen.Add(1)
 	s.mu.Lock()
+	if s.jobCancel != nil {
+		s.jobCancel()
+		s.jobCancel = nil
+	}
 	s.running = false
 	j := Job{
 		Kind: "backup", Status: "paused", Label: "Paused",
-		Message: "Paused — press Start to continue from this point",
+		Message:  "Paused — press Start to continue from this point",
 		Progress: "Paused",
-		EndedAt: time.Now().UTC().Format(time.RFC3339),
+		EndedAt:  time.Now().UTC().Format(time.RFC3339),
 	}
 	if s.liveJob != nil {
 		j = *s.liveJob
@@ -405,6 +461,7 @@ func (s *Service) executeBackup(label, description string, scheduled bool) (*Sna
 		return nil, fmt.Errorf("GitHub PAT required — add a classic token with repo scope in Restore/Backup settings")
 	}
 	gh := NewGitHub(token)
+	gh.Ctx = s.jobContext()
 	u, err := gh.Validate()
 	if err != nil {
 		_ = s.Store.SetMeta("backup_last_error", err.Error())
@@ -422,15 +479,15 @@ func (s *Service) executeBackup(label, description string, scheduled bool) (*Sna
 		description = "Full VPS MANAGE backup: panel DB, secrets, API tokens, rooms, vaults, runtime, container data & volumes"
 	}
 
-	s.report(1, "Inspecting last backup point")
 	cp := s.loadCheckpoint()
+	s.report(s.resumePercent(cp), "Inspecting last backup point")
 	if cp != nil && cp.Kind == "backup" {
 		n := len(cp.RoomsDone)
 		layers := 0
 		if cp.Layout != nil {
 			layers = len(cp.Layout.Layers)
 		}
-		s.report(2, "Resuming from last point (%d rooms, %d image layers already on GitHub)", n, layers)
+		s.report(s.resumePercent(cp), "Resuming from last point (%d rooms, %d image layers already on GitHub)", n, layers)
 	} else {
 		cp = &Checkpoint{Kind: "backup", RoomsDone: []string{}, UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
 		s.saveCheckpoint(cp)
@@ -445,12 +502,12 @@ func (s *Service) executeBackup(label, description string, scheduled bool) (*Sna
 	}
 	defer os.RemoveAll(work)
 
-	s.report(3, "Checking GitHub token for @%s", user)
+	s.report(s.resumePercent(cp), "Checking GitHub token for @%s", user)
 	s.logf("ensuring index repo %s", IndexRepo)
 	if err := gh.EnsureRepo(IndexRepo, "VPS MANAGE backup map (do not edit)"); err != nil {
 		return nil, err
 	}
-	s.report(6, "GitHub map repo ready")
+	s.report(s.resumePercent(cp), "GitHub map repo ready")
 	indexDir := filepath.Join(work, IndexRepo)
 	if err := gh.CloneOrPull(IndexRepo, indexDir); err != nil {
 		_ = os.MkdirAll(indexDir, 0o750)
@@ -461,9 +518,9 @@ func (s *Service) executeBackup(label, description string, scheduled bool) (*Sna
 	useV2 := true
 
 	if cp.SystemDone {
-		s.report(12, "Panel database already uploaded — skipping")
+		s.report(s.resumePercent(cp), "Panel database already uploaded — skipping")
 	} else {
-		s.report(10, "Backing up panel database & secrets")
+		s.report(8, "Backing up panel database & secrets")
 		sysLocal := filepath.Join(work, "system-tree")
 		if err := s.prepareSystemTree(sysLocal); err != nil {
 			return nil, fmt.Errorf("system snapshot: %w", err)
@@ -478,7 +535,7 @@ func (s *Service) executeBackup(label, description string, scheduled bool) (*Sna
 		cp.SystemFiles = sysFiles
 		cp.SystemRepo = SystemRepo
 		s.saveCheckpoint(cp)
-		s.report(18, "Uploaded panel system state")
+		s.report(s.resumePercent(cp), "Uploaded panel system state")
 	}
 
 	roomsList, err := s.Store.ListRooms()
@@ -509,7 +566,7 @@ func (s *Service) executeBackup(label, description string, scheduled bool) (*Sna
 		if cp.Layout != nil {
 			prevLayout = cp.Layout
 		}
-		s.report(19, "Opening images / containers / volume repos (skipping files already on GitHub)")
+		s.report(s.resumePercent(cp), "Opening images / containers / volume repos (skipping files already on GitHub)")
 		var err error
 		cat, err = s.newCataloger(gh, work, prevLayout)
 		if err != nil {
@@ -522,10 +579,10 @@ func (s *Service) executeBackup(label, description string, scheduled bool) (*Sna
 		if err := s.errIfStopped(); err != nil {
 			return nil, err
 		}
-		base := 18
-		span := 70
-		if n := len(roomsList); n > 0 {
-			base = 18 + (span * i / n)
+		n := len(roomsList)
+		base := 16
+		if n > 0 {
+			base = 16 + (74 * i / n)
 		}
 		if checkpointHasRoom(cp, room.ID) {
 			found := false
@@ -576,7 +633,11 @@ func (s *Service) executeBackup(label, description string, scheduled bool) (*Sna
 		cp.RoomsDone = append(cp.RoomsDone, room.ID)
 		cp.Projects = append(cp.Projects, *pm)
 		s.saveCheckpoint(cp)
-		s.report(base+span/max(len(roomsList), 1), "Uploaded room %s", room.Name)
+		done := 16
+		if n > 0 {
+			done = 16 + (74 * (i + 1) / n)
+		}
+		s.report(done, "Uploaded room %s", room.Name)
 	}
 
 	if cat != nil {
@@ -1053,6 +1114,27 @@ func (s *Service) chunkNamed(gh *GitHub, work, baseRepo, desc string, roots []ro
 		_ = os.MkdirAll(filepath.Join(dataDir, "chunks"), 0o750)
 		return nil
 	}
+	var packedTotal int
+	for _, rs := range roots {
+		_ = filepath.Walk(rs.root, func(path string, info os.FileInfo, err error) error {
+			if err != nil || info == nil || info.IsDir() || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+				return nil
+			}
+			rel, e := filepath.Rel(rs.root, path)
+			if e != nil || skipBackupRel(rel) || skipBackupFile(rel, info.Size()) {
+				return nil
+			}
+			packedTotal++
+			return nil
+		})
+	}
+	packed := 0
+	markPacked := func() {
+		packed++
+		if packedTotal > 0 {
+			s.report(8+8*packed/packedTotal, "Packing files (%d/%d)", packed, packedTotal)
+		}
+	}
 	for _, rs := range roots {
 		_ = filepath.Walk(rs.root, func(path string, info os.FileInfo, err error) error {
 			if err != nil || info == nil {
@@ -1089,6 +1171,7 @@ func (s *Service) chunkNamed(gh *GitHub, work, baseRepo, desc string, roots []ro
 					newHashes[key] = old.SHA256
 				}
 				files = append(files, old)
+				markPacked()
 				return nil
 			}
 			sum, size, err := HashFile(path)
@@ -1101,6 +1184,7 @@ func (s *Service) chunkNamed(gh *GitHub, work, baseRepo, desc string, roots []ro
 				if old, ok2 := prevFiles[key]; ok2 && len(old.Chunks) > 0 {
 					entry.Chunks = old.Chunks
 					files = append(files, entry)
+					markPacked()
 					return nil
 				}
 			}
@@ -1125,6 +1209,7 @@ func (s *Service) chunkNamed(gh *GitHub, work, baseRepo, desc string, roots []ro
 				}
 			}
 			files = append(files, entry)
+			markPacked()
 			return nil
 		})
 	}
@@ -1194,6 +1279,7 @@ func (s *Service) executeRestore(token, snapshotID string) error {
 		token = t
 	}
 	gh := NewGitHub(token)
+	gh.Ctx = s.jobContext()
 	u, err := gh.Validate()
 	if err != nil {
 		return err

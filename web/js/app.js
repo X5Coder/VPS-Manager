@@ -3038,6 +3038,7 @@ Never DELETE via API. One token = all rooms.`;
   async function stopBackupJob() {
     const err = document.querySelector("#bakerr");
     if (err) err.textContent = "";
+    const lastPct = Math.max(0, Number(document.querySelector(".job-pct")?.textContent) || 0);
     try {
       await api("/api/backup/stop", { method: "POST", body: "{}" });
       toast("Backup paused");
@@ -3045,8 +3046,12 @@ Never DELETE via API. One token = all rooms.`;
       if (nowBtn) { nowBtn.disabled = false; nowBtn.dataset.lock = "0"; }
       document.querySelector(".restore-hero")?.classList.remove("is-running");
       paintJob({
-        kind: "backup", status: "paused", message: "Paused — press Start to continue from this point",
-        progress: "Paused", percent: 0, logs: ["Paused — checkpoint kept"],
+        kind: "backup",
+        status: "paused",
+        message: "Paused — press Start to continue from this point",
+        progress: "Paused",
+        percent: lastPct,
+        logs: ["Paused — checkpoint kept"],
       }, "#job-live");
       setTimeout(() => { if (state.view === "restore") renderRestore(); }, 800);
     } catch (ex) {
@@ -3075,10 +3080,11 @@ Never DELETE via API. One token = all rooms.`;
     const nowBtn = document.querySelector("#bak-now");
     if (nowBtn) { nowBtn.dataset.lock = "1"; nowBtn.disabled = true; }
     document.querySelector(".restore-hero")?.classList.add("is-running");
+    const lastPct = Math.max(0, Number(document.querySelector(".job-pct")?.textContent) || 0);
     paintJob({
-      kind: "backup", status: "running", percent: 1,
+      kind: "backup", status: "running", percent: lastPct || 2,
       message: "Backup started — verifying last point",
-      progress: "Inspecting last point…", logs: ["Inspecting last point…"],
+      progress: "Continuing from last point…", logs: ["Continuing from last point…"],
     }, "#job-live");
     startJobPoll("restore");
   }
