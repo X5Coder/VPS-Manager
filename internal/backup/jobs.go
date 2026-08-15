@@ -195,6 +195,9 @@ func (s *Service) StartBackupAsync(label, description string, scheduled bool) (*
 			s.setJob(*cur)
 			s.logf("FAILED: %s", err.Error())
 			_ = s.Store.SetMeta("backup_last_error", err.Error())
+			if scheduled {
+				s.scheduleRetrySoon()
+			}
 			return
 		}
 		cur.Status = "done"

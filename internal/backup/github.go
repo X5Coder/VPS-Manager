@@ -139,8 +139,15 @@ func (g *GitHub) EnsureRepo(name, description string) error {
 }
 
 func (g *GitHub) DeleteRepo(name string) error {
+	return g.deleteRepo(name, false)
+}
+
+func (g *GitHub) deleteRepo(name string, allowManaged bool) error {
 	name = strings.TrimSpace(name)
-	if name == "" || name == IndexRepo || name == SystemRepo || sharedBackupRepo(name) {
+	if name == "" {
+		return nil
+	}
+	if !allowManaged && (name == IndexRepo || name == SystemRepo || sharedBackupRepo(name)) {
 		return nil
 	}
 	if g.User == "" {
@@ -158,6 +165,69 @@ func (g *GitHub) DeleteRepo(name string) error {
 	}
 	body, _ := io.ReadAll(res.Body)
 	return fmt.Errorf("delete repo %s (%d): %s", name, res.StatusCode, truncate(string(body), 200))
+}
+
+func isManagedBackupRepo(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	if n == "" {
+		return false
+	}
+	if n == IndexRepo || n == SystemRepo || n == ImagesRepo || n == ContainersRepo {
+		return true
+	}
+	return strings.HasPrefix(n, "vps-manage-")
+}
+
+func (g *GitHub) ListOwnerRepoNames() ([]string, error) {
+	var names []string
+	for page := 1; page <= 20; page++ {
+		u := fmt.Sprintf("https://api.github.com/user/repos?per_page=100&page=%d&affiliation=owner", page)
+		req, _ := http.NewRequest("GET", u, nil)
+		g.auth(req)
+		res, err := g.Client.Do(req)
+		if err != nil {
+			return names, err
+		}
+		body, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		if res.StatusCode >= 300 {
+			return names, fmt.Errorf("list repos (%d): %s", res.StatusCode, truncate(string(body), 200))
+		}
+		var rows []struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(body, &rows); err != nil {
+			return names, err
+		}
+		for _, r := range rows {
+			if r.Name != "" {
+				names = append(names, r.Name)
+			}
+		}
+		if len(rows) < 100 {
+			break
+		}
+	}
+	return names, nil
+}
+
+func (g *GitHub) PurgeManagedBackupRepos() ([]string, error) {
+	all, err := g.ListOwnerRepoNames()
+	if err != nil {
+		return nil, err
+	}
+	var deleted []string
+	for _, name := range all {
+		if !isManagedBackupRepo(name) {
+			continue
+		}
+		if err := g.deleteRepo(name, true); err != nil {
+			return deleted, err
+		}
+		deleted = append(deleted, name)
+		time.Sleep(200 * time.Millisecond)
+	}
+	return deleted, nil
 }
 
 func (g *GitHub) ctx() context.Context {

@@ -3279,7 +3279,7 @@ Never DELETE via API. One token = all rooms.`;
             <option value="168"${Number(bk.interval_hours) === 168 ? " selected" : ""}>Every week</option>
             <option value="336"${Number(bk.interval_hours) === 336 ? " selected" : ""}>Every 2 weeks</option>
           </select>
-          <p class="muted" style="margin-top:6px">Backup now does not move the next scheduled time.</p>
+          <p class="muted" style="margin-top:6px">After you save the key, the next run is 24 hours later. Backup now also resets that daily clock.</p>
         </div>
       </div>
       ${jobHTML}

@@ -67,12 +67,10 @@ func (s *Service) SaveToken(token string) error {
 	}
 	_ = s.Store.SetMeta("backup_github_user", u.Login)
 	_ = s.Store.SetMeta("backup_enabled", "1")
-	now := time.Now().UTC()
-	if next, ok, _ := s.Store.GetMeta("backup_next_at"); !ok || next == "" {
-		if h := s.IntervalHours(); h > 0 {
-			_ = s.Store.SetMeta("backup_next_at", now.Add(time.Duration(h)*time.Hour).Format(time.RFC3339))
-		}
+	if s.IntervalHours() <= 0 {
+		_ = s.Store.SetMeta("backup_interval_hours", "24")
 	}
+	s.armFrom(time.Now().UTC())
 	return nil
 }
 
@@ -90,11 +88,12 @@ func (s *Service) SetEnabled(on bool) error {
 		return err
 	}
 	_ = s.Store.SetMeta("backup_enabled", "1")
-	now := time.Now().UTC()
-	if next, ok, _ := s.Store.GetMeta("backup_next_at"); !ok || next == "" {
-		if h := s.IntervalHours(); h > 0 {
-			_ = s.Store.SetMeta("backup_next_at", now.Add(time.Duration(h)*time.Hour).Format(time.RFC3339))
-		}
+	if s.IntervalHours() <= 0 {
+		_ = s.Store.SetMeta("backup_interval_hours", "24")
+	}
+	next, ok, _ := s.Store.GetMeta("backup_next_at")
+	if !ok || next == "" {
+		s.armFrom(time.Now().UTC())
 	}
 	return nil
 }
@@ -310,26 +309,29 @@ func (s *Service) saveSnapshots(list []SnapshotRecord) error {
 func (s *Service) StartScheduler() {
 	s.recoverStaleJob()
 	go func() {
-		t := time.NewTicker(5 * time.Minute)
-		f := time.NewTicker(2 * time.Second)
+		s.maybePurgeGitHubBackup()
+		s.ensureDailySchedule()
+		s.tick()
+		t := time.NewTicker(time.Minute)
 		defer t.Stop()
+		for range t.C {
+			s.tick()
+		}
+	}()
+	go func() {
+		f := time.NewTicker(2 * time.Second)
 		defer f.Stop()
-		for {
-			select {
-			case <-t.C:
-				s.tick()
-			case <-f.C:
-				s.mu.Lock()
-				var snap *Job
-				if s.liveJob != nil && s.liveJob.Status == "running" {
-					cp := *s.liveJob
-					cp.Logs = append([]string{}, s.liveJob.Logs...)
-					snap = &cp
-				}
-				s.mu.Unlock()
-				if snap != nil {
-					s.flushJob(*snap)
-				}
+		for range f.C {
+			s.mu.Lock()
+			var snap *Job
+			if s.liveJob != nil && s.liveJob.Status == "running" {
+				cp := *s.liveJob
+				cp.Logs = append([]string{}, s.liveJob.Logs...)
+				snap = &cp
+			}
+			s.mu.Unlock()
+			if snap != nil {
+				s.flushJob(*snap)
 			}
 		}
 	}()
@@ -361,6 +363,59 @@ func (s *Service) recoverStaleJob() {
 	}
 }
 
+func (s *Service) ensureDailySchedule() {
+	token, _, err := s.LoadToken()
+	if err != nil || token == "" {
+		return
+	}
+	en, _, _ := s.Store.GetMeta("backup_enabled")
+	if en != "1" {
+		return
+	}
+	if s.IntervalHours() <= 0 {
+		_ = s.Store.SetMeta("backup_interval_hours", "24")
+	}
+	nextStr, ok, _ := s.Store.GetMeta("backup_next_at")
+	if !ok || strings.TrimSpace(nextStr) == "" {
+		s.armFrom(time.Now().UTC())
+	}
+}
+
+func (s *Service) maybePurgeGitHubBackup() {
+	if s.Store == nil {
+		return
+	}
+	done, _, _ := s.Store.GetMeta("backup_purged_github")
+	if done == "1" {
+		return
+	}
+	token, user, err := s.LoadToken()
+	if err != nil || token == "" {
+		return
+	}
+	gh := NewGitHub(token)
+	u, err := gh.Validate()
+	if err != nil {
+		s.logf("github purge skipped: %v", err)
+		return
+	}
+	if user == "" {
+		user = u.Login
+	}
+	gh.User = user
+	deleted, err := gh.PurgeManagedBackupRepos()
+	if err != nil {
+		s.logf("github purge: %v (deleted %d)", err, len(deleted))
+		return
+	}
+	s.clearCheckpoint()
+	_ = s.saveSnapshots([]SnapshotRecord{})
+	_ = s.Store.SetMeta("backup_last_error", "")
+	_ = s.Store.SetMeta("backup_job", "")
+	_ = s.Store.SetMeta("backup_purged_github", "1")
+	s.logf("github backup repos wiped (%d)", len(deleted))
+}
+
 func (s *Service) tick() {
 	token, _, err := s.LoadToken()
 	if err != nil || token == "" {
@@ -370,20 +425,76 @@ func (s *Service) tick() {
 	if en != "1" {
 		return
 	}
+	if s.IntervalHours() <= 0 {
+		return
+	}
+	due, claimed := s.claimIfDue()
+	if !claimed {
+		return
+	}
+	s.mu.Lock()
+	busy := s.running
+	s.mu.Unlock()
+	if busy {
+		_ = s.Store.SetMeta("backup_next_at", due.Format(time.RFC3339))
+		return
+	}
+	_, err = s.StartBackupAsync("Scheduled backup", "Automatic daily backup", true)
+	if err != nil {
+		_ = s.Store.SetMeta("backup_next_at", due.Format(time.RFC3339))
+		s.logf("scheduled backup not started: %s", err)
+	}
+}
+
+func (s *Service) parseNextAt() (time.Time, bool) {
 	nextStr, ok, _ := s.Store.GetMeta("backup_next_at")
+	if !ok || strings.TrimSpace(nextStr) == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(nextStr))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t.UTC(), true
+}
+
+func (s *Service) armFrom(from time.Time) {
 	h := s.IntervalHours()
 	if h <= 0 {
 		return
 	}
-	if !ok || nextStr == "" {
-		_ = s.Store.SetMeta("backup_next_at", time.Now().UTC().Add(time.Duration(h)*time.Hour).Format(time.RFC3339))
+	next := from.UTC().Add(time.Duration(h) * time.Hour)
+	_ = s.Store.SetMeta("backup_next_at", next.Format(time.RFC3339))
+}
+
+func (s *Service) claimIfDue() (time.Time, bool) {
+	due, ok := s.parseNextAt()
+	if !ok {
+		s.armFrom(time.Now().UTC())
+		return time.Time{}, false
+	}
+	now := time.Now().UTC()
+	if now.Before(due) {
+		return due, false
+	}
+	s.advanceFrom(due)
+	return due, true
+}
+
+func (s *Service) advanceFrom(due time.Time) {
+	h := s.IntervalHours()
+	if h <= 0 {
 		return
 	}
-	next, err := time.Parse(time.RFC3339, nextStr)
-	if err != nil || time.Now().UTC().Before(next) {
-		return
+	now := time.Now().UTC()
+	next := due.UTC()
+	step := time.Duration(h) * time.Hour
+	if !next.After(now) {
+		for !next.After(now) {
+			next = next.Add(step)
+		}
 	}
-	_, _ = s.StartBackupAsync("Scheduled backup", "Automatic backup on your schedule", true)
+	_ = s.Store.SetMeta("backup_next_at", next.Format(time.RFC3339))
 }
 
 func (s *Service) IntervalHours() int {
@@ -413,30 +524,13 @@ func (s *Service) SetIntervalHours(hours int) error {
 		_ = s.Store.SetMeta("backup_next_at", "")
 		return nil
 	}
-	_ = s.Store.SetMeta("backup_next_at", time.Now().UTC().Add(time.Duration(hours)*time.Hour).Format(time.RFC3339))
+	s.armFrom(time.Now().UTC())
 	return nil
 }
 
-func (s *Service) advanceSchedule() {
-	h := s.IntervalHours()
-	if h <= 0 {
-		return
-	}
-	now := time.Now().UTC()
-	nextStr, ok, _ := s.Store.GetMeta("backup_next_at")
-	next := now
-	if ok && nextStr != "" {
-		if t, err := time.Parse(time.RFC3339, nextStr); err == nil {
-			next = t
-		}
-	}
-	step := time.Duration(h) * time.Hour
-	if !next.After(now) {
-		for !next.After(now) {
-			next = next.Add(step)
-		}
-	}
-	_ = s.Store.SetMeta("backup_next_at", next.Format(time.RFC3339))
+func (s *Service) scheduleRetrySoon() {
+	retry := time.Now().UTC().Add(15 * time.Minute)
+	_ = s.Store.SetMeta("backup_next_at", retry.Format(time.RFC3339))
 }
 
 func (s *Service) RunBackup(label, description string) (*SnapshotRecord, error) {
@@ -695,8 +789,8 @@ func (s *Service) executeBackup(label, description string, scheduled bool) (*Sna
 	_ = s.saveSnapshots(local)
 	now := time.Now().UTC()
 	_ = s.Store.SetMeta("backup_last_at", now.Format(time.RFC3339))
-	if scheduled {
-		s.advanceSchedule()
+	if !scheduled {
+		s.armFrom(now)
 	}
 	_ = s.Store.SetMeta("backup_last_error", "")
 	s.clearCheckpoint()
