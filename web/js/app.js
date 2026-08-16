@@ -2069,27 +2069,6 @@
     state._viewKey = next;
   }
 
-  function storagePanel(st) {
-    const avail = st.quota_available_gb ?? gb(st.quota_available);
-    return `<div class="panel storage-panel">
-      <h3>Disk allocation</h3>
-      <div class="storage-grid">
-        <div><span class="muted">Free disk</span><strong>${fmtBytes(st.disk_free)}</strong></div>
-        <div><span class="muted">Reserved by projects</span><strong>${fmtBytes(st.quota_reserved)}</strong></div>
-        <div><span class="muted">Available to allocate</span><strong class="ok-text">${avail.toFixed(2)} GB</strong></div>
-      </div>
-      <p class="muted" style="margin-top:10px;font-size:0.82rem">Pick a quota from available space. Deploy is blocked without a quota.</p>
-    </div>`;
-  }
-
-  function portsList(ports) {
-    const list = (ports || []).slice().sort((a, b) => a - b);
-    return `<div class="ports-box">
-      <div class="muted" style="margin-bottom:6px;font-size:0.78rem">Used ports</div>
-      <div class="ports-scroll">${list.map((p) => `<span class="port-chip">${p}</span>`).join("") || `<span class="muted">none</span>`}</div>
-    </div>`;
-  }
-
   async function renderServer() {
     const gen = state._gen;
     const paint = (host, ready = false) => {
@@ -2328,11 +2307,11 @@
           <h2>Rooms</h2>
           <div class="sub">${(rooms || []).length ? `${rooms.length} on this VPS` : "Nothing deployed yet"}</div>
         </div>
-        <button class="btn primary action" id="go-deploy">Add project</button>
+        <button class="btn primary action" id="go-add-proj">Add project</button>
         </div>
         <div class="proj-list">${cards}</div>`, "rooms");
 
-      document.querySelector("#go-deploy")?.addEventListener("click", () => openAddProjectModal());
+      document.querySelector("#go-add-proj")?.addEventListener("click", () => openAddProjectModal());
       document.querySelector("#empty-deploy")?.addEventListener("click", () => openAddProjectModal());
       bindCopyables();
       document.querySelectorAll("[data-enter]").forEach((b) => bindAction(b, async () => {
@@ -2395,288 +2374,6 @@
       .replace(/[^a-z0-9_-]+/g, "-")
       .replace(/^-+|-+$/g, "")
       .slice(0, 30) || "app";
-  }
-
-  function parseDeployOK(text) {
-    const m = String(text || "").match(/OK room=(\S+) room_id=(\S+) project=(\S+) password=(\S+)/);
-    if (!m) return null;
-    return { room: m[1], roomId: m[2], project: m[3], password: m[4] };
-  }
-
-  function appendTerm(el, s) {
-    if (!el) return;
-    el.textContent += s;
-    el.scrollTop = el.scrollHeight;
-  }
-
-  async function streamFetch(path, opts, onChunk) {
-    const res = await fetch(path, {
-      credentials: "same-origin",
-      headers: opts.body && !(opts.body instanceof FormData)
-        ? { "Content-Type": "application/json", ...(opts.headers || {}) }
-        : (opts.headers || {}),
-      ...opts,
-    });
-    const reader = res.body && res.body.getReader ? res.body.getReader() : null;
-    const dec = new TextDecoder();
-    let text = "";
-    if (!reader) {
-      text = await res.text();
-      if (onChunk) onChunk(text, text);
-      if (!res.ok) throw new Error(text || "Request failed");
-      return text;
-    }
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const chunk = dec.decode(value, { stream: true });
-      text += chunk;
-      if (onChunk) onChunk(chunk, text);
-    }
-    if (!res.ok) throw new Error(text || "Request failed");
-    return text;
-  }
-
-  async function renderDeploy() {
-    const gen = state._gen;
-    shell(`<div class="topbar"><div><h2>Deploy</h2><div class="sub">Quota is required · room is created automatically</div></div></div>${skel(3)}`, "deploy");
-    let st = {}, ports = { used_ports: [] };
-    try {
-      [st, ports] = await Promise.all([api("/api/storage"), api("/api/ports")]);
-    } catch (e) {
-      if (!alive("deploy", gen)) return;
-      shell(`<p class="error">${esc(e.message)}</p>`, "deploy"); return;
-    }
-    if (!alive("deploy", gen)) return;
-    const maxGB = Math.max(0.1, Number(st.quota_available_gb || 0));
-
-    shell(`
-      <div class="topbar"><div>
-        <h2>Deploy</h2>
-        <div class="sub">Agent in the terminal · no presets · live disk</div>
-      </div></div>
-      <div class="deploy-layout">
-        <div class="panel deploy-card">
-          <h3>Pull image</h3>
-          ${agentDeskHTML({
-            title: "Agent",
-            prompt: "root@vps-manager:~#",
-            termLines: "ready\n",
-            showTerm: true,
-            hiddenQuotaId: "pull-quota",
-          })}
-          <div id="pull-setup" class="deploy-setup hidden">
-            <p class="ok-text" id="pull-ready">Image ready</p>
-            <form id="pull-finish" class="form-grid">
-              <input type="hidden" id="pull-image" />
-              <div class="field"><label>Host port</label><input id="pull-port" type="number" min="1" max="65535" placeholder="auto" /></div>
-              <div class="field"><label>Container port</label><input id="pull-cport" type="number" value="80" /></div>
-              <div class="full">${portsList(ports.used_ports)}</div>
-              <div class="full"><button class="btn primary action" type="submit">Start</button></div>
-            </form>
-          </div>
-          <div id="pull-done" class="deploy-result hidden"></div>
-        </div>
-        <div class="panel deploy-card">
-          <h3>Upload image</h3>
-          <form id="up">
-            <label class="dropzone" id="dz">
-              <input name="file" id="dz-input" type="file" required />
-              <div class="dz-icon">Image</div>
-              <div class="dz-title">Docker image (.tar) or Dockerfile</div>
-              <div class="dz-sub">One file · drop or click · then set quota</div>
-              <div class="dz-file hidden" id="dz-name"></div>
-            </label>
-            <div class="field full" style="margin-top:12px">${quotaSliderHTML({ name: "quota_gb", maxGB, valueGB: 0.1, required: true })}</div>
-            <div id="up-setup" class="deploy-setup hidden">
-              <div class="form-grid">
-                <div class="field"><label>Host port</label><input name="host_port" type="number" min="1" max="65535" placeholder="auto" /></div>
-                <div class="field"><label>Container port</label><input name="container_port" type="number" value="80" /></div>
-                <div class="full">${portsList(ports.used_ports)}</div>
-                <div class="full"><button class="btn primary action" type="submit">Start</button></div>
-              </div>
-            </div>
-            <p class="error" id="uperr"></p>
-            <div class="term hidden" id="up-term"><div class="term-out" id="up-log"></div></div>
-            <div id="up-done" class="deploy-result hidden"></div>
-          </form>
-        </div>
-      </div>`, "deploy");
-
-    const termOut = document.querySelector("#term-out");
-    const termCmd = document.querySelector("#term-cmd");
-    const showResult = (host, parsed) => {
-      if (!host || !parsed) return;
-      host.classList.remove("hidden");
-      host.innerHTML = `<div class="ok-text">Room created</div>
-        <div class="fact-row"><span>Name</span><strong class="mono">${esc(parsed.room)}</strong></div>
-        <div class="fact-row"><span>Password</span><strong class="mono copyable" data-copy="${esc(parsed.password)}">${esc(parsed.password)}</strong></div>
-        <button class="btn primary action" type="button" data-open-room="${esc(parsed.roomId)}">Open room</button>
-        <p class="muted" style="margin:8px 0 0;font-size:0.78rem">You can change the name, password, quota, and ports inside the room.</p>`;
-      bindCopyables(host);
-      host.querySelector("[data-open-room]")?.addEventListener("click", () => {
-        state.roomId = parsed.roomId;
-        setView("room", { roomTab: "overview" });
-      });
-    };
-
-    bindQuotaSliders();
-    bindAgentChat({
-      key: "deploy",
-      stillHere: () => state.view === "deploy",
-      aiPath: "/api/deploy/ai",
-      execFn: (cmd) => api("/api/deploy/exec", {
-        method: "POST",
-        body: JSON.stringify({ command: cmd, timeout_sec: 600 }),
-      }),
-      quotaRoot: document.querySelector("#pull-quota"),
-      termOut,
-      prompt: "root@vps-manager:~# ",
-      onImage: (image) => {
-        const el = document.querySelector("#pull-image");
-        const ready = document.querySelector("#pull-ready");
-        const setup = document.querySelector("#pull-setup");
-        if (el) el.value = image;
-        if (ready) ready.textContent = `Image ready · ${image}`;
-        setup?.classList.remove("hidden");
-      },
-      onStart: async (image, quota, updateId) => {
-        if (updateId) {
-          appendTerm(termOut, `\nPublishing ${image} onto ${updateId}...\n`);
-          const text = await streamFetch(`/api/rooms/${encodeURIComponent(updateId)}/update`, {
-            method: "POST",
-            body: JSON.stringify({ image }),
-          }, (chunk) => appendTerm(termOut, chunk));
-          if (/error:/i.test(text) && !/OK project=/.test(text)) throw new Error(text.slice(-400));
-          appendTerm(termOut, "\nUpdate applied — same project id, container running.\n");
-          return;
-        }
-        const name = suggestName(image);
-        appendTerm(termOut, `\nStarting ${name}...\n`);
-        const text = await streamFetch("/api/deploy", {
-          method: "POST",
-          body: JSON.stringify({
-            image,
-            name,
-            quota_gb: quota,
-            host_port: Number(document.querySelector("#pull-port")?.value || 0) || 0,
-            container_port: Number(document.querySelector("#pull-cport")?.value || 80) || 80,
-          }),
-        }, (chunk) => appendTerm(termOut, chunk));
-        showResult(document.querySelector("#pull-done"), parseDeployOK(text));
-      },
-    });
-    const dz = document.querySelector("#dz");
-    const dzInput = document.querySelector("#dz-input");
-    const dzName = document.querySelector("#dz-name");
-    const upSetup = document.querySelector("#up-setup");
-    const markFile = (file) => {
-      if (!file) return;
-      dz.classList.add("has-file");
-      dzName.textContent = file.name;
-      dzName.classList.remove("hidden");
-      upSetup.classList.remove("hidden");
-    };
-    dzInput.addEventListener("change", () => markFile(dzInput.files && dzInput.files[0]));
-    ["dragenter", "dragover"].forEach((ev) => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.add("drag"); }));
-    ["dragleave", "drop"].forEach((ev) => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.remove("drag"); }));
-    dz.addEventListener("drop", (e) => {
-      const file = e.dataTransfer?.files?.[0];
-      if (!file) return;
-      const dt = new DataTransfer();
-      dt.items.add(file);
-      dzInput.files = dt.files;
-      markFile(file);
-    });
-
-    document.querySelector("#term-form").onsubmit = async (e) => {
-      e.preventDefault();
-      const cmd = termCmd.value.trim();
-      if (!cmd) return;
-      const image = parsePullCmd(cmd);
-      const quota = Number(document.querySelector("#pull-quota").value || 0);
-      if (!(quota > 0)) { appendTerm(termOut, "error: set disk quota first\n"); return; }
-      if (quota > maxGB + 0.001) { appendTerm(termOut, `error: quota exceeds available ${maxGB.toFixed(2)} GB\n`); return; }
-      if (!image) { appendTerm(termOut, "error: use docker pull IMAGE\n"); return; }
-      appendTerm(termOut, `${cmd}\n`);
-      termCmd.value = "";
-      termCmd.disabled = true;
-      try {
-        const text = await streamFetch("/api/deploy/pull", {
-          method: "POST",
-          body: JSON.stringify({ command: cmd, image }),
-        }, (chunk) => appendTerm(termOut, chunk));
-        const ok = /OK image=(\S+)/.exec(text);
-        if (ok) {
-          document.querySelector("#pull-image").value = ok[1];
-          document.querySelector("#pull-ready").textContent = `Image ready · ${ok[1]}`;
-          document.querySelector("#pull-setup").classList.remove("hidden");
-        }
-      } catch (ex) {
-        appendTerm(termOut, `\n${ex.message || ex}\n`);
-      } finally {
-        termCmd.disabled = false;
-        termCmd.focus();
-      }
-    };
-
-    document.querySelector("#pull-finish").onsubmit = async (e) => {
-      e.preventDefault();
-      const image = document.querySelector("#pull-image").value.trim();
-      const name = suggestName(image);
-      const quota = Number(document.querySelector("#pull-quota").value || 0);
-      const btn = e.target.querySelector("button[type=submit]");
-      if (btn) { btn.classList.add("busy"); btn.disabled = true; }
-      appendTerm(termOut, `\nStarting ${name}...\n`);
-      try {
-        const text = await streamFetch("/api/deploy", {
-          method: "POST",
-          body: JSON.stringify({
-            image,
-            name,
-            quota_gb: quota,
-            host_port: Number(document.querySelector("#pull-port").value || 0) || 0,
-            container_port: Number(document.querySelector("#pull-cport").value || 80) || 80,
-          }),
-        }, (chunk) => appendTerm(termOut, chunk));
-        showResult(document.querySelector("#pull-done"), parseDeployOK(text));
-      } catch (ex) {
-        appendTerm(termOut, `\n${ex.message || ex}\n`);
-      } finally {
-        if (btn) { btn.classList.remove("busy"); btn.disabled = false; }
-      }
-    };
-
-    document.querySelector("#up").onsubmit = async (e) => {
-      e.preventDefault();
-      const fd = new FormData(e.target);
-      const q = Number(fd.get("quota_gb") || 0);
-      const err = document.querySelector("#uperr");
-      const log = document.querySelector("#up-log");
-      const term = document.querySelector("#up-term");
-      err.textContent = "";
-      if (!(q > 0)) { err.textContent = "Set disk quota (GB) before deploy."; return; }
-      if (q > maxGB + 0.001) { err.textContent = `Quota exceeds available ${maxGB.toFixed(2)} GB.`; return; }
-      const file = fd.get("file");
-      if (!file || !file.name) { err.textContent = "Upload a Docker image (.tar) or a Dockerfile."; return; }
-      if (!fd.get("name")) fd.set("name", suggestName(file.name.replace(/\.(tar|gz|tgz)$/i, "")));
-      term.classList.remove("hidden");
-      log.textContent = "Uploading…\n";
-      const btn = e.target.querySelector("button[type=submit]");
-      if (btn) { btn.classList.add("busy"); btn.disabled = true; }
-      try {
-        const text = await streamFetch("/api/deploy", { method: "POST", body: fd }, (chunk, all) => {
-          log.textContent = all;
-          log.scrollTop = log.scrollHeight;
-        });
-        showResult(document.querySelector("#up-done"), parseDeployOK(text));
-      } catch (ex) {
-        log.textContent += `\n${ex.message || ex}`;
-        err.textContent = ex.message || "Deploy failed";
-      } finally {
-        if (btn) { btn.classList.remove("busy"); btn.disabled = false; }
-      }
-    };
   }
 
   async function renderLogs() {
@@ -3870,7 +3567,7 @@ Never DELETE via API. One token = all rooms.`;
         </div>`;
         })()}
         ${(function () {
-          if (!mainProj) return `<div class="panel"><h3>Port & domain</h3><p class="muted">Deploy a container first.</p></div>`;
+          if (!mainProj) return `<div class="panel"><h3>Port & domain</h3><p class="muted">Add a container first.</p></div>`;
           const hasPort = Number(mainProj.host_port) > 0;
           const hasDomain = !!(mainProj.domain && String(mainProj.domain).trim());
           const show = hasPort || hasDomain || state.showNetPanel;
@@ -3903,7 +3600,7 @@ Never DELETE via API. One token = all rooms.`;
           <table class="table"><thead><tr><th>#</th><th>Container</th><th>Docker</th><th>Status</th><th>Port</th><th>Image</th></tr></thead>
           <tbody id="containers-live">${containers.map((p) => `<tr data-cid="${esc(p.id)}" class="ctr-row" style="cursor:pointer"><td class="mono">${ctrNum(p)}</td><td>${esc(ctrLabel(p))}<div class="muted" style="font-size:0.75rem">${esc(p.name || "")}</div></td><td><code class="copyable" data-copy="${esc(p.docker_id || p.id)}">${esc(shortDocker(p.docker_id || p.id))}</code></td><td><span class="badge ${p.status === "running" ? "ok" : "stop"}" data-cstatus>${esc(p.status)}</span></td><td data-cport>${p.host_port || "—"}</td><td class="mono muted">${esc(p.image)}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">No containers</td></tr>`}</tbody></table>
         </div>
-        <div class="panel"><h3>${emptyRoom ? "First deploy" : "Update"}</h3>
+        <div class="panel"><h3>${emptyRoom ? "Upload image" : "Update"}</h3>
           <p class="muted" style="margin:0 0 10px">${emptyRoom
             ? `Empty room. Drop a single <code>image.tar</code> (docker save) or a <code>project.vps.tar.gz</code> (compose.yml + images/). Room id <code>${esc(id)}</code>.`
             : "Upload <code>.tar</code> for a single image, or <code>.tar.gz</code> for a multi stack (compose.yml + images/)."}</p>
