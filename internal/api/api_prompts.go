@@ -133,8 +133,10 @@ MULTI — filename MUST be *.tar.gz. Layout:
     {{BASE}}/api/v1/projects/$ROOM_ID/upload
 
   202/200 deploying. Poll GET until status=running.
-  400 code=package_bad_name — not .tar and not .tar.gz
+  400 code=package_empty — not .tar and not .tar.gz (or empty)
+  400 code=package_invalid — .tar is not docker save
   400 code=package_kind_mismatch — sent .tar but archive is multi (compose inside), OR sent .tar.gz without compose.yml, OR room is single and file is multi, OR room is multi and file is single without container_id
+  400 code=content_type — Content-Type must be multipart/form-data
   400 {"error":"multipart field file is required ..."}
   404 container not found (bad container_id)
   409 another deploy is running
@@ -143,6 +145,8 @@ MULTI — filename MUST be *.tar.gz. Layout:
 5) FILES
 GET {{BASE}}/api/rooms/$ROOM_ID/containers/CONTAINER_ID/files?path=/
 GET {{BASE}}/api/rooms/$ROOM_ID/volumes/VOLUME_ID/files?path=/
+GET {{BASE}}/api/v1/projects/$ROOM_ID/containers/CONTAINER_ID/files?path=/
+GET {{BASE}}/api/v1/projects/$ROOM_ID/volumes/VOLUME_ID/files?path=/
   200 { "path":"/","entries":[{"name":"...","dir":true,"size":0}] }
   200 file: { "path","content","binary":false,"size" }
   400 container stopped / Docker unavailable

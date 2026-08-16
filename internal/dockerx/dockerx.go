@@ -553,7 +553,9 @@ func (c *Client) FindFreePort(start int) (int, error) {
 
 // StatsJSON returns a minimal JSON blob for a container if needed later.
 func (c *Client) StatsJSON(id string) (map[string]any, error) {
-	cmd := exec.Command(c.bin, "stats", "--no-stream", "--format", "{{json .}}", id)
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, c.bin, "stats", "--no-stream", "--format", "{{json .}}", id)
 	b, err := cmd.Output()
 	if err != nil {
 		return nil, err

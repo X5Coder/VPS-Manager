@@ -229,6 +229,10 @@ func (s *Server) handleAPIV1(w http.ResponseWriter, r *http.Request) {
 
 	switch parts[0] {
 	case "quota":
+		if r.Method != http.MethodGet {
+			writeErr(w, 405, "method")
+			return
+		}
 		if s.requireAPIToken(w, r, false) == nil {
 			return
 		}
@@ -236,11 +240,19 @@ func (s *Server) handleAPIV1(w http.ResponseWriter, r *http.Request) {
 		info["hint"] = "Call this before POST /api/v1/projects. quota_gb must be > 0 and <= quota_available_gb."
 		writeJSON(w, 200, info)
 	case "storage":
+		if r.Method != http.MethodGet {
+			writeErr(w, 405, "method")
+			return
+		}
 		if s.requireAPIToken(w, r, false) == nil {
 			return
 		}
 		writeJSON(w, 200, s.storageInfo())
 	case "ports":
+		if r.Method != http.MethodGet {
+			writeErr(w, 405, "method")
+			return
+		}
 		if s.requireAPIToken(w, r, false) == nil {
 			return
 		}
@@ -250,6 +262,10 @@ func (s *Server) handleAPIV1(w http.ResponseWriter, r *http.Request) {
 	case "rooms":
 		s.handleAPIV1Projects(w, r, parts[1:])
 	case "status":
+		if r.Method != http.MethodGet {
+			writeErr(w, 405, "method")
+			return
+		}
 		if s.requireAPIToken(w, r, false) == nil {
 			return
 		}
@@ -467,8 +483,24 @@ func (s *Server) projectView(room *store.Room, p *store.Project) map[string]any 
 		} else if busy == "deploy" {
 			out["status"] = "deploying"
 			out["job"] = "deploy"
-		} else if meta.Status == "error" && st != "running" {
-			out["status"] = "error"
+		} else {
+			if s.Docker != nil && strings.TrimSpace(p.ContainerID) != "" {
+				if live, err := s.Docker.InspectStatus(p.ContainerID); err == nil && live != "" {
+					st = live
+				}
+			}
+			if st == "exited" {
+				st = "stopped"
+			}
+			staleMeta := meta.Status == "deploying" || meta.Status == "building"
+			staleProj := p.Status == "deploying" || p.Status == "building"
+			if (staleMeta || staleProj) && st != "deploying" && st != "building" && st != "" {
+				s.Projects.ClearStaleDeploy(room.ID, p.ID, st)
+			}
+			out["status"] = st
+			if meta.Status == "error" && st != "running" {
+				out["status"] = "error"
+			}
 		}
 		if env, err := s.Projects.ReadEnv(p.ID); err == nil {
 			out["env"] = maskEnvText(env)
@@ -929,8 +961,16 @@ func (s *Server) apiUploadProject(w http.ResponseWriter, r *http.Request, id str
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<30)
+	ct := strings.ToLower(r.Header.Get("Content-Type"))
+	if !strings.Contains(ct, "multipart/form-data") {
+		writeJSON(w, 400, map[string]any{
+			"ok": false, "code": "content_type",
+			"error": "Content-Type must be multipart/form-data (field name: file)",
+		})
+		return
+	}
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		writeJSON(w, 400, map[string]any{"ok": false, "error": "could not read upload: " + err.Error()})
+		writeJSON(w, 400, map[string]any{"ok": false, "error": "could not read upload: " + err.Error(), "code": "content_type"})
 		return
 	}
 	file, hdr, err := r.FormFile("file")
@@ -1282,6 +1322,8 @@ func (s *Server) handleAPIV1ProjectContainers(w http.ResponseWriter, r *http.Req
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
 		_, _ = w.Write(b)
+	case "files":
+		s.handleContainerFiles(w, r, roomID, ct)
 	case "usage":
 		cpu, mem, used, lim := 0.0, 0.0, int64(0), int64(0)
 		if s.Docker != nil && ct.DockerID != "" {

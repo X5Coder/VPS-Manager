@@ -94,7 +94,11 @@ func (s *Service) restoreRoomRepo(token, repo string) error {
 			if err := s.errIfStopped(); err != nil {
 				return err
 			}
-			s.report(10+i*30/max1(len(man.Images)), "Load image %s (docker load — large images stay on this step for a while)", img.Ref)
+			if imageAlreadyOnHost(s, img) {
+				s.report(10+i*30/max1(len(man.Images)), "Image %s already on this VPS — skip GitHub download and docker load", img.Ref)
+				continue
+			}
+			s.report(10+i*30/max1(len(man.Images)), "Load image %s (download from GitHub + docker load — large images take minutes)", img.Ref)
 			tree := filepath.Join(work, fmt.Sprintf("img-%02d", i+1))
 			for _, key := range img.Files {
 				rel := strings.TrimPrefix(key, img.Prefix)
@@ -325,4 +329,30 @@ func max1(n int) int {
 		return 1
 	}
 	return n
+}
+
+func imageAlreadyOnHost(s *Service, img SnapImage) bool {
+	if s == nil || s.Docker == nil {
+		return false
+	}
+	id := strings.TrimSpace(img.DockerID)
+	if id != "" && s.Docker.ImageExists(id) {
+		return true
+	}
+	ref := strings.TrimSpace(img.Ref)
+	if ref == "" {
+		return false
+	}
+	have := s.Docker.ImageID(ref)
+	if have == "" {
+		return false
+	}
+	if id == "" {
+		return true
+	}
+	if have == id {
+		return true
+	}
+	short := strings.TrimPrefix(id, "sha256:")
+	return strings.Contains(have, short) || strings.HasPrefix(strings.TrimPrefix(have, "sha256:"), short)
 }

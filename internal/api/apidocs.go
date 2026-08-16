@@ -106,8 +106,10 @@ Multi: filename *.tar.gz
 
   -F "file=@project.vps.tar.gz;filename=project.vps.tar.gz"
 
-  400 package_bad_name
+  400 package_empty — not .tar / .tar.gz (or empty file)
+  400 package_invalid — .tar is not docker save (no manifest.json)
   400 package_kind_mismatch — single vs multi swapped, or multi room got a .tar without container_id
+  400 content_type — not multipart/form-data
   400 file_required
   404 container not found
   409 deploy already running
@@ -123,7 +125,9 @@ GET {{BASE}}/api/v1/projects/ROOM_ID
   200 room (kind, status, quota_gb, containers, images, volumes). 404 not found.
 
 GET {{BASE}}/api/rooms/ROOM_ID/containers/CONTAINER_ID/files?path=/
-GET {{BASE}}/api/rooms/ROOM_ID/volumes/VOLUME_ID/files?path=/`,
+GET {{BASE}}/api/rooms/ROOM_ID/volumes/VOLUME_ID/files?path=/
+GET {{BASE}}/api/v1/projects/ROOM_ID/containers/CONTAINER_ID/files?path=/
+GET {{BASE}}/api/v1/projects/ROOM_ID/volumes/VOLUME_ID/files?path=/`,
 
 	"logs": `LOGS — one container, or the whole VPS. Never a combined dump of every container in a room.
 

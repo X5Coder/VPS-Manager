@@ -205,11 +205,20 @@ func isAppRoute(path string) bool {
 
 func (s *Server) withGate(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.hasGateSession(r) {
-			writeErr(w, 401, telegram.DeniedMsg)
+		if s.hasGateSession(r) {
+			next(w, r)
 			return
 		}
-		next(w, r)
+		if tok, _ := s.apiTokenFromRequest(r); tok != nil {
+			next(w, r)
+			return
+		}
+		h := r.Header.Get("Authorization")
+		if strings.HasPrefix(strings.ToLower(h), "bearer ") || strings.TrimSpace(r.Header.Get("X-API-Token")) != "" {
+			writeErr(w, 401, "invalid api token")
+			return
+		}
+		writeErr(w, 401, telegram.DeniedMsg)
 	}
 }
 

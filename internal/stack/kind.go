@@ -1,7 +1,9 @@
 package stack
 
 import (
+	"archive/tar"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -29,13 +31,35 @@ func FilenameKind(name string) string {
 	return ""
 }
 
+// LooksLikeDockerSave is true for docker save / OCI image tars (manifest.json at the root).
+func LooksLikeDockerSave(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	tr := tar.NewReader(f)
+	for i := 0; i < 80; i++ {
+		h, err := tr.Next()
+		if err != nil {
+			return false
+		}
+		n := strings.TrimPrefix(filepath.ToSlash(h.Name), "./")
+		base := filepath.Base(n)
+		if base == "manifest.json" || base == "index.json" || base == "oci-layout" || n == "repositories" {
+			return true
+		}
+	}
+	return false
+}
+
 // CheckUpload enforces filename vs contents vs room kind.
 // containerID allows a single .tar onto one service of a multi room.
 func CheckUpload(fname, path, roomKind, containerID string, emptyRoom bool) error {
 	fname = filepath.Base(fname)
 	fk := FilenameKind(fname)
 	if fk == "" {
-		return fmt.Errorf("package_bad_name: single rooms need a .tar (docker save); multi rooms need a .tar.gz (compose.yml + images/*.tar)")
+		return fmt.Errorf("package_empty: not a .tar (docker save) or .tar.gz (compose + images) package")
 	}
 	content := "single"
 	if ArchiveHasCompose(path) {
@@ -46,6 +70,9 @@ func CheckUpload(fname, path, roomKind, containerID string, emptyRoom bool) erro
 	}
 	if fk == "multi" && content != "multi" {
 		return fmt.Errorf("package_kind_mismatch: file is .tar.gz (multi) but there is no compose .yml inside. Multi package must be:\n  compose.yml (any *.yml name)\n  images/image-01.tar …")
+	}
+	if fk == "single" && content == "single" && !LooksLikeDockerSave(path) {
+		return fmt.Errorf("package_invalid: not a docker save .tar (missing manifest.json). Use docker save, not a random .tar")
 	}
 	if emptyRoom {
 		return nil

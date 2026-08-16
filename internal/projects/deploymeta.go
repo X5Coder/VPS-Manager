@@ -157,6 +157,24 @@ func (s *Service) AppendUpdateHistory(roomID, image string) UpdateEvent {
 	return ev
 }
 
+func (s *Service) ClearStaleDeploy(roomID, projectID, liveStatus string) {
+	liveStatus = strings.TrimSpace(liveStatus)
+	if liveStatus == "" {
+		return
+	}
+	if liveStatus == "exited" {
+		liveStatus = "stopped"
+	}
+	m := s.ReadDeployMeta(roomID, projectID)
+	m.Status = liveStatus
+	m.Job = ""
+	s.writeDeployMeta(roomID, projectID, m)
+	if p, err := s.Store.GetProject(projectID); err == nil && p != nil {
+		p.Status = liveStatus
+		_ = s.Store.UpdateProject(*p)
+	}
+}
+
 func (s *Service) MarkDeploying(roomID, projectID, image, job string) {
 	s.markDeploying(roomID, projectID, image, job)
 }

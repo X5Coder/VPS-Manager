@@ -2611,11 +2611,12 @@
       <h3 class="docs-h">5. Upload — single vs multi</h3>
       ${step("E", "Single · .tar only", "docker save one image. Optional container_id updates one container in a multi room.", errBox(`202/200 deploying
 400 { code:"package_kind_mismatch" } if the file is actually a multi stack
-400 { code:"package_bad_name" } if not .tar
+400 { code:"package_empty" } if not .tar
+400 { code:"package_invalid" } if .tar is not docker save
 404 container not found
 409 deploy already running`), uploadTar)}
       ${step("F", "Multi · .tar.gz only", "Fixed layout. Any root *.yml is accepted as compose.", cmdCard("Package layout", multiTree) + errBox(`400 package_kind_mismatch if you send .tar.gz without compose.yml, or send multi to a single room
-400 package_bad_name if not .tar.gz`), uploadMulti)}
+400 package_empty if not .tar.gz`), uploadMulti)}
 
       <h3 class="docs-h">6. Logs</h3>
       ${step("G0", "By container name", "One container. There is no combined log for the whole room.", errBox(`200 { log, container_id, name, containers[] }
@@ -2674,7 +2675,7 @@ Errors: { "ok": false, "error": "...", "code": "..." } + HTTP status.
      compose.yml   (any *.yml at root)
      images/image-01.tar
      images/image-02.tar
-   400 package_bad_name | package_kind_mismatch | file_required
+   400 package_empty | package_invalid | package_kind_mismatch | content_type | file_required
    404 container not found  409 deploy running
 
 5) Logs — one container, never a combined room dump
@@ -2687,6 +2688,7 @@ Errors: { "ok": false, "error": "...", "code": "..." } + HTTP status.
 6) Files
    GET /api/rooms/ROOM_ID/containers/CONTAINER_ID/files?path=/
    GET /api/rooms/ROOM_ID/volumes/VOLUME_ID/files?path=/
+   GET /api/v1/projects/ROOM_ID/containers/CONTAINER_ID/files?path=/
 
 7) PATCH quota  POST exec  GET /api/v1/ports
 

@@ -45,3 +45,26 @@ func TestCheckUploadMismatch(t *testing.T) {
 		t.Fatalf("single room + multi name, got %v", err)
 	}
 }
+
+func TestCheckUploadEmptyNameAndFakeTar(t *testing.T) {
+	err := CheckUpload("notes.bin", "/no/such", "single", "", true)
+	if err == nil || !strings.Contains(err.Error(), "package_empty") {
+		t.Fatalf("expected package_empty, got %v", err)
+	}
+	dir := t.TempDir()
+	tarPath := filepath.Join(dir, "not-docker.tar")
+	f, err := os.Create(tarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tw := tar.NewWriter(f)
+	hdr := &tar.Header{Name: "readme.txt", Mode: 0644, Size: 5}
+	_ = tw.WriteHeader(hdr)
+	_, _ = tw.Write([]byte("hello"))
+	tw.Close()
+	f.Close()
+	err = CheckUpload("not-docker.tar", tarPath, "single", "", true)
+	if err == nil || !strings.Contains(err.Error(), "package_invalid") {
+		t.Fatalf("expected package_invalid, got %v", err)
+	}
+}

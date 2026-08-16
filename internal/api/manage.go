@@ -506,6 +506,16 @@ func (s *Server) canControlRoom(w http.ResponseWriter, r *http.Request, roomID s
 
 // roomAccess: room session OR owner may open files/env (owner still sees passwords in list).
 func (s *Server) roomAccess(w http.ResponseWriter, r *http.Request, roomID string) (*store.Session, *store.Room) {
+	if tok, _ := s.apiTokenFromRequest(r); tok != nil {
+		room, err := s.Store.GetRoom(roomID)
+		if err != nil || room == nil {
+			writeErr(w, 404, "room not found")
+			return nil, nil
+		}
+		_ = s.Rooms.EnsureUnlocked(roomID)
+		s.Projects.SyncRoomFilesVisibility(roomID)
+		return &store.Session{Kind: auth.KindOwner}, room
+	}
 	sess := s.requireSession(w, r)
 	if sess == nil {
 		return nil, nil

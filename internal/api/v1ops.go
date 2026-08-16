@@ -26,9 +26,6 @@ func (s *Server) logsTarget(roomID, want string) (string, int, string) {
 	if want != "" {
 		return want, 0, ""
 	}
-	if len(list) == 1 {
-		return list[0].ID, 0, ""
-	}
 	if len(list) == 0 {
 		return "", 404, "no containers"
 	}
@@ -251,6 +248,9 @@ func (s *Server) handleV1Volumes(w http.ResponseWriter, r *http.Request, roomID 
 		return
 	}
 	switch rest[1] {
+	case "files":
+		s.handleRoomVolume(w, r, roomID, rest)
+		return
 	case "clean", "wipe":
 		if r.Method != http.MethodPost {
 			writeErr(w, 405, "method")
@@ -661,30 +661,13 @@ func (s *Server) handleV1TerminalWS(w http.ResponseWriter, r *http.Request, room
 
 func (s *Server) roomResourceUsage(roomID string) map[string]any {
 	cts, _ := s.Store.ListContainers(roomID)
-	var cpu, memPct float64
-	var memUsed, memLimit int64
-	n := 0
-	for _, c := range cts {
-		if s.Docker == nil || c.DockerID == "" {
-			continue
-		}
-		cp, mp, used, lim := s.Docker.ParseStats(c.DockerID)
-		cpu += cp
-		memPct += mp
-		memUsed += used
-		if lim > memLimit {
-			memLimit = lim
-		}
-		n++
-	}
-	avgCPU, avgMem := 0.0, 0.0
-	if n > 0 {
-		avgCPU = cpu
-		avgMem = memPct / float64(n)
-	}
+	// Do not call `docker stats` here — GET /status used to spawn one per container and spike host CPU.
 	return map[string]any{
-		"cpu_percent": avgCPU, "ram_percent": avgMem,
-		"ram_used": memUsed, "ram_limit": memLimit,
-		"containers_sampled": n,
+		"cpu_percent":        0.0,
+		"ram_percent":        0.0,
+		"ram_used":           int64(0),
+		"ram_limit":          int64(0),
+		"containers_sampled": len(cts),
+		"storage_used":       s.cachedUsage(roomID),
 	}
 }

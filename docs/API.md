@@ -75,7 +75,7 @@ curl -fS -H "Authorization: Bearer YOUR_TOKEN" \
   "http://YOUR_VPS_IP:9090/api/v1/projects/ROOM_ID/upload"
 ```
 
-**400** `package_bad_name` · `package_kind_mismatch` (single sent as multi or the reverse) · `file_required`  
+**400** `package_empty` (not `.tar` / `.tar.gz`, or tiny file) · `package_invalid` (`.tar` is not `docker save`) · `package_kind_mismatch` (single vs multi swapped) · `content_type` (not multipart) · `file_required`  
 **404** container not found · **409** deploy already running
 
 ## 5. Logs
@@ -99,7 +99,7 @@ curl -sS "http://YOUR_VPS_IP:9090/api/v1/projects/ROOM_ID/logs?container=CONTAIN
 Same result: `GET /api/v1/projects/ROOM_ID/containers/CONTAINER_ID/logs`
 
 **200** `{ log, container_id, name, containers }`  
-**400** `logs_target_required` if both `name` and `container` are missing (multi rooms). Single rooms with one container may omit them.  
+**400** `logs_target_required` if both `name` and `container` are missing (single and multi).  
 Stream: `GET .../logs?container=ID&stream=1` or `.../logs/stream`  
 Clear: `DELETE .../logs?container=ID` or `POST .../logs/clear?container=ID`
 
@@ -133,7 +133,8 @@ POST /api/v1/projects/ROOM_ID/exec   {"command":"ls -la"}
   waits until the command finishes. stdout, stderr, exit_code. No short timeout.
   container_id optional (required only if the room has more than one container and you want a specific one).
 GET  /api/v1/projects/ROOM_ID/terminal/ws?access_token=TOKEN   interactive websocket
-GET  /api/v1/status   VPS + per-room storage/CPU/RAM
+GET  /api/v1/quota     GET only (POST → 405)
+GET  /api/v1/status   VPS + per-room storage (CPU/RAM per room is not live docker stats)
 POST /api/v1/agent    {"tool":"list_rooms"}
 POST /api/v1/agent/chat  {"messages":[{"role":"user","text":"..."}]}
 ```
@@ -148,7 +149,11 @@ Volumes tab → click a volume → browse files inside it.
 ```
 GET /api/rooms/ROOM_ID/containers/CONTAINER_ID/files?path=/
 GET /api/rooms/ROOM_ID/volumes/VOLUME_ID/files?path=/
+GET /api/v1/projects/ROOM_ID/containers/CONTAINER_ID/files?path=/
+GET /api/v1/projects/ROOM_ID/volumes/VOLUME_ID/files?path=/
 ```
+
+Bearer API token is accepted on these paths (same as `/api/v1`). Invalid token → **401** `invalid api token`. Invalid `path` → **400**.
 
 ## 9. GitHub Actions
 

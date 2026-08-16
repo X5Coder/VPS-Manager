@@ -171,6 +171,8 @@ func (s *Server) applyImageTarRoom(room *store.Room, p *store.Project, tarPath s
 	if err != nil {
 		if p != nil {
 			s.Projects.MarkDeployResult(p.RoomID, p.ID, p.Image, "", false, err.Error())
+		} else {
+			s.Projects.MarkDeployResult(room.ID, room.ID, want, "", false, err.Error())
 		}
 		return "", err
 	}
