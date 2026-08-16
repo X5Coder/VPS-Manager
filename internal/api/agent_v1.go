@@ -81,7 +81,7 @@ func (s *Server) apiAgentChat(w http.ResponseWriter, r *http.Request) {
 	hist := append([]ai.Message{{Role: "system-note", Text: "VPS Manager central agent. Tools: " + strings.Join(agentToolNames(), ", ") + ". Return tool+tool_arg JSON when you need data."}}, body.Messages...)
 	var last string
 	for i := 0; i < 6; i++ {
-		rep, _, err := ai.TurnWith(ai.ManagerPrompt, hist)
+		rep, _, err := ai.TurnWithTools(ai.ManagerPrompt, ai.ManagerTools, hist)
 		if err != nil {
 			writeJSON(w, 502, map[string]any{"ok": false, "error": err.Error()})
 			return
@@ -109,7 +109,7 @@ func (s *Server) dispatchAgentTool(scope, tool, arg, roomID, base string) (strin
 		roomID = arg
 	}
 	switch tool {
-	case "list_projects", "list_rooms":
+	case "list_projects", "list_rooms", "list":
 		return s.toolListProjects(), nil
 	case "project_detail", "get_room", "get_room_status":
 		return s.toolProjectDetail(arg, roomID, scope)
@@ -164,7 +164,7 @@ func (s *Server) dispatchAgentTool(scope, tool, arg, roomID, base string) (strin
 		id := firstNonEmpty(roomID, arg)
 		info := stack.AnalyzeComposeDir(s.stackDir(id))
 		return toolJSON(info), nil
-	case "overview", "token", "github", "update", "create_room", "list", "logs", "exec", "storage", "full", "docs":
+	case "overview", "token", "github", "update", "create_room", "logs", "exec", "storage", "full", "docs":
 		if tool == "storage" {
 			tool = "exec"
 		}

@@ -202,6 +202,23 @@ func (s *Service) StartBackupAsync(label, description string, scheduled bool) (*
 }
 
 func (s *Service) StartRestoreAsync(token, snapshotID string) (*Job, error) {
+	return s.StartRestoreList(token, []string{snapshotID})
+}
+
+func (s *Service) StartRestoreList(token string, repos []string) (*Job, error) {
+	var cleaned []string
+	seen := map[string]bool{}
+	for _, r := range repos {
+		r = strings.TrimSpace(r)
+		if r == "" || seen[r] {
+			continue
+		}
+		seen[r] = true
+		cleaned = append(cleaned, r)
+	}
+	if len(cleaned) == 0 {
+		return nil, fmt.Errorf("choose at least one room snapshot")
+	}
 	s.waitWorkers(25 * time.Second)
 	if s.workers.Load() > 0 {
 		return nil, fmt.Errorf("previous job is still stopping — wait a few seconds and press Start")
@@ -221,12 +238,17 @@ func (s *Service) StartRestoreAsync(token, snapshotID string) (*Job, error) {
 	s.jobCtx = ctx
 	s.mu.Unlock()
 
+	label := "Restore"
+	msg := "Restore started — large images can take several minutes (docker load)"
+	if len(cleaned) > 1 {
+		msg = fmt.Sprintf("Restoring %d rooms — large images can take several minutes", len(cleaned))
+	}
 	j := Job{
 		ID: uuid.NewString(), Kind: "restore", Status: "running",
-		Label: "Restore", Message: "Restore started — this can take several minutes",
-		Progress: "Inspecting last restore point…", Percent: 2, Logs: []string{},
+		Label: label, Message: msg,
+		Progress: "Starting…", Percent: 2, Logs: []string{},
 		StartedAt:  time.Now().UTC().Format(time.RFC3339),
-		SnapshotID: snapshotID,
+		SnapshotID: cleaned[0],
 	}
 	s.setJob(j)
 
@@ -241,7 +263,17 @@ func (s *Service) StartRestoreAsync(token, snapshotID string) (*Job, error) {
 			}
 			s.mu.Unlock()
 		}()
-		err := s.restoreRoomRepo(token, snapshotID)
+		var err error
+		for i, repo := range cleaned {
+			if err = s.errIfStopped(); err != nil {
+				break
+			}
+			s.report(2+(i*90)/len(cleaned), "Room %d/%d · %s", i+1, len(cleaned), repo)
+			err = s.restoreRoomRepo(token, repo)
+			if err != nil {
+				break
+			}
+		}
 		if s.stopGen.Load() != gen {
 			return
 		}

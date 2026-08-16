@@ -65,7 +65,7 @@ func (s *Server) handleRoomAI(w http.ResponseWriter, r *http.Request, roomID str
 		Role: "system-note",
 		Text: diskSystemNote(st, pb.String()),
 	}}, body.Messages...)
-	rep, raw, err := ai.TurnWith(ai.RoomPrompt, hist)
+	rep, raw, err := ai.TurnWithTools(ai.RoomPrompt, ai.RoomTools, hist)
 	if err != nil {
 		writeErr(w, 502, err.Error())
 		return
@@ -323,7 +323,7 @@ func (s *Server) handleHostAI(w http.ResponseWriter, r *http.Request) {
 		Role: "system-note",
 		Text: "Page: Host terminal. You are already root on this VPS. Working directory /root. " + s.usageSnapshot(),
 	}}, body.Messages...)
-	rep, raw, err := ai.TurnWith(ai.HostPrompt, hist)
+	rep, raw, err := ai.TurnWithTools(ai.HostPrompt, ai.HostTools, hist)
 	if err != nil {
 		writeErr(w, 502, err.Error())
 		return
@@ -407,7 +407,7 @@ func (s *Server) handleTokensAI(w http.ResponseWriter, r *http.Request) {
 		note += " No rooms yet — you MAY create_room."
 	}
 	hist := append([]ai.Message{{Role: "system-note", Text: note}}, body.Messages...)
-	rep, raw, err := ai.TurnWith(ai.TokenPrompt, hist)
+	rep, raw, err := ai.TurnWithTools(ai.TokenPrompt, ai.TokenTools, hist)
 	if err != nil {
 		writeErr(w, 502, err.Error())
 		return
@@ -601,7 +601,7 @@ func (s *Server) handleLogsAI(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	rep, raw, err := ai.TurnWith(ai.LogsPrompt, hist)
+	rep, raw, err := ai.TurnWithTools(ai.LogsPrompt, ai.LogsTools, hist)
 	if err != nil {
 		writeErr(w, 502, err.Error())
 		return
@@ -658,7 +658,7 @@ func (s *Server) handleUsageAI(w http.ResponseWriter, r *http.Request) {
 		Role: "system-note",
 		Text: s.usageSnapshot(),
 	}}, body.Messages...)
-	rep, raw, err := ai.TurnWith(ai.UsagePrompt, hist)
+	rep, raw, err := ai.TurnWithTools(ai.UsagePrompt, ai.UsageTools, hist)
 	if err != nil {
 		writeErr(w, 502, err.Error())
 		return

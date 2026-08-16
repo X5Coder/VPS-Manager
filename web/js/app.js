@@ -315,14 +315,14 @@
     (pack.bubbles || []).forEach((b, idx) => {
       const enter = b.enter ? (b.role === "user" ? " ai-in ai-send-in" : " ai-in ai-recv-in") : "";
       if (b.enter) b.enter = false;
-      const display = b.role === "bot" ? normalizeBotText(b.text) : unescapeChatEscapes(String(b.text || ""));
+      const display = b.role === "bot" || b.role === "think" ? normalizeBotText(b.text) : unescapeChatEscapes(String(b.text || ""));
       const hasCode = b.role === "bot" && /```/.test(display);
       const dir = isRTLText(display) ? "rtl" : "ltr";
       const copy = b.role === "bot" && !hasCode && String(display).length > 90
         ? `<button type="button" class="ai-copy" data-copy-bubble="${idx}" aria-label="Copy message">Copy</button>`
         : "";
       bits.push(`<div class="ai-bubble-wrap ${esc(b.role)}" data-bubble-idx="${idx}">
-        <div class="ai-bubble ${esc(b.role)}${enter}${hasCode ? " has-code" : ""}" dir="${dir}">${formatChat(display, idx)}</div>
+        <div class="ai-bubble ${esc(b.role)}${enter}${hasCode ? " has-code" : ""}" dir="${dir}">${b.role === "think" ? `<span class="ai-think-lab">Working</span> ` : ""}${formatChat(display, idx)}</div>
         ${copy}
       </div>`);
     });
@@ -1115,12 +1115,22 @@
             const n = Math.min(22, q.length, t.length);
             return n < 12 || !(t.includes(q.slice(0, n)) || q.includes(t.slice(0, n)));
           });
-          if (msgs.length || say) await pushBot(pack, msgs.length ? msgs.join("\n\n") : say, aiLog);
-          else await releaseTyping(pack, aiLog);
           if (tool) {
-            pack.status = "Using tool…";
+            const think = say || `Using ${tool}…`;
+            pack.bubbles.push({ role: "think", text: think, enter: true });
+            pack.status = think;
             pack.typing = true;
             paintAIChat(aiLog, pack);
+            const sig = `${tool}|${toolArg}`;
+            pack._toolHits = pack._toolHits || [];
+            pack._toolHits.push(sig);
+            if (pack._toolHits.filter((x) => x === sig).length > 2) {
+              pack.messages.push({
+                role: "terminal",
+                text: "SYSTEM: You already ran this tool. Answer from the TOOL results. Empty tool. done true. Do not mention Terminal.",
+              });
+              continue;
+            }
             try {
               const tr = await api("/api/agent/tool", {
                 method: "POST",
@@ -1143,6 +1153,8 @@
             pack.typing = true;
             continue;
           }
+          if (msgs.length || say) await pushBot(pack, msgs.length ? msgs.join("\n\n") : say, aiLog);
+          else await releaseTyping(pack, aiLog);
           if (ask.length) {
             const q = ask[0];
             const nameQ = /name|اسم|سمي|سمّ/i.test(q);
@@ -3159,26 +3171,51 @@ Never DELETE via API. One token = all rooms.`;
           box.innerHTML = `<p class="muted">No room snapshots with format VPS-ROOM-SNAP-v1 on this account.</p>`;
           return;
         }
-        box.innerHTML = `<p class="ok-text">Format OK · ${list.length} room(s)</p>
-          <div class="snap-grid" style="margin-top:10px">${list.map((s) => `
+        box.innerHTML = `<p class="ok-text">Format OK · ${list.length} room(s) — tick rooms then Restore selected, or restore all</p>
+          <div class="row-actions" style="margin:10px 0 12px">
+            <button class="btn sm action" type="button" id="snap-all">Select all</button>
+            <button class="btn sm action" type="button" id="snap-none">Clear</button>
+            <button class="btn sm primary action" type="button" id="snap-restore-sel">Restore selected</button>
+            <button class="btn primary action" type="button" id="snap-restore-all">Restore all rooms</button>
+          </div>
+          <div class="snap-grid">${list.map((s) => `
             <article class="snap-card ok">
-              <div class="snap-card-top">
+              <label class="snap-check">
+                <input type="checkbox" data-remote="${esc(s.repo)}" data-name="${esc(s.name || s.room_id)}" />
                 <div>
                   <h3>${esc(s.name || s.room_id)}</h3>
                   <div class="mono snap-repo">${esc(s.repo)}</div>
+                  <div class="muted">${esc(fmtWhen(s.at || ""))}</div>
                 </div>
-                <span class="snap-mark">✓</span>
-              </div>
-              <div class="muted">${esc(fmtWhen(s.at || ""))}</div>
-              <button class="btn sm primary action" style="margin-top:10px" data-remote="${esc(s.repo)}" data-name="${esc(s.name || s.room_id)}">Restore this room</button>
+              </label>
             </article>`).join("")}</div>`;
-        box.querySelectorAll("[data-remote]").forEach((b) => bindAction(b, async () => {
-          if (!confirm(`Restore room "${b.dataset.name || b.dataset.remote}" only? The room ID stays the same. Other rooms stay as they are.`)) return;
-          const r = await api("/api/backup/restore", { method: "POST", body: JSON.stringify({ token: tok, repo: b.dataset.remote }) });
+        const picked = () => [...box.querySelectorAll("input[data-remote]:checked")].map((el) => el.dataset.remote).filter(Boolean);
+        const runRestore = async (repos, all) => {
+          if (!all && !repos.length) {
+            toast("Tick at least one room");
+            return;
+          }
+          const body = all ? { token: tok, all: true } : { token: tok, repos };
+          const r = await api("/api/backup/restore", { method: "POST", body: JSON.stringify(body) });
           const ok = document.querySelector("#bakok");
           if (ok) { ok.textContent = r.message || "Restore started."; ok.classList.remove("hidden"); }
           setTimeout(() => renderRestore(), 600);
-        }));
+        };
+        box.querySelector("#snap-all")?.addEventListener("click", () => {
+          box.querySelectorAll("input[data-remote]").forEach((el) => { el.checked = true; });
+        });
+        box.querySelector("#snap-none")?.addEventListener("click", () => {
+          box.querySelectorAll("input[data-remote]").forEach((el) => { el.checked = false; });
+        });
+        bindAction(box.querySelector("#snap-restore-sel"), async () => {
+          const repos = picked();
+          if (!confirm(`Restore ${repos.length} selected room(s)? Each keeps its original room ID. Other rooms stay as they are.`)) return;
+          await runRestore(repos, false);
+        });
+        bindAction(box.querySelector("#snap-restore-all"), async () => {
+          if (!confirm(`Restore ALL ${list.length} rooms from GitHub? Each keeps its original room ID.`)) return;
+          await runRestore([], true);
+        });
       } catch (ex) { box.innerHTML = `<p class="error">${esc(ex.message)}</p>`; }
     };
   }

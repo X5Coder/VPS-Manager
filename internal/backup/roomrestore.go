@@ -94,7 +94,7 @@ func (s *Service) restoreRoomRepo(token, repo string) error {
 			if err := s.errIfStopped(); err != nil {
 				return err
 			}
-			s.report(10+i*30/max1(len(man.Images)), "Load image %s", img.Ref)
+			s.report(10+i*30/max1(len(man.Images)), "Load image %s (docker load — large images stay on this step for a while)", img.Ref)
 			tree := filepath.Join(work, fmt.Sprintf("img-%02d", i+1))
 			for _, key := range img.Files {
 				rel := strings.TrimPrefix(key, img.Prefix)
@@ -103,7 +103,24 @@ func (s *Service) restoreRoomRepo(token, repo string) error {
 					return fmt.Errorf("image file %s: %w", key, err)
 				}
 			}
-			if err := s.Docker.LoadImageDir(tree); err != nil {
+			stopHB := make(chan struct{})
+			go func(ref string) {
+				t := time.NewTicker(20 * time.Second)
+				defer t.Stop()
+				n := 0
+				for {
+					select {
+					case <-stopHB:
+						return
+					case <-t.C:
+						n++
+						s.report(-1, "Still loading %s · %ds (not stuck — docker load)", ref, n*20)
+					}
+				}
+			}(img.Ref)
+			err := s.Docker.LoadImageDir(tree)
+			close(stopHB)
+			if err != nil {
 				return fmt.Errorf("docker load %s: %w", img.Ref, err)
 			}
 			_ = os.RemoveAll(tree)

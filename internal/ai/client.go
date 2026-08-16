@@ -209,40 +209,22 @@ Rules:
 - Do not invent log lines. Only use the provided excerpt.
 - ask at most one question. done true when finished.`
 
-const TokenPrompt = `You are the VPS Manager API docs agent. You explain the FULL public API, GitHub deploy, empty rooms, and tokens. You CAN create a token (name only) or an empty room. You are not a refusal bot.
+const TokenPrompt = `You are the VPS Manager Tokens agent. You live on the Tokens page. You explain the public API, GitHub scripts, and tokens. You can create a token (name only) or an empty room. You are NOT a terminal. There is no Terminal tool on this page.
 
-Language: match the user. Arabic or English — do not mix. JSON keys stay English. One spoken "say". "says" MUST stay []. Use **bold**, ` + "`code`" + `, and fenced curl/yaml inside say. Keep JSON valid (\\n for newlines).
+Language: match the user. JSON keys English. One "say". "says" stays []. Use **bold** and fenced curl/yaml in say.
 
-Always reply with ONLY one JSON object:
-{"say":"full useful answer","says":[],"tool":"","tool_arg":"","ask":[],"choices":[],"create_room":false,"room_name":"","room_password":"","quota_gb":0,"container_port":0,"create_token":false,"token_name":"","done":false}
+You receive a JSON envelope (system + tools[] + messages). Reply with ONE JSON object:
+{"say":"...","says":[],"tool":"","tool_arg":"","ask":[],"choices":[],"create_room":false,"room_name":"","room_password":"","quota_gb":0,"create_token":false,"token_name":"","done":false}
 
-Mini-harness: BEFORE a long how-to, fetch the docs section with a tool (empty create_*). TOOL comes back as TERMINAL. Then explain in the user's language using that text. Do not invent endpoints.
+Harness loop:
+1) If you need live data, set tool + a short say like "Fetching room names…" (UI shows that as thinking). Empty create_*.
+2) After TOOL text arrives, ANSWER with the real names/ids from that JSON. done true. Do not call the same tool again.
+3) "list rooms / show rooms / الرومات" → tool=list_rooms once, then list names in say. NEVER mention Terminal.
+4) API how-to → docs_token / docs_github / docs_update / docs_full.
+5) Create token: ask name if missing, then create_token true + token_name.
+6) Empty room: unique name, quota_gb, password ≥ 6, then create_room true.
 
-Tools (tool_arg = section id):
-- docs_overview
-- docs_token          (create API from Tokens page)
-- docs_github         (Copy script into the project repo)
-- docs_update         (update an existing room via tar / GitHub / ROOM_ID)
-- docs_create_room    (empty room without a project yet)
-- docs_list           (list rooms)
-- docs_exec           (exec + storage + quota PATCH)
-- docs_full           (entire API brief)
-
-Map the question: "how do I update" → docs_update; "create token / from here" → docs_token; "github / workflow" → docs_github; "empty room" → docs_create_room; "list rooms" → docs_list; "everything" → docs_full.
-
-Never invent BASE, TOKEN, ids, GB, or passwords. Use SYSTEM-NOTE + TOOL. Never print a guessed secret. Never DELETE.
-
-CREATE TOKEN HERE
-Ask for a short name if missing. Then create_token true with token_name only. One token = all rooms. Tell them to open Tokens (this page) if they need the UI.
-
-CREATE EMPTY ROOM HERE
-Need unique name (A-Za-z0-9_-), quota_gb > 0 and ≤ quota_available_gb, password ≥ 6 chars. Then create_room true.
-
-If they want a token: name → create_token.
-If they want a new empty room: collect name+GB+password, then create_room.
-Do not refuse with “I only create tokens”.
-
-ask at most one. create_* false while asking or while tool is set. done true when the answer is complete or you created something.`
+Never invent room names, BASE, TOKEN, or secrets. Never DELETE. Never set tool=terminal.`
 
 const UsagePrompt = `You are the VPS Manager server harness. You do NOT type shell here — you CALL TOOLS in a loop, then answer from TOOL text. Never invent numbers. Never SSH. Never dump JSON into "say".
 
@@ -346,29 +328,38 @@ func postAISlots(payload []byte) (string, error) {
 }
 
 func Turn(history []Message) (Reply, string, error) {
-	return TurnWith(systemPrompt, history)
+	return TurnWithTools(systemPrompt, DeployTools, history)
 }
 
 func TurnWith(sys string, history []Message) (Reply, string, error) {
+	return TurnWithTools(sys, nil, history)
+}
+
+func TurnWithTools(sys string, tools []ToolSpec, history []Message) (Reply, string, error) {
 	if len(history) > MaxTurns {
 		history = history[len(history)-MaxTurns:]
 	}
-	var b strings.Builder
-	b.WriteString(sys)
-	b.WriteString("\n\nCONVERSATION:\n")
-	for _, m := range history {
-		role := strings.ToUpper(strings.TrimSpace(m.Role))
-		if role == "" {
-			role = "USER"
-		}
-		b.WriteString(role)
-		b.WriteString(":\n")
-		b.WriteString(strings.TrimSpace(m.Text))
-		b.WriteString("\n\n")
+	env := map[string]any{
+		"system": sys,
+		"tools":  tools,
+		"messages": history,
+		"instructions": "Every request is JSON. Every reply MUST be one JSON object (no markdown fences). If you need data, set tool + tool_arg and put a short human sentence in say (the UI shows it as a thinking step). Do not invent tool results. After a TOOL/TERMINAL message, continue the loop until the user request is done, then done true. Never call a tool named Terminal — it does not exist. One tool OR one command per turn, not both.",
+		"reply_schema": map[string]any{
+			"say":      "thinking step or final answer",
+			"says":     []string{},
+			"tool":     "",
+			"tool_arg": "",
+			"command":  "",
+			"ask":      []string{},
+			"choices":  []string{},
+			"done":     false,
+		},
 	}
-	b.WriteString("Reply with JSON only.\n")
-
-	payload, _ := json.Marshal(map[string]string{"text": b.String()})
+	rawEnv, err := json.Marshal(env)
+	if err != nil {
+		return Reply{}, "", err
+	}
+	payload, _ := json.Marshal(map[string]string{"text": string(rawEnv)})
 	text, lastErr := postAISlots(payload)
 	if lastErr != nil {
 		return Reply{}, "", lastErr
@@ -395,6 +386,9 @@ func TurnWith(sys string, history []Message) (Reply, string, error) {
 	}
 	rep.Command = strings.TrimSpace(rep.Command)
 	rep.Tool = strings.ToLower(strings.TrimSpace(rep.Tool))
+	if rep.Tool == "terminal" || rep.Tool == "term" || rep.Tool == "shell" {
+		rep.Tool = ""
+	}
 	rep.ToolArg = strings.TrimSpace(rep.ToolArg)
 	rep.Image = strings.TrimSpace(rep.Image)
 	rep.UpdateID = strings.TrimSpace(rep.UpdateID)

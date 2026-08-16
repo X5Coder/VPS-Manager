@@ -348,19 +348,44 @@ func (s *Server) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Token      string `json:"token"`
-		SnapshotID string `json:"snapshot_id"`
-		Repo       string `json:"repo"`
+		Token      string   `json:"token"`
+		SnapshotID string   `json:"snapshot_id"`
+		Repo       string   `json:"repo"`
+		Repos      []string `json:"repos"`
+		All        bool     `json:"all"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, 400, "invalid request")
 		return
 	}
-	repo := strings.TrimSpace(body.Repo)
-	if repo == "" {
-		repo = strings.TrimSpace(body.SnapshotID)
+	token := strings.TrimSpace(body.Token)
+	repos := make([]string, 0, len(body.Repos)+1)
+	for _, rpo := range body.Repos {
+		if strings.TrimSpace(rpo) != "" {
+			repos = append(repos, strings.TrimSpace(rpo))
+		}
 	}
-	job, err := s.Backup.StartRestoreAsync(body.Token, repo)
+	one := strings.TrimSpace(body.Repo)
+	if one == "" {
+		one = strings.TrimSpace(body.SnapshotID)
+	}
+	if one != "" {
+		repos = append(repos, one)
+	}
+	if body.All {
+		list, err := s.Backup.InspectRemoteRooms(token)
+		if err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		repos = nil
+		for _, rm := range list {
+			if strings.TrimSpace(rm.Repo) != "" {
+				repos = append(repos, rm.Repo)
+			}
+		}
+	}
+	job, err := s.Backup.StartRestoreList(token, repos)
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
