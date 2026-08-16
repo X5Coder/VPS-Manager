@@ -17,6 +17,7 @@
     filePath: ".",
     fileContent: "",
     termLines: [],
+    termHostLines: [],
     shellBuilt: false,
     busy: false,
     askedRestore: false,
@@ -182,7 +183,7 @@
     const icons = {
       server: `<svg ${p}><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7h.01M7 17h.01"/></svg>`,
       rooms: `<svg ${p}><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>`,
-      deploy: `<svg ${p}><path d="M12 3v12"/><path d="M8 11l4 4 4-4"/><path d="M5 19h14"/></svg>`,
+      terminal: `<svg ${p}><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></svg>`,
       restore: `<svg ${p}><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>`,
       logs: `<svg ${p}><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></svg>`,
       docs: `<svg ${p}><path d="M7 3h8l5 5v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M15 3v5h5M9 13h6M9 17h4"/></svg>`,
@@ -223,9 +224,10 @@
 
   const AGENT_HELLO = "Hello — you are already on this VPS. Write a command and I’ll run it in the terminal here. I will not SSH.";
   const TOKEN_HELLO = "Hello — I explain the full API. Ask how to create a token, update a room, GitHub, or an empty room — I’ll pull that docs section and walk you through it.";
-  const ROOM_HELLO = "Hello — I’m inside this project on the VPS. I can run shell commands here, fetch this room’s usage vs the host, and publish a Docker update on this same id. I won’t SSH and I won’t delete the project.";
+  const ROOM_HELLO = "Hello — I’m inside this room on the VPS. Commands run in this terminal (room files by default). I can clone from GitHub, build Docker, and explain each command in chat. I won’t SSH and I won’t delete the room.";
   const LOGS_HELLO = "Hello — I analyze panel logs. Ask me to analyze, then pick which log.";
-  const USAGE_HELLO = "Hello — I use live tools: list every project and its disk, details for one project, and host CPU/RAM/disk. Ask how many projects and whether usage is high.";
+  const USAGE_HELLO = "Hello — I am a live harness: I call tools (CPU, RAM, disk, projects, docker_ps) then answer with real numbers. Ask anything about this VPS.";
+  const HOST_HELLO = "Hello — this is a real root shell on the VPS. Type a command or ask me; I will type it here and explain it in chat. I will not SSH.";
 
   function sendIconHTML() {
     return `<button class="ai-send" id="ai-send" type="submit" aria-label="Send">${planeIconSVG()}</button>
@@ -864,6 +866,21 @@
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+  function explainCommand(cmd) {
+    const c = String(cmd || "").trim();
+    if (!c) return "";
+    const low = c.toLowerCase();
+    if (/^git\s+clone/.test(low)) return `Cloning the repository in the terminal:\n\`${c}\``;
+    if (/^docker\s+compose/.test(low) || /^docker-compose/.test(low)) return `Running Compose in the terminal:\n\`${c}\``;
+    if (/^docker\s+build/.test(low)) return `Building the Docker image:\n\`${c}\``;
+    if (/^docker\s+pull/.test(low)) return `Pulling the image:\n\`${c}\``;
+    if (/^docker\s+ps/.test(low)) return `Listing containers:\n\`${c}\``;
+    if (/^ls\b/.test(low)) return `Listing files:\n\`${c}\``;
+    if (/^cd\b/.test(low)) return `Changing directory:\n\`${c}\``;
+    if (/^cat\b|^head\b|^tail\b/.test(low)) return `Reading a file:\n\`${c}\``;
+    return `Running in the terminal:\n\`${c}\``;
+  }
+
   async function typeCommand(tout, prompt, cmd) {
     if (!tout) return;
     tout.textContent += prompt;
@@ -1225,6 +1242,12 @@
             break;
           }
           if (draftCmd && execFn) {
+            const explained = String(say || "").trim();
+            if (!explained) await pushBot(pack, explainCommand(draftCmd), aiLog);
+            else if (!explained.includes(draftCmd.slice(0, Math.min(24, draftCmd.length)))) {
+              pack.bubbles.push({ role: "bot", text: `Command: \`${draftCmd}\``, enter: true });
+              paintAIChat(aiLog, pack);
+            }
             pack.status = agentStatus(pack, "type");
             pack.typing = false;
             paintAIChat(aiLog, pack);
@@ -1554,7 +1577,7 @@
         }
         return "/projects";
       case "server": return "/server";
-      case "deploy": return "/deploy";
+      case "terminal": return "/terminal";
       case "restore": return "/restore";
       case "tokens": return "/tokens";
       case "logs": return "/logs";
@@ -1577,7 +1600,8 @@
     if (p === "/projects") return { view: "rooms" };
     if (p === "/docs" || p === "/guide") return { view: "docs" };
     if (p === "/tokens" || p === "/api") return { view: "tokens" };
-    if (p === "/deploy") return { view: "deploy" };
+    if (p === "/deploy") return { view: "rooms" };
+    if (p === "/terminal") return { view: "terminal" };
     if (p === "/restore") return { view: "restore" };
     if (p === "/logs") return { view: "logs" };
     if (p === "/settings") return { view: "settings" };
@@ -1595,6 +1619,7 @@
 
   function setView(view, extra = {}) {
     saveChatDraft();
+    if (view === "deploy") view = "rooms";
     state.view = view;
     Object.assign(state, extra);
     state.sidebarOpen = false;
@@ -1992,7 +2017,7 @@
 
     const nav = root.querySelector("#nav");
     const items = isOwner
-      ? [["server", "Server"], ["rooms", "Rooms"], ["deploy", "Deploy"], ["restore", "Backup"], ["logs", "Logs"], ["tokens", "Tokens"], ["docs", "Docs"], ["settings", "Settings"]]
+      ? [["server", "Server"], ["rooms", "Rooms"], ["terminal", "Terminal"], ["restore", "Backup"], ["logs", "Logs"], ["tokens", "Tokens"], ["docs", "Docs"], ["settings", "Settings"]]
       : [["room", "Room"], ["rooms", "All rooms"]];
     const highlight = navHighlight(active || state.view);
     nav.innerHTML = items.map(([k, label]) => {
@@ -2170,13 +2195,75 @@
     }
   }
 
+  async function openAddProjectModal() {
+    let maxGB = 1;
+    try {
+      const st = await api("/api/storage");
+      maxGB = Math.max(0.1, Number(st.quota_available_gb || 0));
+    } catch {}
+    const modal = el(`<div class="modal-back add-proj-modal show">
+      <div class="modal-card add-proj-card">
+        <h3>New project room</h3>
+        <p class="muted">Creates an empty isolated room. Open it, then clone from GitHub or upload files. The agent uses the room terminal.</p>
+        <form id="add-proj-form" class="form-grid" style="margin-top:14px">
+          <div class="field full"><label>Name</label><input name="name" required minlength="2" maxlength="40" placeholder="my-app" autocomplete="off" /></div>
+          <div class="field full"><label>Password</label><input name="password" type="password" minlength="6" placeholder="at least 6 characters (optional)" /></div>
+          <div class="field full"><label>Kind</label>
+            <select name="kind">
+              <option value="single">Single container</option>
+              <option value="multi">Multi (compose / several containers)</option>
+            </select>
+          </div>
+          <div class="field full">${quotaSliderHTML({ name: "quota_gb", id: "add-quota", maxGB, valueGB: Math.min(1, maxGB), required: true })}</div>
+          <p class="error" id="add-proj-err"></p>
+          <div class="row-actions full" style="margin-top:8px">
+            <button class="btn ghost" type="button" data-no>Cancel</button>
+            <button class="btn primary action" type="submit">Create room</button>
+          </div>
+        </form>
+      </div>
+    </div>`);
+    const close = () => {
+      modal.classList.remove("show");
+      modal.classList.add("hide");
+      setTimeout(() => modal.remove(), 280);
+    };
+    modal.querySelector("[data-no]").onclick = close;
+    modal.addEventListener("click", (e) => { if (e.target === modal) close(); });
+    document.body.appendChild(modal);
+    bindQuotaSliders(modal);
+    modal.querySelector("[name=name]")?.focus();
+    modal.querySelector("#add-proj-form").onsubmit = async (e) => {
+      e.preventDefault();
+      const err = modal.querySelector("#add-proj-err");
+      if (err) err.textContent = "";
+      const fd = new FormData(e.target);
+      const name = String(fd.get("name") || "").trim();
+      const password = String(fd.get("password") || "").trim();
+      const kind = String(fd.get("kind") || "single");
+      const quota_gb = Number(fd.get("quota_gb") || 0);
+      try {
+        const res = await api("/api/rooms", {
+          method: "POST",
+          body: JSON.stringify({ name, password, kind, quota_gb }),
+        });
+        close();
+        const id = res.room?.id;
+        if (id) setView("room", { roomId: id, roomTab: "terminal", termLines: [] });
+        else setView("rooms");
+      } catch (ex) {
+        if (err) err.textContent = ex.message || "Could not create room";
+      }
+    };
+  }
+
   async function renderRooms() {
     const gen = state._gen;
     const paint = (rooms) => {
       if (!rooms) {
         shell(`<div class="topbar"><div><h2>Rooms</h2><div class="sub">Each room is one project (id + password)</div></div>
-          <button class="btn primary action" id="go-deploy">Deploy new</button></div>${skel(4)}`, "rooms");
-        document.querySelector("#go-deploy")?.addEventListener("click", () => setView("deploy"));
+          <button class="btn primary action" id="go-add-proj">Add project</button></div>${skel(4)}`, "rooms");
+        document.querySelector("#go-add-proj")?.addEventListener("click", () => openAddProjectModal());
         return;
       }
       const cards = (rooms || []).map((r) => {
@@ -2232,8 +2319,8 @@
       }).join("") || `<div class="empty-projects">
           ${brandMarkHTML()}
           <h3>No rooms</h3>
-          <p class="muted">Deploy a project into a room. One room holds its containers, images, volumes, and secrets.</p>
-          <button class="btn primary action" id="empty-deploy">Deploy new</button>
+          <p class="muted">Create an empty room, then clone from GitHub or upload files in the room terminal.</p>
+          <button class="btn primary action" id="empty-deploy">Add project</button>
         </div>`;
 
       shell(`
@@ -2241,12 +2328,12 @@
           <h2>Rooms</h2>
           <div class="sub">${(rooms || []).length ? `${rooms.length} on this VPS` : "Nothing deployed yet"}</div>
         </div>
-        <button class="btn primary action" id="go-deploy">Deploy new</button>
+        <button class="btn primary action" id="go-deploy">Add project</button>
         </div>
         <div class="proj-list">${cards}</div>`, "rooms");
 
-      document.querySelector("#go-deploy")?.addEventListener("click", () => setView("deploy"));
-      document.querySelector("#empty-deploy")?.addEventListener("click", () => setView("deploy"));
+      document.querySelector("#go-deploy")?.addEventListener("click", () => openAddProjectModal());
+      document.querySelector("#empty-deploy")?.addEventListener("click", () => openAddProjectModal());
       bindCopyables();
       document.querySelectorAll("[data-enter]").forEach((b) => bindAction(b, async () => {
         const roomId = b.dataset.enter;
@@ -3718,8 +3805,8 @@ Never DELETE via API. One token = all rooms.`;
     if (tab === "overview") {
     const qgb = room.quota_bytes ? gb(room.quota_bytes).toFixed(2) : "";
     if (emptyRoom) {
-      body = `<div class="panel"><h3>First deploy</h3>
-        <p class="muted" style="margin:0 0 12px">This room is empty. Upload <strong>one</strong> file:</p>
+      body = `<div class="panel"><h3>Empty room</h3>
+        <p class="muted" style="margin:0 0 12px">This room is isolated and empty. Use <strong>Terminal</strong> + the agent to <code>git clone</code> and Dockerize, or upload a file:</p>
         <ul class="muted" style="margin:0 0 14px;padding-left:18px;line-height:1.6">
           <li><code>.tar</code> — single image (<code>docker save -o app.tar image:tag</code>)</li>
           <li><code>.tar.gz</code> — multi stack (<code>compose.yml</code> + <code>images/*.tar</code>)</li>
@@ -4007,11 +4094,12 @@ Never DELETE via API. One token = all rooms.`;
         <p class="ok-text hidden" id="envok">Saved.</p>
       </div>`;
     } else if (tab === "terminal") {
-      const pick = state.termCtr || (containers.find((c) => c.status === "running") || containers[0] || {}).id || "";
+      const pick = state.termCtr || "host";
       state.termCtr = pick;
-      const lines = (state.termLines || []).join("") || "Shell for this room. Commands run inside the selected container.\n";
+      const lines = (state.termLines || []).join("") || "Room shell. Default: isolated room files on the VPS (not docker exec). Pick a running container only if you need a shell inside it.\n";
       const prompt = `root@${room.name}:~#`;
-      body = `<div class="panel" style="margin-bottom:10px"><div class="row-actions" style="flex-wrap:wrap" id="term-ctrs">${containers.map((c) => `<button type="button" class="btn sm action ${pick === c.id ? "primary" : ""}" data-term-ctr="${esc(c.id)}">${esc(ctrNum(c))} ${esc(ctrLabel(c))}</button>`).join("")}</div></div>` + agentDeskHTML({
+      const hostBtn = `<button type="button" class="btn sm action ${pick === "host" ? "primary" : ""}" data-term-ctr="host">Room shell</button>`;
+      body = `<div class="panel" style="margin-bottom:10px"><div class="row-actions" style="flex-wrap:wrap" id="term-ctrs">${hostBtn}${containers.map((c) => `<button type="button" class="btn sm action ${pick === c.id ? "primary" : ""}" data-term-ctr="${esc(c.id)}">${esc(ctrNum(c))} ${esc(ctrLabel(c))}</button>`).join("")}</div></div>` + agentDeskHTML({
         title: "Terminal",
         prompt,
         termLines: lines,
@@ -4031,14 +4119,14 @@ Never DELETE via API. One token = all rooms.`;
           <button class="btn sm primary action" id="backrooms">Rooms</button>
         </div>
       </div>
-      ${emptyRoom ? "" : `<div class="tabs">
+      <div class="tabs">
         <button data-tab="overview" class="${tab === "overview" || tab === "container" ? "active" : ""}">Containers</button>
         <button data-tab="images" class="${tab === "images" ? "active" : ""}">Images</button>
         <button data-tab="volumes" class="${tab === "volumes" || tab === "volume" ? "active" : ""}">Volumes</button>
         <button data-tab="env" class="${tab === "env" ? "active" : ""}">Secrets</button>
         <button data-tab="logs" class="${tab === "logs" ? "active" : ""}">Logs</button>
         <button data-tab="terminal" class="${tab === "terminal" ? "active" : ""}">Terminal</button>
-      </div>`}
+      </div>
       ${body}`, "room");
 
     document.querySelectorAll("[data-tab]").forEach((b) => b.onclick = () => setView("room", { roomTab: b.dataset.tab, filePath: b.dataset.tab === "files" ? (state.filePath || ".") : state.filePath }));
@@ -4455,7 +4543,8 @@ Never DELETE via API. One token = all rooms.`;
       };
       const execBody = (cmd) => JSON.stringify({
         command: cmd,
-        container_id: state.termCtr || "",
+        host: state.termCtr === "host" || !state.termCtr,
+        container_id: state.termCtr && state.termCtr !== "host" ? state.termCtr : "",
         project_id: mainProj?.id || "",
         timeout_sec: 600,
       });
@@ -4474,7 +4563,8 @@ Never DELETE via API. One token = all rooms.`;
         roomId: id,
         seedContext: `SYSTEM CONTEXT (do not ask again): You are inside room "${room.name}". id=${id}. ` +
           `Disk used ${fmtBytes(room.usage_bytes)} of quota ${room.quota_bytes ? fmtBytes(room.quota_bytes) : "not set"}. ` +
-          `Containers: ${(containers || []).map((c) => `${ctrNum(c)} ${ctrLabel(c)} image=${c.image} status=${c.status}`).join("; ") || "none"}. ` +
+          `Containers: ${(containers || []).map((c) => `${ctrNum(c)} ${ctrLabel(c)} image=${c.image} status=${c.status}`).join("; ") || "none (empty room — git clone and dockerize here)"}. ` +
+          `Commands run in the room shell on the VPS unless they pick a container. Put every action in command; explain it in say. ` +
           `If they ask for usage, answer with those numbers in one say. You may publish a Docker update on this same id (image + start). They can also drop a docker save .tar on Overview → Update image. GitHub: Tokens → pick this project → Copy script into .github/workflows/vps-deploy.yml. You may edit files via the terminal after reading them. Refuse deleting this room.`,
         onQuota: (gb) => api(`/api/rooms/${id}/quota`, { method: "POST", body: JSON.stringify({ quota_gb: gb }) }),
         onStart: async (image) => {
@@ -4548,6 +4638,89 @@ Never DELETE via API. One token = all rooms.`;
     if (!state.me || state.me.kind !== "owner") throw new Error("Admin unlock failed");
   }
 
+  async function renderTerminal() {
+    const gen = state._gen;
+    const prompt = "root@vps:~#";
+    const lines = (state.termHostLines || []).join("") || "Connected to this VPS as root. Commands run on the host (not inside a room container).\n";
+    shell(`
+      <div class="topbar"><div>
+        <h2>Terminal</h2>
+        <div class="sub">Live VPS shell · already connected</div>
+      </div></div>
+      ${agentDeskHTML({
+        title: "Host agent",
+        prompt,
+        termLines: lines,
+        showTerm: true,
+        placeholder: "Ask to run something, or type below…",
+        hints: TERM_HINTS.map((h) => `<button type="button" class="hint" data-hint="${esc(h.cmd)}" title="${esc(h.tip)}">${esc(h.cmd)}</button>`).join(""),
+      })}`, "terminal");
+    if (!alive("terminal", gen)) return;
+    const termOut = document.querySelector("#term-out");
+    const persist = (line) => {
+      state.termHostLines = state.termHostLines || [];
+      state.termHostLines.push(line);
+    };
+    const agent = bindAgentChat({
+      key: "host-term",
+      stillHere: () => state.view === "terminal",
+      aiPath: "/api/host/ai",
+      execFn: (cmd) => api("/api/host/exec", {
+        method: "POST",
+        body: JSON.stringify({ command: cmd, timeout_sec: 600 }),
+      }),
+      termOut,
+      prompt: prompt + " ",
+      hello: HOST_HELLO,
+      toolScope: "host",
+      seedContext: "SYSTEM: You are root on this VPS. The terminal is already connected. Run real host commands. Explain each command in say. Use tools for metrics.",
+      onTermLine: persist,
+    });
+    document.querySelectorAll("[data-hint]").forEach((b) => {
+      b.onclick = () => {
+        const inp = document.querySelector("#term-cmd");
+        if (inp) { inp.value = b.dataset.hint; inp.focus(); }
+      };
+    });
+    document.querySelector("#term-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const inp = document.querySelector("#term-cmd");
+      const cmd = String(inp?.value || "").trim();
+      if (!cmd) return;
+      inp.value = "";
+      const head = prompt + " " + cmd + "\n";
+      if (termOut) {
+        termOut.textContent += head;
+        termOut.scrollTop = termOut.scrollHeight;
+      }
+      persist(head);
+      try {
+        const res = await api("/api/host/exec", {
+          method: "POST",
+          body: JSON.stringify({ command: cmd, timeout_sec: 600 }),
+        });
+        const where = res.where ? `[${res.where}] ` : "";
+        const out = where + (res.output || "") + (res.error ? `\n${res.error}` : "");
+        const line = out + (out.endsWith("\n") ? "" : "\n");
+        if (termOut) {
+          termOut.textContent += line;
+          termOut.scrollTop = termOut.scrollHeight;
+        }
+        persist(line);
+        agent.pack.messages.push({ role: "user", text: "I ran this in the terminal: " + cmd });
+        agent.pack.messages.push({
+          role: "terminal",
+          text: `exit ${res.exit ?? (res.error ? 1 : 0)}\n${out}`.slice(0, 12000),
+        });
+      } catch (ex) {
+        const err = (ex.message || ex) + "\n";
+        if (termOut) termOut.textContent += err;
+        persist(err);
+      }
+    });
+    document.querySelector("#term-cmd")?.focus();
+  }
+
   async function render() {
     if (!state.gated) { renderGate(); return; }
     if (!state.me) await loadMe();
@@ -4555,7 +4728,7 @@ Never DELETE via API. One token = all rooms.`;
     if (state.me.kind === "owner") {
       ensureBackupWatch();
       if (state.view === "rooms") return renderRooms();
-      if (state.view === "deploy") return renderDeploy();
+      if (state.view === "terminal") return renderTerminal();
       if (state.view === "logs") return renderLogs();
       if (state.view === "docs") return renderDocs();
       if (state.view === "settings") return renderSettings();

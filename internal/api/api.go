@@ -99,6 +99,8 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("/api/ws/metrics", s.withGateWS(s.Metrics.HandleWS))
 
 	s.Mux.HandleFunc("/api/host", s.withGate(s.handleHostInfo))
+	s.Mux.HandleFunc("/api/host/exec", s.withGate(s.handleHostExec))
+	s.Mux.HandleFunc("/api/host/ai", s.withGate(s.handleHostAI))
 	s.Mux.HandleFunc("/api/deploy/pull", s.withGate(s.handleDeployPull))
 	s.Mux.HandleFunc("/api/deploy/ai", s.withGate(s.handleDeployAI))
 	s.Mux.HandleFunc("/api/deploy/exec", s.withGate(s.handleDeployExec))
@@ -735,7 +737,25 @@ func (s *Server) handleRooms(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, 200, out)
 	case http.MethodPost:
-		writeErr(w, 400, "empty rooms are disabled — deploy a project to create a room")
+		if s.requireOwner(w, r) == nil {
+			return
+		}
+		var body struct {
+			Name     string  `json:"name"`
+			Password string  `json:"password"`
+			Kind     string  `json:"kind"`
+			QuotaGB  float64 `json:"quota_gb"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeErr(w, 400, "invalid request")
+			return
+		}
+		rm, pass, err := s.createEmptyRoom(body.Name, body.QuotaGB, 8080, 0, body.Password, body.Kind, "", false, "")
+		if err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true, "room": rm, "password": pass})
 		return
 	default:
 		writeErr(w, 405, "method")

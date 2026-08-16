@@ -104,6 +104,34 @@ func (s *Server) toolListProjects() string {
 	return b.String()
 }
 
+func (s *Server) toolDockerPS() string {
+	rooms, _ := s.Store.ListRooms()
+	var b strings.Builder
+	b.WriteString("TOOL docker_ps:\n")
+	n := 0
+	for _, rm := range rooms {
+		cts, _ := s.Store.ListContainers(rm.ID)
+		if len(cts) == 0 {
+			projs, _ := s.Store.ListProjects(rm.ID)
+			for _, p := range projs {
+				fmt.Fprintf(&b, "- room=%q id=%s name=%s image=%s status=%s docker=%s host_port=%d\n",
+					rm.Name, rm.ID, p.Name, p.Image, p.Status, p.ContainerID, p.HostPort)
+				n++
+			}
+			continue
+		}
+		for _, c := range cts {
+			fmt.Fprintf(&b, "- room=%q id=%s name=%s image=%s status=%s docker=%s\n",
+				rm.Name, rm.ID, c.Name, c.Image, c.Status, c.DockerID)
+			n++
+		}
+	}
+	if n == 0 {
+		b.WriteString("No containers recorded.\n")
+	}
+	return b.String()
+}
+
 func (s *Server) toolProjectDetail(arg, roomID, scope string) (string, error) {
 	want := strings.TrimSpace(arg)
 	if scope == "room" && roomID != "" {

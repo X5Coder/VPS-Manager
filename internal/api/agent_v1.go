@@ -62,7 +62,7 @@ func agentToolNames() []string {
 		"list_volumes", "get_volume", "create_volume", "delete_volume", "clean_volume", "inspect_volume",
 		"list_env", "get_env", "set_env", "delete_env",
 		"get_logs", "clear_logs", "vps_logs",
-		"exec_command",
+		"exec_command", "docker_ps",
 		"read_compose", "validate_compose", "analyze_services", "start_stack", "stop_stack", "restart_stack", "remove_stack",
 		"get_vps_status", "get_cpu", "get_ram", "get_storage", "get_docker_status",
 		"docs",
@@ -116,6 +116,8 @@ func (s *Server) dispatchAgentTool(scope, tool, arg, roomID, base string) (strin
 	case "get_room_resources":
 		id := firstNonEmpty(arg, roomID)
 		return toolJSON(s.roomResourceUsage(id)), nil
+	case "docker_ps":
+		return s.toolDockerPS(), nil
 	case "host_stats", "get_vps_status":
 		return toolJSON(map[string]any{"note": s.usageSnapshot(), "status": "ok"}), nil
 	case "get_cpu":

@@ -751,20 +751,31 @@ func (s *Server) handleRoomExec(w http.ResponseWriter, r *http.Request, roomID s
 	if body.TimeoutSec > 0 {
 		timeout = time.Duration(body.TimeoutSec) * time.Second
 	}
-	maxT := 3 * time.Minute
-	if body.Host {
-		maxT = 10 * time.Minute
-	}
+	maxT := 10 * time.Minute
 	if timeout > maxT {
 		timeout = maxT
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 
-	var cmd *exec.Cmd
-	where := "room-fs"
+	runHost := func() (string, error) {
+		dir := filepath.Join(s.Cfg.RuntimeDir, roomID)
+		if body.ProjectID != "" {
+			pdir := s.Rooms.ProjectDir(roomID, body.ProjectID)
+			if st, err := os.Stat(pdir); err == nil && st.IsDir() {
+				dir = pdir
+			}
+		}
+		_ = os.MkdirAll(dir, 0o750)
+		cmd := exec.CommandContext(ctx, "sh", "-lc", cmdLine)
+		cmd.Dir = dir
+		b, err := cmd.CombinedOutput()
+		return string(b), err
+	}
+
+	hostCLI := isHostShellCommand(cmdLine)
 	dockerID := ""
-	if !body.Host && s.Docker != nil {
+	if !body.Host && !hostCLI && s.Docker != nil {
 		ct := s.resolveRoomContainer(roomID, body.ContainerID)
 		if ct != nil {
 			dockerID = ct.DockerID
@@ -775,44 +786,51 @@ func (s *Server) handleRoomExec(w http.ResponseWriter, r *http.Request, roomID s
 				dockerID = p.ContainerID
 			}
 		}
-		if dockerID != "" {
-			st, _ := s.Docker.InspectStatus(dockerID)
-			if st == "running" {
-				cmd = exec.CommandContext(ctx, "docker", "exec", dockerID, "sh", "-lc", cmdLine)
-				where = "container"
-			}
-		}
 	}
-	if cmd == nil {
-		dir := filepath.Join(s.Cfg.RuntimeDir, roomID)
-		if body.ProjectID != "" {
-			pdir := s.Rooms.ProjectDir(roomID, body.ProjectID)
-			if st, err := os.Stat(pdir); err == nil && st.IsDir() {
-				dir = pdir
+
+	where := "room-host"
+	out := ""
+	var runErr error
+	if dockerID != "" {
+		st, _ := s.Docker.InspectStatus(dockerID)
+		if st == "running" {
+			cmd := exec.CommandContext(ctx, "docker", "exec", dockerID, "sh", "-lc", cmdLine)
+			b, err := cmd.CombinedOutput()
+			out, runErr = string(b), err
+			where = "container"
+			if runErr != nil && (strings.Contains(out, "OCI runtime") || strings.Contains(out, "procReady") || strings.Contains(runErr.Error(), "OCI runtime")) {
+				out2, err2 := runHost()
+				out, runErr, where = out2, err2, "room-host"
 			}
+		} else {
+			out, runErr = runHost()
 		}
-		_ = os.MkdirAll(dir, 0o750)
-		cmd = exec.CommandContext(ctx, "sh", "-lc", cmdLine)
-		cmd.Dir = dir
-		where = "room-fs"
+	} else {
+		out, runErr = runHost()
 	}
-	out, err := cmd.CombinedOutput()
-	res := map[string]any{"output": string(out), "where": where}
-	if err != nil {
-		// never leak raw docker "not running" as primary UX when we already fell back;
-		// if we still hit docker error somehow, strip noise
-		msg := err.Error()
-		if strings.Contains(msg, "is not running") {
-			msg = "container is stopped — ran in room files instead failed; try Resume"
-		}
-		res["error"] = msg
+	res := map[string]any{"output": out, "where": where}
+	if runErr != nil {
+		res["error"] = runErr.Error()
 		res["exit"] = 1
 	} else {
 		res["exit"] = 0
 	}
-	_ = appendLog(s.Cfg.DataDir, "room-"+roomID[:8], "$ "+cmdLine+"\n"+string(out))
+	_ = appendLog(s.Cfg.DataDir, "room-"+roomID[:8], "$ "+cmdLine+"\n"+out)
 	_ = rotateLog(logPath(s.Cfg.DataDir, "room-"+roomID[:8]), 256*1024)
 	writeJSON(w, 200, res)
+}
+
+func isHostShellCommand(cmdLine string) bool {
+	t := strings.TrimSpace(strings.ToLower(cmdLine))
+	if t == "" {
+		return false
+	}
+	first := strings.Fields(t)[0]
+	switch first {
+	case "docker", "ctr", "nerdctl", "systemctl", "journalctl", "ss", "ip", "iptables", "ufw", "apt", "apt-get", "dnf", "yum":
+		return true
+	}
+	return strings.HasPrefix(t, "sudo docker") || strings.HasPrefix(t, "sudo systemctl")
 }
 
 func (s *Server) resolveRoomContainer(roomID, want string) *store.Container {

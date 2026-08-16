@@ -1310,35 +1310,25 @@ func (s *Service) chunkNamed(gh *GitHub, work, baseRepo, desc string, roots []ro
 }
 
 func (s *Service) InspectRemote(token string) (*Manifest, []SnapshotRecord, error) {
-	gh := NewGitHub(token)
-	u, err := gh.Validate()
+	rooms, err := s.InspectRemoteRooms(token)
 	if err != nil {
 		return nil, nil, err
 	}
-	gh.User = u.Login
-	// check FORMAT
-	tmp, _ := os.CreateTemp("", "fmt-*")
-	name := tmp.Name()
-	tmp.Close()
-	defer os.Remove(name)
-	if err := gh.DownloadFile(IndexRepo, "FORMAT", name); err != nil {
-		return nil, nil, fmt.Errorf("no VPS MANAGE backup map found on this account (missing %s)", IndexRepo)
-	}
-	b, _ := os.ReadFile(name)
-	got := string(bytesTrim(b))
-	if !acceptedBackupFormat(got) {
-		return nil, nil, fmt.Errorf("GitHub data is not organized in VPS MANAGE format")
-	}
-	var latest Manifest
-	if err := gh.GetJSON(IndexRepo, "latest.json", &latest); err != nil {
-		return nil, nil, fmt.Errorf("backup map incomplete: %w", err)
-	}
-	if err := ValidateManifest(&latest); err != nil {
-		return nil, nil, err
-	}
 	var index []SnapshotRecord
-	_ = gh.GetJSON(IndexRepo, "index.json", &index)
-	return &latest, index, nil
+	for _, r := range rooms {
+		index = append(index, SnapshotRecord{
+			ID: r.Repo, Label: r.Name, Description: r.Repo, CreatedAt: r.At, Status: "ok",
+		})
+	}
+	latest := &Manifest{
+		Format: RoomSnapFormat, Version: 1,
+		Label: "Room snapshots", CreatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if len(index) > 0 {
+		latest.SnapshotID = index[0].ID
+		latest.Label = index[0].Label
+	}
+	return latest, index, nil
 }
 
 func (s *Service) Restore(token, snapshotID string) error {
@@ -1365,108 +1355,26 @@ func (s *Service) executeRestore(token, snapshotID string) error {
 		}
 		token = t
 	}
-	gh := NewGitHub(token)
-	gh.Ctx = s.jobContext()
-	u, err := gh.Validate()
+	snapshotID = strings.TrimSpace(snapshotID)
+	if strings.HasPrefix(strings.ToLower(snapshotID), RoomRepoPrefix) {
+		return s.restoreRoomRepo(token, snapshotID)
+	}
+	rooms, err := s.InspectRemoteRooms(token)
 	if err != nil {
 		return err
 	}
-	gh.User = u.Login
-
-	var man Manifest
-	path := "latest.json"
-	if snapshotID != "" && snapshotID != "latest" {
-		path = "snapshots/" + snapshotID + "/manifest.json"
-	}
-	if err := gh.GetJSON(IndexRepo, path, &man); err != nil {
-		return err
-	}
-	if err := ValidateManifest(&man); err != nil {
-		return err
-	}
-
-	s.report(4, "Inspecting last restore point")
-	cp := s.loadCheckpoint()
-	if cp == nil || cp.Kind != "restore" || cp.SnapshotID != man.SnapshotID {
-		cp = &Checkpoint{Kind: "restore", SnapshotID: man.SnapshotID, RoomsDone: []string{}, UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
-		s.saveCheckpoint(cp)
-	} else {
-		s.report(5, "Resuming restore from last point (%d rooms done)", len(cp.RoomsDone))
-	}
-
-	work := filepath.Join(s.WorkDir, "restore-"+man.SnapshotID[:8])
-	_ = os.RemoveAll(work)
-	_ = os.MkdirAll(work, 0o750)
-	defer os.RemoveAll(work)
-
-	if man.Layout != nil || man.Version >= 2 {
-		if len(man.SystemFiles) > 0 || man.FullBackup {
-			if cp.SystemDone {
-				s.report(10, "Panel database already restored — skipping")
-			} else {
-				s.report(8, "Restoring panel database, secrets & tokens")
-				sysDir := filepath.Join(work, "system-out")
-				_ = os.MkdirAll(sysDir, 0o750)
-				if err := s.downloadEntries(gh, work, man.SystemFiles, sysDir, "system/"); err != nil {
-					s.logf("system files: %v", err)
-				}
-				if err := s.applyRestoredSystem(sysDir); err != nil {
-					return fmt.Errorf("apply system: %w", err)
-				}
-				cp.SystemDone = true
-				s.saveCheckpoint(cp)
-			}
+	if snapshotID == "" || snapshotID == "latest" {
+		if len(rooms) == 1 {
+			return s.restoreRoomRepo(token, rooms[0].Repo)
 		}
-		if err := s.restoreFromLayout(gh, work, &man); err != nil {
-			return err
-		}
-	} else {
-		if len(man.SystemFiles) > 0 || man.FullBackup {
-			if cp.SystemDone {
-				s.report(10, "Panel database already restored — skipping")
-			} else {
-				s.report(8, "Restoring panel database, secrets & tokens")
-				sysDir := filepath.Join(work, "system-out")
-				_ = os.MkdirAll(sysDir, 0o750)
-				if err := s.downloadEntries(gh, work, man.SystemFiles, sysDir, "system/"); err != nil {
-					s.logf("system files: %v", err)
-				}
-				if err := s.applyRestoredSystem(sysDir); err != nil {
-					return fmt.Errorf("apply system: %w", err)
-				}
-				cp.SystemDone = true
-				s.saveCheckpoint(cp)
-			}
-		}
-		for i, pm := range man.Projects {
-			pct := 20 + (60 * i / max(len(man.Projects), 1))
-			rid := pm.RoomID
-			if rid == "" {
-				rid = pm.RoomName
-			}
-			if checkpointHasRoom(cp, rid) {
-				s.report(pct, "Room %s already restored — skipping", pm.RoomName)
-				continue
-			}
-			s.report(pct, "Restoring %s (%d/%d)", pm.RoomName, i+1, len(man.Projects))
-			if err := s.restoreProject(gh, work, pm); err != nil {
-				return fmt.Errorf("%s: %w", pm.RoomName, err)
-			}
-			cp.RoomsDone = append(cp.RoomsDone, rid)
-			s.saveCheckpoint(cp)
+		return fmt.Errorf("choose a room snapshot to restore — there is no global vps-manage-map")
+	}
+	for _, r := range rooms {
+		if r.Repo == snapshotID || r.RoomID == snapshotID || strings.EqualFold(r.Name, snapshotID) {
+			return s.restoreRoomRepo(token, r.Repo)
 		}
 	}
-
-	s.report(88, "Starting restored projects from saved images")
-	if err := s.startRestoredWorkloads(); err != nil {
-		return err
-	}
-	if s.OnAfterRestore != nil {
-		_ = s.OnAfterRestore()
-	}
-	_ = s.SaveToken(token)
-	s.clearCheckpoint()
-	return nil
+	return fmt.Errorf("no room snapshot named %q on this account", snapshotID)
 }
 
 func (s *Service) downloadEntries(gh *GitHub, work string, entries []FileEntry, destRoot, stripPrefix string) error {

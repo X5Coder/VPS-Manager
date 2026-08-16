@@ -243,7 +243,7 @@ func (s *Service) runRoomSnapshots(scheduled bool) (*SnapshotRecord, error) {
 		}
 		fp := s.roomFingerprint(rm)
 		st := s.loadRoomSnap(rm.ID)
-		if scheduled && st != nil && st.OK && st.Fingerprint == fp && st.Repo != "" {
+		if st != nil && st.OK && st.Fingerprint == fp && st.Repo != "" {
 			s.report(pctRooms(i, n), "Room %s unchanged — skip", rm.Name)
 			skipped++
 			continue
@@ -346,6 +346,7 @@ func (s *Service) backupOneRoom(gh *GitHub, room store.Room, fp string, idx, tot
 		if err != nil {
 			return err
 		}
+		s.report(-1, "↑ %s  %s", key, prettySize(b.Size))
 		man.Blobs = append(man.Blobs, *b)
 		return nil
 	}
@@ -417,6 +418,7 @@ func (s *Service) backupOneRoom(gh *GitHub, room store.Room, fp string, idx, tot
 			if err := s.Docker.ExtractSave(ref, unpacked); err != nil {
 				return fail(fmt.Errorf("save image %s: %w", ref, err))
 			}
+			s.report(-1, "↑ image %s  %s", ref, prettySize(dirBytes(unpacked)))
 			si := SnapImage{Ref: ref, DockerID: s.Docker.ImageID(ref), Prefix: prefix}
 			err := filepath.Walk(unpacked, func(p string, info os.FileInfo, err error) error {
 				if err != nil || info == nil || info.IsDir() {
@@ -462,6 +464,9 @@ func (s *Service) backupOneRoom(gh *GitHub, room store.Room, fp string, idx, tot
 			dest := filepath.Join(work, fmt.Sprintf("vol-%02d.tgz", ord))
 			if err := s.archiveVolume(name, dest); err != nil {
 				return fail(fmt.Errorf("volume %s: %w", name, err))
+			}
+			if fi, err := os.Stat(dest); err == nil {
+				s.report(-1, "↑ volume %s  %s", name, prettySize(fi.Size()))
 			}
 			key := fmt.Sprintf("volumes/%02d.tgz", ord)
 			if err := addBlob(key, dest); err != nil {
@@ -627,4 +632,33 @@ func (s *Service) InspectRemoteRooms(token string) ([]RoomRemote, error) {
 		})
 	}
 	return out, nil
+}
+
+func dirBytes(root string) int64 {
+	var n int64
+	_ = filepath.Walk(root, func(_ string, info os.FileInfo, err error) error {
+		if err == nil && info != nil && !info.IsDir() {
+			n += info.Size()
+		}
+		return nil
+	})
+	return n
+}
+
+func prettySize(n int64) string {
+	if n < 1024 {
+		return fmt.Sprintf("%d B", n)
+	}
+	f := float64(n)
+	u := []string{"KB", "MB", "GB", "TB"}
+	for i, name := range u {
+		f /= 1024
+		if f < 1024 || i == len(u)-1 {
+			if f >= 10 {
+				return fmt.Sprintf("%.0f %s", f, name)
+			}
+			return fmt.Sprintf("%.1f %s", f, name)
+		}
+	}
+	return fmt.Sprintf("%d B", n)
 }

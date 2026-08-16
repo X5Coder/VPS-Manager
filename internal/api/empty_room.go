@@ -50,11 +50,20 @@ func (s *Server) readRoomPending(roomID string) (cPort, hPort int) {
 }
 
 func (s *Server) createEmptyRoom(name string, quotaGB float64, cPort, hPort int, password, kind, domain string, ssl bool, sshCert string) (*store.Room, string, error) {
+	if strings.TrimSpace(name) == "" {
+		return nil, "", fmt.Errorf("room name is required")
+	}
+	if err := emptyRoomErr(quotaGB); err != nil {
+		return nil, "", err
+	}
+	roomName := sanitizeRoomName(name)
+	if existing, _ := s.Store.GetRoomByName(roomName); existing != nil {
+		return nil, "", fmt.Errorf("room name already in use")
+	}
 	quota, err := s.allocateQuota(quotaGB, 0)
 	if err != nil {
 		return nil, "", err
 	}
-	roomName := s.uniqueRoomName(name)
 	pass := strings.TrimSpace(password)
 	if pass != "" && len(pass) < 6 {
 		return nil, "", fmt.Errorf("password must be at least 6 characters")

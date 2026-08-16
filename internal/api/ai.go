@@ -253,6 +253,106 @@ func (s *Server) handleDeployExec(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, res)
 }
 
+func (s *Server) handleHostExec(w http.ResponseWriter, r *http.Request) {
+	if s.requireOwner(w, r) == nil {
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeErr(w, 405, "method")
+		return
+	}
+	var body struct {
+		Command    string `json:"command"`
+		TimeoutSec int    `json:"timeout_sec"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Command) == "" {
+		writeErr(w, 400, "command required")
+		return
+	}
+	if ai.Dangerous(body.Command) {
+		writeErr(w, 400, "command not allowed")
+		return
+	}
+	timeout := 120 * time.Second
+	if body.TimeoutSec > 0 {
+		timeout = time.Duration(body.TimeoutSec) * time.Second
+	}
+	if timeout > 10*time.Minute {
+		timeout = 10 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+	dir := "/root"
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		dir = s.Cfg.DataDir
+	}
+	cmd := exec.CommandContext(ctx, "sh", "-lc", body.Command)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	res := map[string]any{"output": string(out), "where": "vps-host"}
+	if err != nil {
+		res["error"] = err.Error()
+		res["exit"] = 1
+	} else {
+		res["exit"] = 0
+	}
+	_ = appendLog(s.Cfg.DataDir, "host", "$ "+body.Command+"\n"+string(out))
+	writeJSON(w, 200, res)
+}
+
+func (s *Server) handleHostAI(w http.ResponseWriter, r *http.Request) {
+	if s.requireOwner(w, r) == nil {
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeErr(w, 405, "method")
+		return
+	}
+	var body struct {
+		Messages []ai.Message `json:"messages"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, 400, "invalid request")
+		return
+	}
+	if len(body.Messages) == 0 {
+		writeErr(w, 400, "messages required")
+		return
+	}
+	hist := append([]ai.Message{{
+		Role: "system-note",
+		Text: "Page: Host terminal. You are already root on this VPS. Working directory /root. " + s.usageSnapshot(),
+	}}, body.Messages...)
+	rep, raw, err := ai.TurnWith(ai.HostPrompt, hist)
+	if err != nil {
+		writeErr(w, 502, err.Error())
+		return
+	}
+	if ai.LooksLikeRemoteLogin(rep.Command) {
+		rep.Command = ""
+		rep.TypeOnly = false
+		rep.Say = strings.TrimSpace(rep.Say + " You are already on this VPS. I will not SSH.")
+		rep.Done = true
+	}
+	if ai.Dangerous(rep.Command) {
+		rep.Say = strings.TrimSpace(rep.Say + " That command is not allowed.")
+		rep.Command = ""
+		rep.Done = true
+	}
+	writeJSON(w, 200, map[string]any{
+		"say":       rep.Say,
+		"says":      rep.Says,
+		"command":   rep.Command,
+		"ask":       rep.Ask,
+		"choices":   rep.Choices,
+		"done":      rep.Done,
+		"type_only": rep.TypeOnly,
+		"tool":      rep.Tool,
+		"tool_arg":  rep.ToolArg,
+		"raw":       raw,
+	})
+}
+
 func (s *Server) handleTokensAI(w http.ResponseWriter, r *http.Request) {
 	if s.requireOwner(w, r) == nil {
 		return
