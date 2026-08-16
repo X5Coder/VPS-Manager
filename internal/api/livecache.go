@@ -1,9 +1,14 @@
 package api
 
-import "time"
+import (
+	"time"
+
+	"github.com/x5coder/vps-rooms/internal/rooms"
+)
 
 func (s *Server) startLiveCache() {
 	s.liveUsage = map[string]int64{}
+	s.liveDisk = map[string]rooms.DiskStats{}
 	s.liveStatus = map[string]string{}
 	go func() {
 		s.refreshLiveCache(true)
@@ -47,12 +52,13 @@ func (s *Server) refreshLiveCache(withUsage bool) {
 	}
 	status := map[string]string{}
 	usage := map[string]int64{}
+	disk := map[string]rooms.DiskStats{}
 	for i := range roomsList {
 		room := roomsList[i]
 		if withUsage {
-			if n, e := s.Rooms.UsageBytes(room.ID); e == nil {
-				usage[room.ID] = n
-			}
+			d := s.Rooms.DiskStats(room.ID)
+			usage[room.ID] = d.Usage
+			disk[room.ID] = d
 		}
 		projs, _ := s.Store.ListProjects(room.ID)
 		for _, p := range projs {
@@ -69,6 +75,7 @@ func (s *Server) refreshLiveCache(withUsage bool) {
 	s.liveStatus = status
 	if withUsage && len(usage) > 0 {
 		s.liveUsage = usage
+		s.liveDisk = disk
 	}
 	s.liveMu.Unlock()
 }
@@ -82,12 +89,20 @@ func (s *Server) cachedPorts() []int {
 }
 
 func (s *Server) cachedUsage(roomID string) int64 {
+	return s.cachedDisk(roomID).Usage
+}
+
+func (s *Server) cachedDisk(roomID string) rooms.DiskStats {
 	s.liveMu.Lock()
-	defer s.liveMu.Unlock()
-	if s.liveUsage == nil {
-		return 0
+	d, ok := s.liveDisk[roomID]
+	s.liveMu.Unlock()
+	if ok {
+		return d
 	}
-	return s.liveUsage[roomID]
+	if s.Rooms == nil {
+		return rooms.DiskStats{}
+	}
+	return s.Rooms.DiskStats(roomID)
 }
 
 func (s *Server) cachedStatus(projectID string) string {

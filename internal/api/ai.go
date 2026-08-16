@@ -693,7 +693,11 @@ func (s *Server) usageSnapshot() string {
 		facts.Hostname, facts.OS, facts.Kernel, facts.Arch, facts.Virt, metrics.FormatUptime(facts.UptimeSec), facts.SSHPort, s.Docker != nil && s.Docker.Available())
 	fmt.Fprintf(&b, "CPU: model=%q cores=%d usage=%.1f%% load1=%.2f\n", facts.CPUModel, m.CPUCores, m.CPUPercent, m.Load1)
 	fmt.Fprintf(&b, "Memory: used=%.2fGB total=%.2fGB percent=%.1f%%\n", gb(m.MemUsed), gb(m.MemTotal), m.MemPercent)
-	fmt.Fprintf(&b, "Disk: used=%.2fGB total=%.2fGB free=%.2fGB percent=%.1f%%\n", gb(m.DiskUsed), gb(m.DiskTotal), gb(m.DiskFree), m.DiskPercent)
+	fmt.Fprintf(&b, "Disk (WHOLE VPS filesystem, not quota): used=%.2fGB total=%.2fGB free=%.2fGB percent=%.1f%%\n", gb(m.DiskUsed), gb(m.DiskTotal), gb(m.DiskFree), m.DiskPercent)
+	df := s.cachedSystemDisk()
+	fmt.Fprintf(&b, "Docker unique layers: images=%.2fGB reclaimable=%.2fGB containers_rw=%.2fGB build_cache=%.2fGB\n",
+		gb(uint64(df.Images)), gb(uint64(df.ImagesReclaim)), gb(uint64(df.Containers)), gb(uint64(df.BuildCache)))
+	fmt.Fprintf(&b, "RULES: disk_total is the VPS disk size, NOT allocated quota. Per-room quota applies only to DATA (files+volumes+container RW), never to Docker images. Shared images (two Supabase stacks) exist once on disk. Do not sum the Image column. A room is over quota only if disk_used (data) > quota.\n")
 	fmt.Fprintf(&b, "Network totals: rx_bytes=%d tx_bytes=%d\n", m.NetRx, m.NetTx)
 	if len(m.GPU) > 0 {
 		for i, g := range m.GPU {
@@ -712,8 +716,6 @@ func (s *Server) usageSnapshot() string {
 	fmt.Fprintf(&b, "Rooms count: %d (names + disk only, no passwords)\n", len(rooms))
 	var usedSum int64
 	for _, rm := range rooms {
-		usage, _ := s.Rooms.UsageBytes(rm.ID)
-		usedSum += usage
 		projs, _ := s.Store.ListProjects(rm.ID)
 		stt := "empty"
 		running := 0
@@ -728,12 +730,18 @@ func (s *Server) usageSnapshot() string {
 		if len(projs) > 0 && running == 0 {
 			stt = "stopped"
 		}
+		d := s.Rooms.DiskStats(rm.ID)
+		usedSum += d.Usage
 		qGB := float64(rm.QuotaBytes) / (1024 * 1024 * 1024)
-		uGB := float64(usage) / (1024 * 1024 * 1024)
-		fmt.Fprintf(&b, "- name=%q status=%s disk_used=%.2fGB quota=%.2fGB running_projects=%d\n",
-			rm.Name, stt, uGB, qGB, running)
+		uGB := float64(d.Usage) / (1024 * 1024 * 1024)
+		over := ""
+		if rm.QuotaBytes > 0 && d.Usage > rm.QuotaBytes {
+			over = " OVER_QUOTA"
+		}
+		fmt.Fprintf(&b, "- name=%q status=%s data=%.2fGB quota=%.2fGB owned_image=%.2fGB running_projects=%d%s\n",
+			rm.Name, stt, uGB, qGB, float64(d.Images)/(1024*1024*1024), running, over)
 	}
-	fmt.Fprintf(&b, "Sum of room disk used=%.2fGB vs host disk used=%.2fGB total=%.2fGB\n",
+	fmt.Fprintf(&b, "Sum of room DATA=%.2fGB. Host used=%.2fGB total=%.2fGB (OS + Docker images + data; not the same as DATA).\n",
 		float64(usedSum)/(1024*1024*1024), gb(m.DiskUsed), gb(m.DiskTotal))
 	b.WriteString("CPU is 1s sampled then smoothed — jumps are usually normal. Judge safe / watch / danger.")
 	return b.String()

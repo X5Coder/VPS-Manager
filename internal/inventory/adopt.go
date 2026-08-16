@@ -99,14 +99,14 @@ func adoptRoom(st *store.Store, docker *dockerx.Client, rs *rooms.Service, runti
 	}
 
 	for _, p := range projs {
-		st.SyncContainerFromProject(p)
-		markDockerID(seenDocker, p.ContainerID)
-		registerImage(st, docker, rm.ID, p.Image, seenImg)
-		if docker != nil && p.ContainerID != "" {
-			adoptMounts(st, docker, rm.ID, p.ContainerID, seenVol)
-		}
 		copyRoomEnv(rs, runtimeDir, rm.ID, p.ID)
 		_, composeDir, composeProject, _ := projects.ProjectLayout(rs.ProjectDir(rm.ID, p.ID))
+		if docker != nil && composeProject == "" && p.HostPort > 0 {
+			gid, gst, _ := docker.BriefByPublish(p.HostPort)
+			if gst != "missing" && gid != "" {
+				composeProject = docker.ComposeProjectOf(gid)
+			}
+		}
 		if docker != nil && (composeDir != "" || composeProject != "") {
 			list, err := docker.ListCompose(composeProject)
 			if err == nil && len(list) > 1 {
@@ -114,26 +114,59 @@ func adoptRoom(st *store.Store, docker *dockerx.Client, rs *rooms.Service, runti
 			}
 			for _, cc := range list {
 				id, status, image := docker.ContainerBrief(cc.Name)
-				if id == "" {
+				if id == "" || status == "missing" {
 					continue
 				}
-				already := seenDockerID(seenDocker, id)
 				markDockerID(seenDocker, id)
 				if image == "" {
 					image = cc.Image
 				}
-				if !already {
-					cid := stableID(rm.ID, cc.Name)
-					if cur, _ := st.GetContainer(cid); cur == nil {
-						_ = st.UpsertContainer(store.Container{
-							ID: cid, RoomID: rm.ID, Name: cc.Name, Service: cc.Service,
-							Image: image, DockerID: id, Status: status, CreatedAt: time.Now().UTC(),
-						})
+				cid := stableID(rm.ID, cc.Name)
+				rec := store.Container{
+					ID: cid, RoomID: rm.ID, Name: cc.Name, Service: cc.Service,
+					Image: image, DockerID: id, Status: status, CreatedAt: time.Now().UTC(),
+				}
+				if cur, _ := st.GetContainer(cid); cur != nil {
+					rec.Ordinal = cur.Ordinal
+					rec.CreatedAt = cur.CreatedAt
+					rec.HostPort = cur.HostPort
+					rec.ContainerPort = cur.ContainerPort
+				} else {
+					for _, old := range cts {
+						if !strings.EqualFold(old.Service, cc.Service) && !strings.EqualFold(old.Name, cc.Name) {
+							continue
+						}
+						_, ost, _ := docker.ContainerBrief(old.DockerID)
+						if ost == "missing" || strings.EqualFold(old.Name, cc.Name) {
+							rec.ID = old.ID
+							rec.Ordinal = old.Ordinal
+							rec.CreatedAt = old.CreatedAt
+							rec.HostPort = old.HostPort
+							rec.ContainerPort = old.ContainerPort
+							break
+						}
 					}
 				}
+				_ = st.UpsertContainer(rec)
 				registerImage(st, docker, rm.ID, image, seenImg)
 				adoptMounts(st, docker, rm.ID, id, seenVol)
 			}
+		}
+		if docker != nil && p.HostPort > 0 {
+			if gid, gst, gimg := docker.BriefByPublish(p.HostPort); gst != "missing" && gid != "" {
+				p.ContainerID = gid
+				p.Status = gst
+				if gimg != "" && !strings.HasPrefix(gimg, "sha256:") {
+					p.Image = gimg
+				}
+				_ = st.UpdateProject(p)
+			}
+		}
+		st.SyncContainerFromProject(p)
+		markDockerID(seenDocker, p.ContainerID)
+		registerImage(st, docker, rm.ID, p.Image, seenImg)
+		if docker != nil && p.ContainerID != "" {
+			adoptMounts(st, docker, rm.ID, p.ContainerID, seenVol)
 		}
 	}
 

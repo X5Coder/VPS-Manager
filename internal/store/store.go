@@ -148,6 +148,28 @@ func (s *Store) SetMeta(key, value string) error {
 	return err
 }
 
+func (s *Store) DeleteMeta(key string) error {
+	_, err := s.DB.Exec(`DELETE FROM meta WHERE key=?`, key)
+	return err
+}
+
+func (s *Store) ListMetaPrefix(prefix string) ([][2]string, error) {
+	rows, err := s.DB.Query(`SELECT key, value FROM meta WHERE key LIKE ?`, prefix+"%")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out [][2]string
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		out = append(out, [2]string{k, v})
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) CreateRoom(r Room) error {
 	if r.Kind == "" {
 		r.Kind = KindSingle
@@ -389,6 +411,32 @@ func (s *Store) UpdateProject(p Project) error {
 		return fmt.Errorf("project not found")
 	}
 	s.SyncContainerFromProject(p)
+	return nil
+}
+
+func (s *Store) ReleaseDomain(domain, keepProjectID string) error {
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	if domain == "" {
+		return nil
+	}
+	list, err := s.ListAllProjects()
+	if err != nil {
+		return err
+	}
+	for _, p := range list {
+		if p.ID == keepProjectID {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(p.Domain)) != domain {
+			continue
+		}
+		p.Domain = ""
+		p.DomainEnabled = false
+		p.SSLStatus = "disabled"
+		if err := s.UpdateProject(p); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

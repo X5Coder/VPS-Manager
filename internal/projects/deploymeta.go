@@ -198,6 +198,7 @@ func (s *Service) markDeploying(roomID, projectID, image string, job ...string) 
 		p.Status = m.Status
 		_ = s.Store.UpdateProject(*p)
 	}
+	s.WriteRoomJob(roomID, m)
 }
 
 func (s *Service) MarkDeployResult(roomID, projectID, image, digest string, ok bool, errMsg string) {
@@ -224,4 +225,45 @@ func (s *Service) markDeployResult(roomID, projectID, image, digest string, ok b
 	if ok {
 		s.AppendUpdateHistory(roomID, image)
 	}
+	if ok || errMsg != "" {
+		s.WriteRoomJob(roomID, m)
+	}
+}
+
+func (s *Service) roomJobPath(roomID string) string {
+	if s.Rooms == nil || s.Rooms.RuntimeDir == "" || roomID == "" {
+		return ""
+	}
+	return filepath.Join(s.Rooms.RuntimeDir, roomID, "__job.json")
+}
+
+func (s *Service) WriteRoomJob(roomID string, m DeployMeta) {
+	path := s.roomJobPath(roomID)
+	if path == "" {
+		return
+	}
+	_ = os.MkdirAll(filepath.Dir(path), 0o700)
+	b, err := json.Marshal(m)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(path, b, 0o600)
+}
+
+func (s *Service) ReadRoomJob(roomID string) DeployMeta {
+	path := s.roomJobPath(roomID)
+	if path == "" {
+		return DeployMeta{}
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return DeployMeta{}
+	}
+	var m DeployMeta
+	_ = json.Unmarshal(b, &m)
+	return m
+}
+
+func (s *Service) ClearRoomJob(roomID string) {
+	s.WriteRoomJob(roomID, DeployMeta{Status: "running", Job: ""})
 }

@@ -45,12 +45,16 @@ type Server struct {
 	liveMu         sync.Mutex
 	livePorts      []int
 	liveUsage      map[string]int64
+	liveDisk       map[string]rooms.DiskStats
 	liveStatus     map[string]string // projectID → running|stopped|...
 	liveRefreshing atomic.Bool
+	dfMu           sync.Mutex
+	dfCache        dockerx.SystemDisk
+	dfAt           time.Time
 }
 
 func New(cfg config.Config, st *store.Store, docker *dockerx.Client, hub *metrics.Hub) *Server {
-	rs := &rooms.Service{Store: st, Docker: docker, RoomsDir: cfg.RoomsDir, RuntimeDir: cfg.RuntimeDir}
+	rs := &rooms.Service{Store: st, Docker: docker, RoomsDir: cfg.RoomsDir, RuntimeDir: cfg.RuntimeDir, VolumesDir: cfg.VolumesDir}
 	ps := &projects.Service{Store: st, Docker: docker, Rooms: rs, VolumesDir: cfg.VolumesDir}
 	sk := &stack.Service{Store: st, Docker: docker, Rooms: rs, RuntimeDir: cfg.RuntimeDir}
 	proxyDir := ensureProxyDir(cfg.DataDir)
@@ -67,9 +71,12 @@ func New(cfg config.Config, st *store.Store, docker *dockerx.Client, hub *metric
 		Proxy: proxy.New(proxyDir), Backup: bs,
 		Mux: http.NewServeMux(),
 	}
+	SweepStaleUploads(2 * time.Hour)
 	inventory.AdoptExisting(st, docker, rs, cfg.RuntimeDir)
+	go ps.AttachMissingDataVolumes()
 	bs.OnAfterRestore = func() error { return s.syncProxy() }
 	s.routes()
+	ps.AfterChange = func() { _ = s.syncProxy() }
 	bs.StartScheduler()
 	_ = s.syncProxy()
 	s.startLiveCache()
@@ -681,28 +688,31 @@ func (s *Server) handleRooms(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		type roomOut struct {
-			ID            string `json:"id"`
-			ProjectID     string `json:"project_id"`
-			Name          string `json:"name"`
-			Password      string `json:"password"`
-			Kind          string `json:"kind"`
-			QuotaBytes    int64  `json:"quota_bytes"`
-			UsageBytes    int64  `json:"usage_bytes"`
-			Projects      int    `json:"projects"`
-			Containers    int    `json:"containers"`
-			Images        int    `json:"images"`
-			Volumes       int    `json:"volumes"`
-			HostPort      int    `json:"host_port"`
-			ContainerPort int    `json:"container_port"`
-			Image         string `json:"image"`
-			Domain        string `json:"domain"`
-			Status        string `json:"status"`
-			CreatedAt     string `json:"created_at"`
-			Locked        bool   `json:"locked"`
+			ID             string `json:"id"`
+			ProjectID      string `json:"project_id"`
+			Name           string `json:"name"`
+			Password       string `json:"password"`
+			Kind           string `json:"kind"`
+			QuotaBytes     int64  `json:"quota_bytes"`
+			UsageBytes     int64  `json:"usage_bytes"`
+			VolumeBytes    int64  `json:"volume_bytes"`
+			ImageBytes     int64  `json:"image_bytes"`
+			FootprintBytes int64  `json:"footprint_bytes"`
+			Projects       int    `json:"projects"`
+			Containers     int    `json:"containers"`
+			Images         int    `json:"images"`
+			Volumes        int    `json:"volumes"`
+			HostPort       int    `json:"host_port"`
+			ContainerPort  int    `json:"container_port"`
+			Image          string `json:"image"`
+			Domain         string `json:"domain"`
+			Status         string `json:"status"`
+			CreatedAt      string `json:"created_at"`
+			Locked         bool   `json:"locked"`
 		}
 		out := make([]roomOut, 0, len(list))
 		for _, rm := range list {
-			usage := s.cachedUsage(rm.ID)
+			usage := s.cachedDisk(rm.ID)
 			projs, _ := s.Projects.List(rm.ID)
 			st := "empty"
 			hostPort := 0
@@ -741,7 +751,8 @@ func (s *Server) handleRooms(w http.ResponseWriter, r *http.Request) {
 			out = append(out, roomOut{
 				ID: rm.ID, ProjectID: projectID, Name: rm.Name, Password: rm.PassPlain,
 				Kind: kind, QuotaBytes: rm.QuotaBytes,
-				UsageBytes: usage, Projects: len(projs), Containers: nC, Images: len(imgs), Volumes: len(vols),
+				UsageBytes: usage.Usage, VolumeBytes: usage.Volumes, ImageBytes: usage.Images,
+				FootprintBytes: usage.Footprint, Projects: len(projs), Containers: nC, Images: len(imgs), Volumes: len(vols),
 				HostPort: hostPort, ContainerPort: cPort,
 				Image: image, Domain: domain, Status: st,
 				CreatedAt: rm.CreatedAt.UTC().Format(time.RFC3339),
@@ -985,7 +996,7 @@ func (s *Server) handleRoomByID(w http.ResponseWriter, r *http.Request) {
 		if projs == nil {
 			projs = []store.Project{}
 		}
-		usage, _ := s.Rooms.UsageBytes(id)
+		usage := s.cachedDisk(id)
 		st := s.storageInfo()
 		avail := asInt64(st["quota_available"]) + room.QuotaBytes // can grow into free disk + reclaim current
 		if avail < room.QuotaBytes {
@@ -1009,11 +1020,41 @@ func (s *Server) handleRoomByID(w http.ResponseWriter, r *http.Request) {
 		if hist == nil {
 			hist = []projects.UpdateEvent{}
 		}
+		roomStatus := "empty"
+		busy := s.jobKind(id)
+		for _, p := range projs {
+			if b := s.jobKind(p.ID); b != "" {
+				busy = b
+			}
+		}
+		if busy == "" {
+			if j := s.Projects.ReadRoomJob(id); j.Job != "" && (j.Status == "deploying" || j.Status == "building") {
+				busy = j.Job
+				if j.Status != "" {
+					roomStatus = j.Status
+				}
+			}
+		}
+		if busy != "" && roomStatus == "empty" {
+			roomStatus = "deploying"
+		} else if busy == "" && len(projs) > 0 {
+			roomStatus = "stopped"
+			for _, p := range projs {
+				if p.Status == "running" {
+					roomStatus = "running"
+					break
+				}
+			}
+		}
 		writeJSON(w, 200, map[string]any{
 			"id": room.ID, "name": room.Name,
 			"kind":        room.Kind,
 			"password":    roomPasswordForSession(sess, room),
-			"quota_bytes": room.QuotaBytes, "usage_bytes": usage, "projects": enriched,
+			"quota_bytes": room.QuotaBytes, "usage_bytes": usage.Usage,
+			"volume_bytes": usage.Volumes, "image_bytes": usage.Images, "footprint_bytes": usage.Footprint,
+			"status":             roomStatus,
+			"job":                busy,
+			"projects":           enriched,
 			"containers":         s.roomContainersJSON(id),
 			"images":             s.roomImagesJSON(id),
 			"volumes":            s.roomVolumesJSON(id),
@@ -1052,9 +1093,15 @@ func (s *Server) roomContainersJSON(roomID string) []map[string]any {
 	out := make([]map[string]any, 0, len(list))
 	for _, c := range list {
 		st := c.Status
-		if s.Docker != nil && c.DockerID != "" {
-			if x, err := s.Docker.InspectStatus(c.DockerID); err == nil && x != "" {
+		if s.Docker != nil {
+			ref := c.DockerID
+			if x, err := s.Docker.InspectStatus(ref); err == nil && x != "" {
 				st = x
+			}
+			if st == "missing" && c.Name != "" {
+				if x, err := s.Docker.InspectStatus(c.Name); err == nil && x != "" && x != "missing" {
+					st = x
+				}
 			}
 		}
 		out = append(out, map[string]any{
@@ -1469,6 +1516,17 @@ func (s *Server) handleHostInfo(w http.ResponseWriter, r *http.Request) {
 		projs, _ := s.Store.ListAllProjects()
 		out["rooms_count"] = len(roomsList)
 		out["projects_count"] = len(projs)
+		var data int64
+		for _, rm := range roomsList {
+			data += s.cachedDisk(rm.ID).Usage
+		}
+		df := s.cachedSystemDisk()
+		out["project_data_bytes"] = data
+		out["docker_images_bytes"] = df.Images
+		out["docker_images_reclaim"] = df.ImagesReclaim
+		out["docker_containers_bytes"] = df.Containers
+		out["docker_buildcache_bytes"] = df.BuildCache
+		out["docker_volumes_bytes"] = df.Volumes
 	}
 	writeJSON(w, 200, out)
 }
@@ -1484,6 +1542,20 @@ func (fw *flushWriter) Write(p []byte) (int, error) {
 		fw.f.Flush()
 	}
 	return n, err
+}
+
+func (s *Server) cachedSystemDisk() dockerx.SystemDisk {
+	s.dfMu.Lock()
+	defer s.dfMu.Unlock()
+	if time.Since(s.dfAt) < 45*time.Second && s.dfAt.Unix() > 0 {
+		return s.dfCache
+	}
+	if s.Docker == nil || !s.Docker.Available() {
+		return s.dfCache
+	}
+	s.dfCache = s.Docker.SystemDisk()
+	s.dfAt = time.Now()
+	return s.dfCache
 }
 
 func parseDockerPull(cmd string) string {

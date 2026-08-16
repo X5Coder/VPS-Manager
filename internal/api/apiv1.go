@@ -34,13 +34,20 @@ func (s *Server) storageInfo() map[string]any {
 		free = int64(m.DiskTotal - m.DiskUsed)
 	}
 	reserved, _ := s.Store.TotalQuotaBytes()
+	df := s.cachedSystemDisk()
 	return map[string]any{
-		"disk_total":         int64(m.DiskTotal),
-		"disk_used":          int64(m.DiskUsed),
-		"disk_free":          free,
-		"quota_reserved":     reserved,
-		"quota_available":    free,
-		"quota_available_gb": float64(free) / (1024 * 1024 * 1024),
+		"disk_total":              int64(m.DiskTotal),
+		"disk_used":               int64(m.DiskUsed),
+		"disk_free":               free,
+		"quota_reserved":          reserved,
+		"quota_available":         free,
+		"quota_available_gb":      float64(free) / (1024 * 1024 * 1024),
+		"quota_counts":            "files + bind volumes + container writable layer",
+		"quota_excludes":          "docker images, build cache, leftover upload temps, OS",
+		"docker_images_bytes":     df.Images,
+		"docker_images_reclaim":   df.ImagesReclaim,
+		"docker_containers_bytes": df.Containers,
+		"docker_buildcache_bytes": df.BuildCache,
 	}
 }
 
@@ -409,12 +416,13 @@ func (s *Server) resolveRoomProject(id string) (*store.Room, *store.Project, err
 func (s *Server) projectView(room *store.Room, p *store.Project) map[string]any {
 	st := "empty"
 	quotaGB := float64(room.QuotaBytes) / (1024 * 1024 * 1024)
-	usage := s.cachedUsage(room.ID)
-	usageGB := float64(usage) / (1024 * 1024 * 1024)
+	usage := s.cachedDisk(room.ID)
+	usageGB := float64(usage.Usage) / (1024 * 1024 * 1024)
 	out := map[string]any{
 		"id": room.ID, "room_id": room.ID, "name": room.Name,
 		"quota_bytes": room.QuotaBytes, "quota_gb": quotaGB,
-		"usage_bytes": usage, "usage_gb": usageGB,
+		"usage_bytes": usage.Usage, "usage_gb": usageGB,
+		"volume_bytes": usage.Volumes, "image_bytes": usage.Images, "footprint_bytes": usage.Footprint,
 		"password_set": room.PassPlain != "",
 		"created_at":   room.CreatedAt,
 		"status":       st,
@@ -973,6 +981,9 @@ func (s *Server) apiUploadProject(w http.ResponseWriter, r *http.Request, id str
 		writeJSON(w, 400, map[string]any{"ok": false, "error": "could not read upload: " + err.Error(), "code": "content_type"})
 		return
 	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
 	file, hdr, err := r.FormFile("file")
 	if err != nil {
 		writeJSON(w, 400, map[string]any{"ok": false, "error": "multipart field file is required (.tar for single or .tar.gz for multi)", "code": "file_required"})
@@ -1355,10 +1366,12 @@ func (s *Server) apiManagerStatus(w http.ResponseWriter) {
 			kind = store.KindMulti
 		}
 		res := s.roomResourceUsage(rm.ID)
+		d := s.cachedDisk(rm.ID)
 		roomsOut = append(roomsOut, map[string]any{
 			"id": rm.ID, "name": rm.Name, "kind": kind, "status": "ok",
-			"quota_bytes": rm.QuotaBytes, "usage_bytes": s.cachedUsage(rm.ID),
-			"storage_limit": rm.QuotaBytes, "storage_used": s.cachedUsage(rm.ID),
+			"quota_bytes": rm.QuotaBytes, "usage_bytes": d.Usage,
+			"volume_bytes": d.Volumes, "image_bytes": d.Images, "footprint_bytes": d.Footprint,
+			"storage_limit": rm.QuotaBytes, "storage_used": d.Usage,
 			"cpu_percent": res["cpu_percent"], "ram_percent": res["ram_percent"],
 			"ram_used":   res["ram_used"],
 			"containers": len(cts), "images": len(imgs), "volumes": len(vols),

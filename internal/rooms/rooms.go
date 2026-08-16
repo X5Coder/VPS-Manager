@@ -24,6 +24,16 @@ type Service struct {
 	Docker     *dockerx.Client
 	RoomsDir   string
 	RuntimeDir string
+	VolumesDir string
+}
+
+type DiskStats struct {
+	Usage     int64 // files + bind volumes + container writable layer (quota)
+	Files     int64
+	Volumes   int64
+	Writable  int64
+	Images    int64 // unique docker images this room uses (not in quota)
+	Footprint int64 // usage + images
 }
 
 type CreateInput struct {
@@ -208,10 +218,15 @@ func (s *Service) Delete(id string) error {
 			_ = s.Docker.RemoveImage(ref)
 		}
 		_ = s.Docker.RemoveNetwork(r.NetworkName)
-		s.Docker.PruneDanglingImages()
+		s.Docker.PruneUnusedLocalImages()
 	}
 
+	volRoot := s.volumesRoot()
 	for _, p := range projects {
+		if volRoot != "" && p.ID != "" {
+			_ = os.RemoveAll(filepath.Join(volRoot, p.ID))
+			_ = os.RemoveAll(filepath.Join(volRoot, p.ID+".img"))
+		}
 		_ = s.Store.DeleteProject(p.ID)
 	}
 	_ = os.RemoveAll(s.paths(id).Root)
@@ -247,26 +262,148 @@ func (s *Service) ProjectDir(roomID, projectID string) string {
 	return filepath.Join(s.paths(roomID).Runtime, projectID)
 }
 
-func (s *Service) UsageBytes(roomID string) (int64, error) {
-	var total int64
-	for _, root := range []string{s.paths(roomID).Root, filepath.Join(s.RuntimeDir, roomID)} {
-		_ = filepath.Walk(root, func(_ string, info os.FileInfo, err error) error {
-			if err != nil {
-				return nil
-			}
-			if info.Mode().IsRegular() {
-				total += info.Size()
-			}
-			return nil
-		})
+func (s *Service) volumesRoot() string {
+	if s.VolumesDir != "" {
+		return s.VolumesDir
 	}
+	if s.RuntimeDir != "" {
+		return filepath.Join(filepath.Dir(s.RuntimeDir), "volumes")
+	}
+	return ""
+}
+
+func dirSize(root string) int64 {
+	var total int64
+	_ = filepath.Walk(root, func(_ string, info os.FileInfo, err error) error {
+		if err != nil || info == nil {
+			return nil
+		}
+		if info.Mode().IsRegular() {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total
+}
+
+func (s *Service) volumeBytes(roomID string) int64 {
+	if s.Store == nil {
+		return 0
+	}
+	root := s.volumesRoot()
+	projs, _ := s.Store.ListProjects(roomID)
+	var total int64
+	seen := map[string]struct{}{}
+	addPath := func(p string) {
+		p = filepath.Clean(p)
+		if p == "" || p == "." || p == "/" {
+			return
+		}
+		if _, ok := seen[p]; ok {
+			return
+		}
+		seen[p] = struct{}{}
+		st, err := os.Stat(p)
+		if err != nil {
+			return
+		}
+		if st.IsDir() {
+			total += dirSize(p)
+			return
+		}
+		total += st.Size()
+	}
+	if root != "" {
+		for _, p := range projs {
+			if p.ID == "" {
+				continue
+			}
+			addPath(filepath.Join(root, p.ID))
+			addPath(filepath.Join(root, p.ID+".img"))
+		}
+	}
+	return total
+}
+
+func (s *Service) imageBytes(roomID string) int64 {
+	if s.Docker == nil || s.Store == nil {
+		return 0
+	}
+	seen := map[string]struct{}{}
+	var total int64
+	add := func(ref string) {
+		ref = strings.TrimSpace(ref)
+		if ref == "" {
+			return
+		}
+		if !dockerx.LocalOwnedImage(ref) {
+			return
+		}
+		key := s.Docker.ImageID(ref)
+		if key == "" {
+			key = strings.ToLower(ref)
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		sz := s.Docker.ImageSize(ref)
+		if sz <= 0 {
+			return
+		}
+		seen[key] = struct{}{}
+		total += sz
+	}
+	projs, _ := s.Store.ListProjects(roomID)
+	for _, p := range projs {
+		add(p.Image)
+	}
+	imgs, _ := s.Store.ListImages(roomID)
+	for _, im := range imgs {
+		add(im.Ref)
+	}
+	cts, _ := s.Store.ListContainers(roomID)
+	for _, c := range cts {
+		add(c.Image)
+	}
+	return total
+}
+
+func (s *Service) DiskStats(roomID string) DiskStats {
+	files := dirSize(s.paths(roomID).Root) + dirSize(filepath.Join(s.RuntimeDir, roomID))
+	vols := s.volumeBytes(roomID)
+	var rw int64
 	if s.Docker != nil && s.Store != nil {
 		projs, _ := s.Store.ListProjects(roomID)
 		for _, p := range projs {
-			total += s.Docker.SizeRw(p.ContainerID)
+			rw += s.Docker.SizeRw(p.ContainerID)
+		}
+		cts, _ := s.Store.ListContainers(roomID)
+		seen := map[string]struct{}{}
+		for _, p := range projs {
+			if p.ContainerID != "" {
+				seen[p.ContainerID] = struct{}{}
+			}
+		}
+		for _, c := range cts {
+			if c.DockerID == "" {
+				continue
+			}
+			if _, ok := seen[c.DockerID]; ok {
+				continue
+			}
+			rw += s.Docker.SizeRw(c.DockerID)
 		}
 	}
-	return total, nil
+	usage := files + vols + rw
+	images := s.imageBytes(roomID)
+	return DiskStats{
+		Usage: usage, Files: files, Volumes: vols, Writable: rw,
+		Images: images, Footprint: usage + images,
+	}
+}
+
+func (s *Service) UsageBytes(roomID string) (int64, error) {
+	return s.DiskStats(roomID).Usage, nil
 }
 
 func (s *Service) SetQuota(roomID string, quotaBytes int64) error {

@@ -100,7 +100,15 @@ func (s *Server) applyDomain(p *store.Project, domain string, enabled bool) erro
 		return s.syncProxy()
 	}
 	if p.HostPort <= 0 {
+		if n := s.upstreamPort(p); n > 0 {
+			p.HostPort = n
+		}
+	}
+	if p.HostPort <= 0 {
 		return fmt.Errorf("set a host port before binding a domain")
+	}
+	if err := s.Store.ReleaseDomain(domain, p.ID); err != nil {
+		return err
 	}
 	p.SSLStatus = "pending"
 	if err := s.Store.UpdateProject(*p); err != nil {
@@ -111,12 +119,35 @@ func (s *Server) applyDomain(p *store.Project, domain string, enabled bool) erro
 		_ = s.Store.UpdateProject(*p)
 		return err
 	}
+	port := s.upstreamPort(p)
+	if proxy.NginxInstalled() && !proxy.VhostPointsTo(domain, port) {
+		p.SSLStatus = "error: nginx proxy_pass does not match host_port"
+		_ = s.Store.UpdateProject(*p)
+		return fmt.Errorf("nginx vhost %s is not proxying to 127.0.0.1:%d", domain, port)
+	}
 	p.SSLStatus = "active"
 	return s.Store.UpdateProject(*p)
 }
 
+func (s *Server) upstreamPort(p *store.Project) int {
+	if p == nil {
+		return 0
+	}
+	port := p.HostPort
+	if s.Docker != nil && p.ContainerID != "" {
+		if live := s.Docker.PublishedHostPort(p.ContainerID); live > 0 {
+			port = live
+		}
+	}
+	if port > 0 && port != p.HostPort {
+		p.HostPort = port
+		_ = s.Store.UpdateProject(*p)
+	}
+	return port
+}
+
 func (s *Server) syncProxy() error {
-	if s.Proxy == nil {
+	if s.Proxy == nil && !proxy.NginxInstalled() {
 		return fmt.Errorf("proxy not ready")
 	}
 	projs, err := s.Store.ListAllProjects()
@@ -124,18 +155,32 @@ func (s *Server) syncProxy() error {
 		return err
 	}
 	var sites []proxy.Site
-	for _, p := range projs {
-		if p.Domain == "" || !p.DomainEnabled || p.HostPort <= 0 {
+	seen := map[string]struct{}{}
+	for i := range projs {
+		p := &projs[i]
+		if p.Domain == "" || !p.DomainEnabled {
 			continue
 		}
-		// Skip domains already terminated by system nginx (migrated apps).
-		st := strings.ToLower(p.SSLStatus)
-		if strings.Contains(st, "nginx") || strings.Contains(st, "external") {
+		port := s.upstreamPort(p)
+		if port <= 0 {
 			continue
 		}
+		d := strings.ToLower(strings.TrimSpace(p.Domain))
+		if _, ok := seen[d]; ok {
+			continue
+		}
+		seen[d] = struct{}{}
 		sites = append(sites, proxy.Site{
-			Domain: p.Domain, Upstream: fmt.Sprintf("127.0.0.1:%d", p.HostPort), Enabled: true,
+			Domain: d, Upstream: fmt.Sprintf("127.0.0.1:%d", port), Enabled: true,
 		})
+	}
+	if proxy.NginxInstalled() {
+		if err := proxy.SyncNginx(sites); err != nil {
+			return err
+		}
+	}
+	if s.Proxy == nil {
+		return nil
 	}
 	return s.Proxy.ReplaceAll(sites)
 }

@@ -44,18 +44,18 @@ type RoomRemote struct {
 }
 
 type RoomSnapManifest struct {
-	Format      string           `json:"format"`
-	RoomID      string           `json:"room_id"`
-	Name        string           `json:"name"`
-	Seq         int              `json:"seq"`
-	Repo        string           `json:"repo"`
-	At          string           `json:"at"`
-	Fingerprint string           `json:"fingerprint"`
-	Room        RoomBackupMeta   `json:"room"`
-	Blobs       []SnapBlob       `json:"blobs"`
-	Images      []SnapImage      `json:"images"`
-	Volumes     []SnapVolume     `json:"volumes"`
-	Containers  []SnapContainer  `json:"containers"`
+	Format      string          `json:"format"`
+	RoomID      string          `json:"room_id"`
+	Name        string          `json:"name"`
+	Seq         int             `json:"seq"`
+	Repo        string          `json:"repo"`
+	At          string          `json:"at"`
+	Fingerprint string          `json:"fingerprint"`
+	Room        RoomBackupMeta  `json:"room"`
+	Blobs       []SnapBlob      `json:"blobs"`
+	Images      []SnapImage     `json:"images"`
+	Volumes     []SnapVolume    `json:"volumes"`
+	Containers  []SnapContainer `json:"containers"`
 }
 
 type SnapImage struct {
@@ -71,8 +71,8 @@ type SnapVolume struct {
 }
 
 type SnapContainer struct {
-	Rec         store.Container `json:"rec"`
-	InspectKey  string          `json:"inspect_key"`
+	Rec        store.Container `json:"rec"`
+	InspectKey string          `json:"inspect_key"`
 }
 
 func roomSnapMetaKey(roomID string) string {
@@ -152,6 +152,76 @@ func parseRepoSeq(repo, slug string) int {
 		}
 	}
 	return n
+}
+
+func parseRoomRepo(name string) (slug string, seq int, ok bool) {
+	n := strings.ToLower(strings.TrimSpace(name))
+	if !strings.HasPrefix(n, RoomRepoPrefix) {
+		return "", 0, false
+	}
+	rest := n[len(RoomRepoPrefix):]
+	i := strings.LastIndex(rest, "-")
+	if i <= 0 || i+1 >= len(rest) {
+		return "", 0, false
+	}
+	slug = rest[:i]
+	seq = 0
+	for _, r := range rest[i+1:] {
+		if r < '0' || r > '9' {
+			return "", 0, false
+		}
+		seq = seq*10 + int(r-'0')
+	}
+	if seq < 1 || slug == "" {
+		return "", 0, false
+	}
+	return slug, seq, true
+}
+
+func (s *Service) pruneGoneRoomGithub(gh *GitHub, rooms []store.Room) {
+	if gh == nil {
+		return
+	}
+	live := map[string]bool{}
+	liveID := map[string]bool{}
+	for _, r := range rooms {
+		live[roomSlugID(r.ID)] = true
+		liveID[r.ID] = true
+	}
+	if rows, err := s.Store.ListMetaPrefix("room_snap_"); err == nil {
+		for _, kv := range rows {
+			rid := strings.TrimPrefix(kv[0], "room_snap_")
+			if rid == "" || liveID[rid] {
+				continue
+			}
+			var st RoomSnapState
+			_ = json.Unmarshal([]byte(kv[1]), &st)
+			s.report(-1, "Room gone — removing GitHub backup")
+			if st.Repo != "" && isManagedBackupRepo(st.Repo) {
+				if err := gh.deleteRepo(st.Repo, true); err != nil {
+					s.logf("delete gone-room repo %s: %v", st.Repo, err)
+				} else {
+					s.report(-1, "Deleted GitHub repo %s", st.Repo)
+				}
+			}
+			_ = s.Store.DeleteMeta(kv[0])
+		}
+	}
+	names, err := gh.ListOwnerRepoNames()
+	if err != nil {
+		s.logf("list github repos for prune: %v", err)
+		return
+	}
+	for _, name := range names {
+		slug, _, ok := parseRoomRepo(name)
+		if !ok || live[slug] {
+			continue
+		}
+		s.report(-1, "No matching VPS room for %s — deleting GitHub repo", name)
+		if err := gh.deleteRepo(name, true); err != nil {
+			s.logf("delete orphan repo %s: %v", name, err)
+		}
+	}
 }
 
 func (s *Service) nextRoomRepo(gh *GitHub, roomID string, localSeq int) (string, int, error) {
@@ -237,6 +307,7 @@ func (s *Service) runRoomSnapshots(scheduled bool) (*SnapshotRecord, error) {
 	done := 0
 	skipped := 0
 	defer s.cleanBackupTemps()
+	s.pruneGoneRoomGithub(gh, rooms)
 	for i, rm := range rooms {
 		if err := s.errIfStopped(); err != nil {
 			return nil, err

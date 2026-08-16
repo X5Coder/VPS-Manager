@@ -197,6 +197,7 @@ func (s *Server) applyImageTarRoom(room *store.Room, p *store.Project, tarPath s
 		}
 		digest := s.dockerDigest(want)
 		s.Projects.MarkDeployResult(p.RoomID, p.ID, want, digest, true, "")
+		s.Docker.PruneUnusedLocalImages()
 		return want, nil
 	}
 	cPort, hPort := s.readRoomPending(room.ID)
@@ -210,6 +211,7 @@ func (s *Server) applyImageTarRoom(room *store.Room, p *store.Project, tarPath s
 	}
 	digest := s.dockerDigest(want)
 	s.Projects.MarkDeployResult(room.ID, created.ID, want, digest, true, "")
+	s.Docker.PruneUnusedLocalImages()
 	fmt.Fprintf(logw, "Updated. Project is running automatically. project=%s image=%s\n", created.ID, want)
 	return want, nil
 }
@@ -220,17 +222,23 @@ func (s *Server) startTarDeployAsync(room *store.Room, p *store.Project, tarPath
 		return fmt.Errorf("room not found")
 	}
 	key := room.ID
-	if p != nil {
-		key = p.ID
-	}
-	if err := s.tryBeginJob(key, "deploy"); err != nil {
+	if err := s.tryBeginJob(room.ID, "deploy"); err != nil {
 		_ = os.RemoveAll(tmpDir)
 		return err
+	}
+	if p != nil && p.ID != room.ID {
+		if err := s.tryBeginJob(p.ID, "deploy"); err != nil {
+			s.endJob(room.ID)
+			_ = os.RemoveAll(tmpDir)
+			return err
+		}
 	}
 	want := projects.DefaultVpsroomsTag(room.Name)
 	if p != nil {
 		want = s.localProjectTag(p)
 		s.Projects.MarkDeploying(p.RoomID, p.ID, want, "deploy")
+	} else {
+		s.Projects.WriteRoomJob(room.ID, projects.DeployMeta{Status: "deploying", Job: "deploy", Image: want})
 	}
 	var pCopy *store.Project
 	if p != nil {
@@ -239,10 +247,16 @@ func (s *Server) startTarDeployAsync(room *store.Room, p *store.Project, tarPath
 	}
 	roomCopy := *room
 	go func(room store.Room, p *store.Project, tarPath, tmpDir, key string) {
-		defer s.endJob(key)
+		defer s.endJob(room.ID)
+		if p != nil && p.ID != room.ID {
+			defer s.endJob(p.ID)
+		}
 		defer os.RemoveAll(tmpDir)
 		if _, err := s.applyImageTarRoom(&room, p, tarPath, io.Discard); err != nil {
 			log.Printf("upload %s: %v", key, err)
+			s.Projects.WriteRoomJob(room.ID, projects.DeployMeta{Status: "error", Job: "", LastDeployError: err.Error(), LastDeployOK: false})
+		} else {
+			s.Projects.ClearRoomJob(room.ID)
 		}
 	}(roomCopy, pCopy, tarPath, tmpDir, key)
 	return nil

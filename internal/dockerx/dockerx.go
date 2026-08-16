@@ -145,6 +145,83 @@ func (c *Client) PruneDanglingImages() {
 	_ = exec.CommandContext(ctx, c.bin, "image", "prune", "-f").Run()
 }
 
+// PruneUnusedLocalImages drops leftover vps-ci / restore tags whose layers
+// are not used by any container (running or stopped). Public registry images
+// and vpsrooms/* tags are left alone.
+func (c *Client) PruneUnusedLocalImages() {
+	if c == nil {
+		return
+	}
+	used := c.containerImageIDs()
+	out, err := c.output("images", "--format", "{{.Repository}}:{{.Tag}}\t{{.ID}}")
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		parts := strings.Split(line, "\t")
+		if len(parts) != 2 {
+			continue
+		}
+		ref, id := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+		low := strings.ToLower(ref)
+		if !strings.HasPrefix(low, "vps-ci:") &&
+			!strings.HasPrefix(low, "vpsrooms-bak/") &&
+			!strings.HasPrefix(low, "vpsrooms-restore/") {
+			continue
+		}
+		if imageIDUsed(used, id) {
+			continue
+		}
+		_ = c.RemoveImage(ref)
+	}
+	c.PruneDanglingImages()
+}
+
+func (c *Client) containerImageIDs() map[string]struct{} {
+	used := map[string]struct{}{}
+	ids, err := c.output("ps", "-aq")
+	if err != nil {
+		return used
+	}
+	for _, cid := range strings.Fields(ids) {
+		img, err := c.output("inspect", "--format", "{{.Image}}", cid)
+		if err != nil {
+			continue
+		}
+		img = strings.TrimPrefix(strings.TrimSpace(img), "sha256:")
+		if img == "" {
+			continue
+		}
+		used[img] = struct{}{}
+		if len(img) >= 12 {
+			used[img[:12]] = struct{}{}
+		}
+	}
+	return used
+}
+
+func imageIDUsed(used map[string]struct{}, id string) bool {
+	id = strings.TrimPrefix(strings.TrimSpace(id), "sha256:")
+	if id == "" {
+		return false
+	}
+	if _, ok := used[id]; ok {
+		return true
+	}
+	if len(id) >= 12 {
+		if _, ok := used[id[:12]]; ok {
+			return true
+		}
+	}
+	for u := range used {
+		if strings.HasPrefix(u, id) || strings.HasPrefix(id, u) {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Client) Login(registry, user, password string) error {
 	registry = strings.TrimSpace(registry)
 	if registry == "" {
@@ -284,11 +361,33 @@ func (c *Client) Rename(id, name string) error {
 }
 
 func (c *Client) ImageID(ref string) string {
-	out, err := c.output("image", "inspect", "--format", "{{.Id}}", ref)
+	out, err := c.outputTimeout(12*time.Second, "image", "inspect", "--format", "{{.Id}}", ref)
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(out)
+}
+
+func (c *Client) PublishedHostPort(id string) int {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return 0
+	}
+	out, err := c.output("inspect", "-f", `{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{.HostPort}}{{"\n"}}{{end}}{{end}}`, id)
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		n, err := strconv.Atoi(line)
+		if err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
 }
 
 type RunOpts struct {
@@ -371,7 +470,7 @@ func (c *Client) SizeRw(id string) int64 {
 	if id == "" {
 		return 0
 	}
-	out, err := c.output("inspect", "-s", "--format", "{{.SizeRw}}", id)
+	out, err := c.outputTimeout(12*time.Second, "inspect", "-s", "--format", "{{.SizeRw}}", id)
 	if err != nil {
 		return 0
 	}
@@ -406,7 +505,7 @@ func (c *Client) ContainerBrief(ref string) (id, status, image string) {
 	}
 	out, err := c.output("inspect", "-f", "{{.Id}}\t{{.State.Status}}\t{{.Config.Image}}", ref)
 	if err != nil {
-		return ref, "missing", ""
+		return "", "missing", ""
 	}
 	parts := strings.Split(strings.TrimSpace(out), "\t")
 	id = parts[0]
@@ -424,13 +523,109 @@ func (c *Client) ContainerBrief(ref string) (id, status, image string) {
 	return id, status, image
 }
 
+// BriefByPublish returns the container publishing hostPort, if any.
+func (c *Client) BriefByPublish(hostPort int) (id, status, image string) {
+	if hostPort <= 0 {
+		return "", "missing", ""
+	}
+	out, err := c.output("ps", "-aq", "--filter", fmt.Sprintf("publish=%d", hostPort))
+	if err != nil {
+		return "", "missing", ""
+	}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		return c.ContainerBrief(line)
+	}
+	return "", "missing", ""
+}
+
 func (c *Client) ImageSize(ref string) int64 {
-	out, err := c.output("image", "inspect", "--format", "{{.Size}}", ref)
+	out, err := c.outputTimeout(12*time.Second, "image", "inspect", "--format", "{{.Size}}", ref)
 	if err != nil {
 		return 0
 	}
 	n, _ := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
 	return n
+}
+
+type SystemDisk struct {
+	Images        int64 `json:"images"`
+	ImagesReclaim int64 `json:"images_reclaim"`
+	Containers    int64 `json:"containers"`
+	Volumes       int64 `json:"volumes"`
+	BuildCache    int64 `json:"build_cache"`
+	BuildReclaim  int64 `json:"build_reclaim"`
+}
+
+func (c *Client) SystemDisk() SystemDisk {
+	var d SystemDisk
+	if c == nil {
+		return d
+	}
+	out, err := c.outputTimeout(25*time.Second, "system", "df", "--format", "{{json .}}")
+	if err != nil {
+		return d
+	}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var row struct {
+			Type        string `json:"Type"`
+			Size        string `json:"Size"`
+			Reclaimable string `json:"Reclaimable"`
+		}
+		if json.Unmarshal([]byte(line), &row) != nil {
+			continue
+		}
+		sz := ParseDockerSize(row.Size)
+		rc := ParseDockerSize(row.Reclaimable)
+		switch strings.ToLower(row.Type) {
+		case "images":
+			d.Images, d.ImagesReclaim = sz, rc
+		case "containers":
+			d.Containers = sz
+		case "local volumes":
+			d.Volumes = sz
+		case "build cache":
+			d.BuildCache, d.BuildReclaim = sz, rc
+		}
+	}
+	return d
+}
+
+// ParseDockerSize parses docker CLI sizes like "20.94GB" or "720.8MB (3%)".
+func ParseDockerSize(s string) int64 {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexAny(s, " ("); i > 0 {
+		s = strings.TrimSpace(s[:i])
+	}
+	if s == "" || s == "0B" || s == "0" {
+		return 0
+	}
+	mult := float64(1)
+	u := strings.ToUpper(s)
+	switch {
+	case strings.HasSuffix(u, "KB"):
+		mult, s = 1e3, s[:len(s)-2]
+	case strings.HasSuffix(u, "MB"):
+		mult, s = 1e6, s[:len(s)-2]
+	case strings.HasSuffix(u, "GB"):
+		mult, s = 1e9, s[:len(s)-2]
+	case strings.HasSuffix(u, "TB"):
+		mult, s = 1e12, s[:len(s)-2]
+	case strings.HasSuffix(u, "B"):
+		s = s[:len(s)-1]
+	}
+	f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil {
+		return 0
+	}
+	return int64(f * mult)
 }
 
 func (c *Client) InspectJSON(id string) ([]byte, error) {
@@ -746,6 +941,26 @@ func (c *Client) ImportFilesystem(srcTar, image string) error {
 	return nil
 }
 
+func (c *Client) CopyFromContainer(id, src, destDir string) error {
+	id = strings.TrimSpace(id)
+	src = strings.TrimSpace(src)
+	if id == "" || src == "" {
+		return fmt.Errorf("copy from container: missing args")
+	}
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return err
+	}
+	spec := id + ":" + src
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, c.bin, "cp", spec, destDir)
+	b, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("docker cp %s: %s", spec, strings.TrimSpace(string(b)))
+	}
+	return nil
+}
+
 // CopyVolumeToDir copies a named Docker volume into destDir.
 func (c *Client) CopyVolumeToDir(volume, destDir string) error {
 	if err := os.MkdirAll(destDir, 0o750); err != nil {
@@ -883,6 +1098,18 @@ func (c *Client) ComposeUp(dir, project string, pull bool, w io.Writer) error {
 		up = append(up, "--pull", "never")
 	}
 	return c.run(ctx, w, up...)
+}
+
+func (c *Client) ComposeProjectOf(ref string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ""
+	}
+	out, err := c.output("inspect", "-f", `{{index .Config.Labels "com.docker.compose.project"}}`, ref)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
 }
 
 func (c *Client) ListCompose(project string) ([]ComposeCtr, error) {

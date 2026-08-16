@@ -226,7 +226,7 @@
   const TOKEN_HELLO = "Hello — I explain the full API. Ask how to create a token, update a room, GitHub, or an empty room — I’ll pull that docs section and walk you through it.";
   const ROOM_HELLO = "Hello — I’m inside this room on the VPS. Commands run in this terminal (room files by default). I can clone from GitHub, build Docker, and explain each command in chat. I won’t SSH and I won’t delete the room.";
   const LOGS_HELLO = "Hello — I analyze panel logs. Ask me to analyze, then pick which log.";
-  const USAGE_HELLO = "Hello — I am a live harness: I call tools (CPU, RAM, disk, projects, docker_ps) then answer with real numbers. Ask anything about this VPS.";
+  const USAGE_HELLO = "Hello — I report real VPS numbers. 72 GB is the whole disk, not project quota. Room quota is DATA only (files/volumes), not Docker images.";
   const HOST_HELLO = "Hello — this is a real root shell on the VPS. Type a command or ask me; I will type it here and explain it in chat. I will not SSH.";
 
   function sendIconHTML() {
@@ -2105,9 +2105,9 @@
       </div></div>
       <div class="grid stats-grid" data-cores="${cores}">
         <div class="stat">
-          <div class="label">Total disk</div>
+          <div class="label">VPS disk</div>
           <div class="value" data-metric="disk-total">${fmtDisk(host.disk_total)}</div>
-          <div class="muted" data-metric="disk-sub">used ${fmtDisk(host.disk_used)} · free ${fmtDisk(host.disk_free)}</div>
+          <div class="muted" data-metric="disk-sub">${fmtDisk(host.disk_used)} used · ${fmtDisk(host.disk_free)} free (whole disk, not quota)</div>
           <div class="bar"><span data-bar="disk" style="width:${host.disk_percent || 0}%"></span></div>
         </div>
         <div class="stat">
@@ -2148,7 +2148,7 @@
           ${group("Hardware", [
             fact("CPU", [host.cpu_model, cores ? cores + " cores" : ""].filter(Boolean).join(" · ")),
             fact("Memory", fmtBytes(host.mem_total)),
-            fact("Disk", `${fmtDisk(host.disk_total)} · ${fmtDisk(host.disk_used)} used · ${fmtDisk(host.disk_free)} free`),
+            fact("Disk", `${fmtDisk(host.disk_total)} · ${fmtDisk(host.disk_used)} used · ${fmtDisk(host.disk_free)} free (whole VPS)`),
           ])}
           ${group("Platform", [
             fact("Docker", dockerLabel),
@@ -2156,6 +2156,7 @@
           ])}
         </div>
       </div>
+      ${roomsDiskTable(state.cache.rooms, host)}
       ${ready ? agentDeskHTML({
         title: "Ai Agent | Usage",
         showTerm: false,
@@ -2175,15 +2176,59 @@
     };
     paint(state.cache.host || null, false);
     try {
-      const host = await api("/api/host");
+      const [host, rooms] = await Promise.all([
+        api("/api/host"),
+        api("/api/rooms").catch(() => []),
+      ]);
       if (!alive("server", gen)) return;
       state.cache.host = host;
+      state.cache.rooms = rooms;
       paint(host, true);
     } catch (e) {
       if (!alive("server", gen)) return;
       if (!state.cache.host) shell(`<p class="error">${esc(e.message)}</p>`, "server");
       else paint(state.cache.host, true);
     }
+  }
+
+  function roomsDiskTable(rooms, host) {
+    const list = Array.isArray(rooms) ? rooms : [];
+    if (!list.length) return "";
+    let dataSum = 0, imgSum = 0, quotaSum = 0;
+    const rows = list.map((r) => {
+      const usedN = Number(r.usage_bytes) || 0;
+      const quotaN = Number(r.quota_bytes) || 0;
+      const imgN = Number(r.image_bytes) || 0;
+      const volN = Number(r.volume_bytes) || 0;
+      dataSum += usedN;
+      imgSum += imgN;
+      quotaSum += quotaN;
+      const over = quotaN > 0 && usedN > quotaN;
+      return `<tr${over ? ` class="hot"` : ""}>
+        <td>${esc(r.name)}</td>
+        <td class="mono">${esc(fmtBytes(usedN))}${volN ? ` <span class="muted">(vol ${fmtBytes(volN)})</span>` : ""}${over ? ` <span class="muted">over quota</span>` : ""}</td>
+        <td class="mono">${quotaN ? esc(fmtBytes(quotaN)) : "—"}</td>
+        <td class="mono">${esc(fmtBytes(imgN))}</td>
+      </tr>`;
+    }).join("");
+    const imgHost = Number(host?.docker_images_bytes) || 0;
+    const cacheB = Number(host?.docker_buildcache_bytes) || 0;
+    const rwB = Number(host?.docker_containers_bytes) || 0;
+    const dataHost = Number(host?.project_data_bytes) || dataSum;
+    return `<div class="panel" style="margin-top:12px">
+      <h3>How each project uses disk</h3>
+      <p class="muted"><strong>Quota = Data only</strong> (files + volumes + container writable layer). Docker images are shared on the host and are not compared to the 2–8 GB cap. Two Supabase rooms share one image set on disk — do not add the Image column.</p>
+      <table class="disk-table">
+        <thead><tr><th>Project</th><th>Data (quota)</th><th>Quota</th><th>Own image</th></tr></thead>
+        <tbody>${rows}
+          <tr><td><strong>All rooms</strong></td><td class="mono"><strong>${esc(fmtBytes(dataSum))}</strong></td><td class="mono">${esc(fmtBytes(quotaSum))} reserved</td><td class="mono muted">${esc(fmtBytes(imgSum))} listed (not unique)</td></tr>
+        </tbody>
+      </table>
+      <p class="muted" style="margin-top:10px">
+        VPS disk ${esc(fmtDisk(host?.disk_total))} · <strong>${esc(fmtDisk(host?.disk_used))} used</strong> · ${esc(fmtDisk(host?.disk_free))} free.
+        That used number is the whole disk: Docker images ${esc(fmtBytes(imgHost))}${cacheB ? ` · build cache ${esc(fmtBytes(cacheB))}` : ""}${rwB ? ` · container RW ${esc(fmtBytes(rwB))}` : ""} · project data ${esc(fmtBytes(dataHost))} · OS and the rest.
+      </p>
+    </div>`;
   }
 
   async function openAddProjectModal() {
@@ -2261,6 +2306,9 @@
         const st = r.status === "running" ? "ok" : r.status === "empty" ? "empty" : r.status === "stopped" ? "stop" : "miss";
         const usedN = Number(r.usage_bytes) || 0;
         const quotaN = Number(r.quota_bytes) || 0;
+        const imgN = Number(r.image_bytes) || 0;
+        const volN = Number(r.volume_bytes) || 0;
+        const footN = Number(r.footprint_bytes) || (usedN + imgN);
         const used = quotaN ? `${fmtBytes(usedN)} / ${fmtBytes(quotaN)}` : fmtBytes(usedN);
         const fill = quotaN > 0 ? Math.min(100, Math.round((usedN / quotaN) * 100)) : 0;
         const heat = fill >= 90 ? "hot" : fill >= 70 ? "warm" : "";
@@ -2289,9 +2337,14 @@
           </div>
           <div class="proj-side">
             <div class="proj-stat">
-              <span>Disk</span>
+              <span>Quota</span>
               <strong class="mono">${esc(used)}</strong>
               <div class="room-disk ${heat}"><div class="room-disk-bar"><i style="width:${fill}%"></i></div></div>
+            </div>
+            <div class="proj-stat">
+              <span>Project size</span>
+              <strong class="mono">${esc(fmtBytes(footN))}</strong>
+              <div class="muted">${esc(`image ${fmtBytes(imgN)} · data ${fmtBytes(usedN)}${volN ? ` · volumes ${fmtBytes(volN)}` : ""}`)}</div>
             </div>
             <div class="proj-stat">
               <span>Password</span>
@@ -2743,9 +2796,10 @@ Never DELETE via API. One token = all rooms.`;
         <h3>Storage snapshot</h3>
           <div class="storage-grid">
             <div><span class="muted">Free disk</span><strong>${fmtBytes(st.disk_free)}</strong></div>
-            <div><span class="muted">Reserved</span><strong>${fmtBytes(st.quota_reserved)}</strong></div>
-            <div><span class="muted">Available</span><strong class="ok-text">${(st.quota_available_gb || 0).toFixed(2)} GB</strong></div>
+            <div><span class="muted">Quota reserved</span><strong>${fmtBytes(st.quota_reserved)}</strong></div>
+            <div><span class="muted">Host free</span><strong class="ok-text">${(st.quota_available_gb || 0).toFixed(2)} GB</strong></div>
           </div>
+          <p class="muted" style="margin-top:10px">Room quota is a writable-data cap (files, volumes, container RW). It is not 3 GB of Docker images. Host fill is mostly images, build cache, and leftover upload temps. See Server → How each project uses disk.</p>
         </div>
       <div class="panel" style="margin-top:12px">
         <h3>Access alert bot (optional)</h3>
@@ -3073,7 +3127,7 @@ Never DELETE via API. One token = all rooms.`;
             <option value="2"${days === 2 ? " selected" : ""}>2 days</option>
             <option value="3"${days === 3 ? " selected" : ""}>3 days</option>
           </select>
-          <p class="muted" style="margin-top:6px">Each due run scans rooms one after another. Unchanged rooms are skipped. Changed rooms get a new repo, a full upload, then the previous repo is deleted.</p>
+          <p class="muted" style="margin-top:6px">Each due run (1–3 days) backs up rooms that are new or changed. Unchanged rooms are skipped. If a room is gone from the VPS, its GitHub backup repos are deleted on that same run.</p>
         </div>
       </div>
       <div id="job-live">${job ? jobPanelHTML(job) : ""}</div>
@@ -3534,7 +3588,9 @@ Never DELETE via API. One token = all rooms.`;
     const images = room.images || [];
     const volumes = room.volumes || [];
     const mainProj = projs[0];
-    const emptyRoom = !mainProj && !containers.length;
+    const roomJob = room.job || room.status === "deploying" || room.status === "building";
+    const emptyRoom = !mainProj && !containers.length && !roomJob;
+    const deploying = !!roomJob && (!mainProj || room.status === "deploying" || room.status === "building");
     const anyRun = containers.some((c) => c.status === "running") || (mainProj && mainProj.status === "running");
     let st = null;
     try { st = await api("/api/storage"); } catch {}
@@ -3542,7 +3598,12 @@ Never DELETE via API. One token = all rooms.`;
     let body = "";
     if (tab === "overview") {
     const qgb = room.quota_bytes ? gb(room.quota_bytes).toFixed(2) : "";
-    if (emptyRoom) {
+    if (deploying && !mainProj) {
+      body = `<div class="panel"><h3>Deploying</h3>
+        <p class="muted" style="margin:0">GitHub already handed the tar to this room. Docker is loading the image — the project appears here when the container is up (usually 1–3 minutes).</p>
+        <div class="logs-viewer" style="margin-top:12px"><div class="logs-body" id="tar-log">docker load in progress…</div></div>
+      </div>`;
+    } else if (emptyRoom) {
       body = `<div class="panel"><h3>Empty room</h3>
         <p class="muted" style="margin:0 0 12px">Isolated and empty. Drop a file here, or POST it to the API (same update call later).</p>
         ${roomUpdateHelpHTML(id)}
@@ -3578,9 +3639,10 @@ Never DELETE via API. One token = all rooms.`;
             <span class="badge ${anyRun ? "ok" : (emptyRoom ? "warn" : "stop")}">${esc(emptyRoom ? "empty" : anyRun ? "running" : "stopped")}</span>
           </div>
         </div>
-        <div class="grid grid-3">
+        <div class="grid grid-2">
           <div class="stat"><div class="label">Containers</div><div class="value">${containers.length}</div><div class="muted">${images.length} images · ${volumes.length} volumes</div></div>
-          <div class="stat"><div class="label">Room disk</div><div class="value">${fmtBytes(room.usage_bytes)}</div><div class="muted">quota ${room.quota_bytes ? fmtBytes(room.quota_bytes) : "not set"}</div></div>
+          <div class="stat"><div class="label">Quota used</div><div class="value">${fmtBytes(room.usage_bytes)}</div><div class="muted">cap ${room.quota_bytes ? fmtBytes(room.quota_bytes) : "not set"} · files + volumes + RW</div></div>
+          <div class="stat"><div class="label">Project size</div><div class="value">${fmtBytes(Number(room.footprint_bytes) || ((Number(room.usage_bytes)||0)+(Number(room.image_bytes)||0)))}</div><div class="muted">image ${fmtBytes(room.image_bytes)} · volumes ${fmtBytes(room.volume_bytes)}</div></div>
           <div class="stat"><div class="label">Password</div><div class="value" style="font-size:1rem">${room.password
             ? `<div class="secret-row"><span class="secret-mask">••••••••</span><button type="button" class="btn sm action" data-copy="${esc(room.password)}">Copy</button></div>`
             : `<span class="muted">hidden until unlock</span>`}</div></div>
@@ -3923,14 +3985,7 @@ Never DELETE via API. One token = all rooms.`;
             logEl.textContent += chunk;
             logEl.scrollTop = logEl.scrollHeight;
           });
-          const text = logEl ? logEl.textContent : "";
-          if (/Updated\.|status=running/i.test(text)) {
-            try {
-              const fresh = await api(`/api/rooms/${id}`);
-              const box = document.querySelector("#update-history");
-              if (box) box.outerHTML = updateHistoryHTML(fresh.updates);
-            } catch {}
-          }
+          await renderRoom();
         } catch (ex) {
           if (err) err.textContent = ex.message || "Update failed";
         }
@@ -4297,7 +4352,7 @@ Never DELETE via API. One token = all rooms.`;
         toolScope: "room",
         roomId: id,
         seedContext: `SYSTEM CONTEXT (do not ask again): You are inside room "${room.name}". id=${id}. ` +
-          `Disk used ${fmtBytes(room.usage_bytes)} of quota ${room.quota_bytes ? fmtBytes(room.quota_bytes) : "not set"}. ` +
+          `Disk used ${fmtBytes(room.usage_bytes)} of quota ${room.quota_bytes ? fmtBytes(room.quota_bytes) : "not set"} (writable data). Project size ${fmtBytes(room.footprint_bytes)} including image ${fmtBytes(room.image_bytes)}. ` +
           `Containers: ${(containers || []).map((c) => `${ctrNum(c)} ${ctrLabel(c)} image=${c.image} status=${c.status}`).join("; ") || "none (empty room — git clone and dockerize here)"}. ` +
           `Commands run in the room shell on the VPS unless they pick a container. Put every action in command; explain it in say. ` +
           `If they ask for usage, answer with those numbers in one say. To update this room they POST a tar to /api/v1/projects/${id}/upload (or Overview → Update). Same call every time. GitHub should POST and exit; watch this page. You may also publish a Docker update on this same id (image + start). You may edit files via the terminal after reading them. Refuse deleting this room.`,
@@ -4355,6 +4410,13 @@ Never DELETE via API. One token = all rooms.`;
         }
       });
       document.querySelector("#term-cmd")?.focus();
+    }
+
+    if (deploying && state.view === "room" && state.roomId === id) {
+      window.clearTimeout(state._roomPoll);
+      state._roomPoll = window.setTimeout(() => {
+        if (state.view === "room" && state.roomId === id) renderRoom();
+      }, 2500);
     }
   }
 

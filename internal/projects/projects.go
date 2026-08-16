@@ -24,10 +24,11 @@ import (
 var nameRe = regexp.MustCompile(`^[A-Za-z0-9_-]{2,40}$`)
 
 type Service struct {
-	Store      *store.Store
-	Docker     *dockerx.Client
-	Rooms      *rooms.Service
-	VolumesDir string
+	Store       *store.Store
+	Docker      *dockerx.Client
+	Rooms       *rooms.Service
+	VolumesDir  string
+	AfterChange func()
 }
 
 type DeployImageInput struct {
@@ -57,13 +58,8 @@ func (s *Service) List(roomID string) ([]store.Project, error) {
 	if err != nil {
 		return nil, err
 	}
-	if s.Docker != nil {
-		for i := range list {
-			st, e := s.Docker.InspectStatus(list[i].ContainerID)
-			if e == nil && st != "" {
-				list[i].Status = st
-			}
-		}
+	for i := range list {
+		s.syncLiveContainer(&list[i])
 	}
 	return list, nil
 }
@@ -73,12 +69,81 @@ func (s *Service) Get(id string) (*store.Project, error) {
 	if err != nil || p == nil {
 		return p, err
 	}
-	if s.Docker != nil {
-		if st, e := s.Docker.InspectStatus(p.ContainerID); e == nil {
-			p.Status = st
+	s.syncLiveContainer(p)
+	return p, nil
+}
+
+func dockerLive(c *dockerx.Client, ref string) (id, status, image string) {
+	if c == nil || strings.TrimSpace(ref) == "" {
+		return "", "missing", ""
+	}
+	id, status, image = c.ContainerBrief(ref)
+	if status == "missing" || id == "" {
+		return "", "missing", ""
+	}
+	return id, status, image
+}
+
+// syncLiveContainer follows vr_<room8>_<proj8> when docker recreate changed the id
+// but the panel process died before UpdateProject. Adopted compose stacks bind
+// to the gateway container (Kong) instead of a missing placeholder name.
+func (s *Service) syncLiveContainer(p *store.Project) {
+	if p == nil || s.Docker == nil {
+		return
+	}
+	id, status, image := "", "", ""
+	if len(p.RoomID) >= 8 && len(p.ID) >= 8 {
+		id, status, image = dockerLive(s.Docker, containerName(p.RoomID, p.ID))
+	}
+	if id == "" && p.ContainerID != "" {
+		id, status, image = dockerLive(s.Docker, p.ContainerID)
+	}
+	if id == "" && s.Rooms != nil {
+		m := readMountsMeta(s.Rooms.ProjectDir(p.RoomID, p.ID))
+		if m.Gateway != "" {
+			id, status, image = dockerLive(s.Docker, m.Gateway)
+		}
+		if id == "" && m.ComposeProject != "" {
+			list, _ := s.Docker.ListCompose(m.ComposeProject)
+			for _, cc := range list {
+				svc := strings.ToLower(strings.TrimSpace(cc.Service))
+				if svc == "kong" || svc == "gateway" || strings.EqualFold(cc.Name, m.Gateway) {
+					id, status, image = dockerLive(s.Docker, cc.Name)
+					if id != "" {
+						break
+					}
+				}
+			}
 		}
 	}
-	return p, nil
+	if id == "" && p.HostPort > 0 {
+		id, status, image = s.Docker.BriefByPublish(p.HostPort)
+		if status == "missing" {
+			id = ""
+		}
+	}
+	if id == "" {
+		if p.Status == "running" {
+			p.Status = "stopped"
+		}
+		return
+	}
+	changed := p.ContainerID != id
+	p.ContainerID = id
+	if status != "" && p.Status != status {
+		p.Status = status
+		changed = true
+	} else if status != "" {
+		p.Status = status
+	}
+	if image != "" && !strings.HasPrefix(image, "sha256:") && p.Image != image {
+		p.Image = image
+		changed = true
+	}
+	if changed {
+		_ = s.Store.UpdateProject(*p)
+		s.Store.SyncContainerFromProject(*p)
+	}
 }
 
 func (s *Service) prepareRoom(roomID string) error {
@@ -91,6 +156,12 @@ func (s *Service) prepareRoom(roomID string) error {
 
 func (s *Service) persistRoom(roomID string) {
 	_ = s.Rooms.Seal(roomID)
+}
+
+func (s *Service) touchProxy() {
+	if s != nil && s.AfterChange != nil {
+		s.AfterChange()
+	}
 }
 
 func (s *Service) DeployImage(in DeployImageInput) (*store.Project, error) {
@@ -152,7 +223,9 @@ func (s *Service) DeployImage(in DeployImageInput) (*store.Project, error) {
 			binds = append(binds, b)
 		}
 	}
+	stub := &store.Project{ID: id, RoomID: in.RoomID}
 	_ = writeMountsMeta(pdir, in.HostIP, binds)
+	binds = s.ensurePersistentBinds(stub, pdir, envPath, binds)
 	fmt.Fprintf(log, "تشغيل الحاوية على المنفذ %d...\n", hostPort)
 	cid, err := s.Docker.Run(dockerx.RunOpts{
 		Name:          cname,
@@ -247,6 +320,8 @@ func (s *Service) DeployBuild(in DeployBuildInput) (*store.Project, error) {
 	}
 	envPairs, _ := readEnvPairs(envPath)
 	cname := containerName(in.RoomID, id)
+	stub := &store.Project{ID: id, RoomID: in.RoomID}
+	binds := s.ensurePersistentBinds(stub, pdir, envPath, []string{pdir + ":/data"})
 	fmt.Fprintf(log, "تشغيل الحاوية على المنفذ %d...\n", hostPort)
 	cid, err := s.Docker.Run(dockerx.RunOpts{
 		Name:          cname,
@@ -255,7 +330,7 @@ func (s *Service) DeployBuild(in DeployBuildInput) (*store.Project, error) {
 		HostPort:      hostPort,
 		ContainerPort: cPort,
 		Env:           envPairs,
-		Binds:         []string{pdir + ":/data"},
+		Binds:         binds,
 		StorageBytes:  room.QuotaBytes,
 		Labels: map[string]string{
 			"vps-rooms.room":    in.RoomID,
@@ -346,12 +421,8 @@ func (s *Service) SetPort(id string, hostPort int) error {
 	envPairs, _ := readEnvPairs(envPath)
 	pdir := s.Rooms.ProjectDir(p.RoomID, p.ID)
 	meta := readMountsMeta(pdir)
-	binds := meta.Binds
-	if len(binds) == 0 {
-		if _, err := os.Stat(envPath); err == nil {
-			binds = []string{envPath + ":/app/.env:ro"}
-		}
-	}
+	s.seedDataVolume(p)
+	binds := s.bindsForRun(p)
 	if p.ContainerID != "" {
 		_ = s.Docker.Stop(p.ContainerID)
 		_ = s.Docker.Remove(p.ContainerID, true)
@@ -381,6 +452,7 @@ func (s *Service) SetPort(id string, hostPort int) error {
 		return err
 	}
 	s.persistRoom(p.RoomID)
+	s.touchProxy()
 	return nil
 }
 
@@ -413,12 +485,8 @@ func (s *Service) ClearPort(id string) error {
 	envPath := filepath.Join(pdir, ".env")
 	envPairs, _ := readEnvPairs(envPath)
 	meta := readMountsMeta(pdir)
-	binds := meta.Binds
-	if len(binds) == 0 {
-		if _, err := os.Stat(envPath); err == nil {
-			binds = []string{envPath + ":/app/.env:ro"}
-		}
-	}
+	s.seedDataVolume(p)
+	binds := s.bindsForRun(p)
 	if p.ContainerID != "" {
 		_ = s.Docker.Stop(p.ContainerID)
 		_ = s.Docker.Remove(p.ContainerID, true)
@@ -448,6 +516,7 @@ func (s *Service) ClearPort(id string) error {
 		return err
 	}
 	s.persistRoom(p.RoomID)
+	s.touchProxy()
 	return nil
 }
 
@@ -599,7 +668,8 @@ func (s *Service) recreateKeep(p *store.Project, room *store.Room, image string,
 	envPath := filepath.Join(pdir, ".env")
 	envPairs, _ := readEnvPairs(envPath)
 	meta := readMountsMeta(pdir)
-	binds := s.projectBinds(p, pdir, envPath)
+	s.seedDataVolume(p)
+	binds := s.ensurePersistentBinds(p, pdir, envPath, s.projectBinds(p, pdir, envPath))
 	cname := containerName(p.RoomID, p.ID)
 	prevName := cname + "-prev"
 	oldID := p.ContainerID
@@ -663,6 +733,7 @@ func (s *Service) recreateKeep(p *store.Project, room *store.Room, image string,
 	}
 	s.SyncRoomFilesVisibility(p.RoomID)
 	s.persistRoom(p.RoomID)
+	s.touchProxy()
 	return nil
 }
 
@@ -1029,6 +1100,7 @@ func (s *Service) Redeploy(id string) error {
 	envPath := filepath.Join(pdir, ".env")
 	envPairs, _ := readEnvPairs(envPath)
 	cname := containerName(p.RoomID, p.ID)
+	s.seedDataVolume(p)
 	if p.ContainerID != "" {
 		_ = s.Docker.Remove(p.ContainerID, true)
 	}
@@ -1127,6 +1199,7 @@ func (s *Service) Redeploy(id string) error {
 	} else if _, err := os.Stat(envPath); err == nil {
 		binds = []string{envPath + ":/app/.env:ro"}
 	}
+	binds = s.ensurePersistentBinds(p, pdir, envPath, binds)
 	if image == "" {
 		return fmt.Errorf("no image to redeploy")
 	}

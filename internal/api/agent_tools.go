@@ -98,7 +98,7 @@ func (s *Server) toolListProjects() string {
 		if rm.QuotaBytes > 0 {
 			pct = 100 * uGB / qGB
 		}
-		fmt.Fprintf(&b, "- name=%q id=%s kind=%s status=%s disk_used=%.2fGB quota=%.2fGB (%.0f%% of quota) running=%d image=%q\n",
+        fmt.Fprintf(&b, "- name=%q id=%s kind=%s status=%s data=%.2fGB quota=%.2fGB (%.0f%% of quota) running=%d image=%q\n",
 			rm.Name, rm.ID, rm.Kind, stt, uGB, qGB, pct, running, img)
 	}
 	return b.String()

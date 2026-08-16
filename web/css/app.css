@@ -1392,12 +1392,27 @@ button, input, textarea, select { font: inherit; color: inherit; }
 }
 @media (min-width: 860px) {
   .proj-side {
-    grid-template-columns: 1fr auto;
-    align-items: center;
+    grid-template-columns: 1fr 1.15fr auto;
+    align-items: start;
     gap: 14px 16px;
   }
   .proj-side .proj-actions { grid-column: 1 / -1; }
 }
+.proj-stat .muted { font-size: 0.72rem; text-transform: none; letter-spacing: 0; margin-top: 4px; }
+.disk-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 8px;
+}
+.disk-table th, .disk-table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.86rem;
+  vertical-align: top;
+}
+.disk-table th { color: var(--muted); font-weight: 500; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.disk-table td.mono { font-family: var(--mono); }
 .proj-hero {
   border-radius: 16px;
   padding: 16px 18px;
