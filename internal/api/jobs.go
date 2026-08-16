@@ -192,8 +192,11 @@ func (s *Server) applyImageTarRoom(room *store.Room, p *store.Project, tarPath s
 		if err := s.Projects.RedeployImage(projects.RedeployInput{
 			ID: p.ID, Image: want, Pull: false, Recreate: true, Log: logw,
 		}); err != nil {
+			s.Projects.MarkDeployResult(p.RoomID, p.ID, want, "", false, err.Error())
 			return want, err
 		}
+		digest := s.dockerDigest(want)
+		s.Projects.MarkDeployResult(p.RoomID, p.ID, want, digest, true, "")
 		return want, nil
 	}
 	cPort, hPort := s.readRoomPending(room.ID)
