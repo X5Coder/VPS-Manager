@@ -51,7 +51,7 @@ func TestBuildAPIPromptModes(t *testing.T) {
 	if !strings.Contains(prompt, "/api/v1/logs") || !strings.Contains(prompt, "logs?name=") || !strings.Contains(prompt, "logs_target_required") {
 		t.Fatalf("prompt must document container and VPS log commands")
 	}
-	if !strings.Contains(script, "timeout-minutes: 360") || !strings.Contains(script, "UPDATED") {
+	if !strings.Contains(script, "timeout-minutes: 30") || !strings.Contains(script, "ACCEPTED") {
 		t.Fatalf("script timeout/log")
 	}
 	if !strings.Contains(script, "ROOM_ID") || !strings.Contains(script, "PASTE_ROOM_ID_HERE") {

@@ -113,32 +113,26 @@ curl -sS -X POST {{BASE}}/api/v1/projects -H "Authorization: Bearer {{TOKEN}}" -
   -d '{"name":"my-app","quota_gb":10,"password":"at-least-6-chars","kind":"single"}'
 
 ────────────────────────────────
-4) UPLOAD / UPDATE
+4) UPDATE THIS ROOM — send the file. Same call for first image and later updates.
 POST {{BASE}}/api/v1/projects/$ROOM_ID/upload
 multipart field name: file
 
-SINGLE — filename MUST be *.tar (not .tar.gz). Content = docker save of ONE image.
-  curl -fS -H "Authorization: Bearer {{TOKEN}}" -F "file=@app.tar;filename=app.tar" \
-    {{BASE}}/api/v1/projects/$ROOM_ID/upload
-  Optional one-container update on a multi room: -F container_id=CONTAINER_ID (others stay running)
-
-MULTI — filename MUST be *.tar.gz. Layout:
-  VPS Manager Multi-Container Package
-  ├── compose.yml          (any *.yml name at root is accepted)
-  └── images/
-      ├── image-01.tar
-      ├── image-02.tar
-      └── image-03.tar
-  curl -fS -H "Authorization: Bearer {{TOKEN}}" -F "file=@project.vps.tar.gz;filename=project.vps.tar.gz" \
+One image:
+  docker save -o app.tar IMAGE:TAG
+  curl -fS -H "Authorization: Bearer {{TOKEN}}" -F "file=@app.tar" \
     {{BASE}}/api/v1/projects/$ROOM_ID/upload
 
-  202/200 deploying. Poll GET until status=running.
-  400 code=package_empty — not .tar and not .tar.gz (or empty)
-  400 code=package_invalid — .tar is not docker save
-  400 code=package_kind_mismatch — sent .tar but archive is multi (compose inside), OR sent .tar.gz without compose.yml, OR room is single and file is multi, OR room is multi and file is single without container_id
-  400 code=content_type — Content-Type must be multipart/form-data
-  400 {"error":"multipart field file is required ..."}
-  404 container not found (bad container_id)
+Compose stack (several containers):
+  tar -czf stack.tar.gz compose.yml images
+  curl -fS -H "Authorization: Bearer {{TOKEN}}" -F "file=@stack.tar.gz" \
+    {{BASE}}/api/v1/projects/$ROOM_ID/upload
+
+The panel looks inside the archive (docker save vs compose.yml). Filename .tar vs .tar.gz is a hint only.
+HTTP 200 = the file arrived. The room updates in the background. Watch GET {{BASE}}/api/v1/projects/$ROOM_ID or the room page. Do not poll for minutes in CI.
+Optional one-container update on a multi room: -F container_id=CONTAINER_ID
+
+  400 package_empty | package_invalid | package_kind_mismatch | content_type | file_required
+  404 container not found
   409 another deploy is running
 
 ────────────────────────────────
@@ -194,15 +188,12 @@ PATCH .../projects/$ROOM_ID  {"quota_gb":20}  — same quota errors as create
 GET {{BASE}}/api/v1/ports  200 { "used_ports":[...], "panel_port":9090 }
 
 ────────────────────────────────
-8) GITHUB ACTIONS — pick ONE workflow, not both
-  Single repo (Dockerfile, one image): save Copy single script as .github/workflows/vps-deploy-single.yml
-    Action builds, docker save app.tar, uploads. Fails if compose.yml or images/*.tar exist.
-  Multi repo (yml + images/*.tar): save Copy multi script as .github/workflows/vps-deploy-multi.yml
-    Action copies any root *.yml → compose.yml, tar -czf project.vps.tar.gz compose.yml images, uploads.
-    Fails if images/*.tar or a .yml is missing.
-  Set ROOM_ID. Repo PRIVATE. No GHCR.
+8) GITHUB ACTIONS — optional. The Action only POSTs the tar and exits.
+  Single: Copy single script → .github/workflows/vps-deploy-single.yml  (docker save app.tar, POST /upload)
+  Multi: Copy multi script → .github/workflows/vps-deploy-multi.yml  (pack compose.yml + images, POST /upload)
+  Set ROOM_ID. HTTP 200 = received. Watch the room in the panel. Repo PRIVATE.
 
-Tokens UI: Copy prompt = this text. Copy API = BASE+TOKEN. Copy single script / Copy multi script = YAML.
+Tokens UI: Copy prompt = this text. Copy API = BASE+TOKEN. Copy single / multi script = YAML.
 
 ===== BEGIN FILE .github/workflows/vps-deploy-single.yml =====
 {{SCRIPT_SINGLE}}

@@ -5,60 +5,6 @@ import (
 	"strings"
 )
 
-func githubPollPython() string {
-	return `python3 - <<'PY'
-import json, os, time, urllib.request
-base = os.environ["VPS_BASE"].rstrip("/")
-token = os.environ["VPS_TOKEN"]
-pid = os.environ["ROOM_ID"]
-prev = os.environ.get("PREV_DEPLOY_AT") or ""
-url = base + "/api/v1/projects/" + pid
-req = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
-for i in range(180):
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            data = json.load(r)
-    except Exception as e:
-        print("poll", i + 1, "wait:", e, flush=True)
-        time.sleep(5)
-        continue
-    st = data.get("status") or ""
-    at = data.get("last_deploy_at") or ""
-    ok = data.get("last_deploy_ok")
-    print("poll", i + 1, "status=" + st, "ok=" + str(ok), "at=" + at, flush=True)
-    if at and at != prev:
-        if ok is False or st == "error":
-            print("last_deploy_error:", data.get("last_deploy_error"), flush=True)
-            raise SystemExit(1)
-        if st == "running" and ok is not False:
-            print("UPDATED", flush=True)
-            raise SystemExit(0)
-    time.sleep(5)
-raise SystemExit("timeout waiting for running")
-PY`
-}
-
-func githubStampPython() string {
-	return `python3 - <<'PY'
-import json, os, urllib.request
-base = os.environ["VPS_BASE"].rstrip("/")
-token = os.environ["VPS_TOKEN"]
-pid = os.environ["ROOM_ID"]
-url = base + "/api/v1/projects/" + pid
-req = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
-try:
-    with urllib.request.urlopen(req, timeout=30) as r:
-        data = json.load(r)
-    at = data.get("last_deploy_at") or ""
-except Exception as e:
-    print("stamp wait:", e, flush=True)
-    at = ""
-with open(os.environ["GITHUB_ENV"], "a") as f:
-    f.write("PREV_DEPLOY_AT=" + at + "\n")
-print("PREV_DEPLOY_AT=" + at, flush=True)
-PY`
-}
-
 func githubRoomIDStep() string {
 	return `          RID="${{ github.event.inputs.room_id }}"
           CID="${{ github.event.inputs.container_id }}"
@@ -74,23 +20,23 @@ func githubRoomIDStep() string {
 func buildGitHubWorkflowSingle(base, secret string) string {
 	base = trimBase(base)
 	secret = trimSecret(secret)
-	return fmt.Sprintf(`# VPS Manager — SINGLE image
+	return fmt.Sprintf(`# VPS Manager — update a SINGLE room
 # Save as: .github/workflows/vps-deploy-single.yml  (repo PRIVATE)
-# Builds one Docker image, docker save → app.tar, POST /upload.
-# Do NOT use this if the repo has compose + images/*.tar (use vps-deploy-multi.yml).
+# docker save → POST the tar to /upload. HTTP 200 = file received.
+# The room updates in the panel. This job does not wait for docker load.
 
-name: Deploy single image
+name: Update room (single image)
 on:
   push:
     branches: [main, master]
   workflow_dispatch:
     inputs:
       room_id:
-        description: "Room id (GET /api/v1/projects)"
+        description: "Room id"
         required: true
         type: string
       container_id:
-        description: "Optional — update only this container in a multi room"
+        description: "Optional — one container in a multi room"
         required: false
         type: string
 
@@ -103,7 +49,7 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -113,70 +59,44 @@ jobs:
         run: |
 %s
 
-      - name: Reject multi repos
-        run: |
-          if ls compose.yml compose.yaml docker-compose.yml docker-compose.yaml >/dev/null 2>&1; then
-            echo "::error::This repo has a compose file. Use vps-deploy-multi.yml and a .tar.gz package."
-            exit 1
-          fi
-          if [ -d images ] && ls images/*.tar >/dev/null 2>&1; then
-            echo "::error::images/*.tar found. This is a multi package. Use vps-deploy-multi.yml."
-            exit 1
-          fi
-
-      - name: Note current deploy stamp
-        run: |
-%s
-
-      - name: Build image tar
+      - name: Build app.tar
         run: |
           DF=Dockerfile
           [ -f dockerfile ] && DF=dockerfile
           [ -f Containerfile ] && DF=Containerfile
           docker build -f "$DF" -t "vps-ci:${GITHUB_SHA}" .
           docker save -o app.tar "vps-ci:${GITHUB_SHA}"
-          test -f app.tar
-          case app.tar in *.tar.gz) echo "::error::single must be .tar"; exit 1;; esac
           ls -lh app.tar
 
-      - name: POST app.tar
+      - name: POST tar to the room API
         run: |
           EXTRA=()
           if [ -n "${CONTAINER_ID}" ]; then EXTRA+=(-F "container_id=${CONTAINER_ID}"); fi
-          curl -fS --connect-timeout 30 --max-time 21600 \
+          curl -fS --connect-timeout 30 --max-time 1800 \
             -H "Authorization: Bearer ${VPS_TOKEN}" \
-            -F "file=@app.tar;filename=app.tar;type=application/octet-stream" \
+            -F "file=@app.tar;filename=app.tar" \
             "${EXTRA[@]}" \
             "${VPS_BASE}/api/v1/projects/${ROOM_ID}/upload"
-
-      - name: Wait until running
-        timeout-minutes: 60
-        run: |
-%s
-`, base, secret, githubRoomIDStep(), indentRun(githubStampPython()), indentRun(githubPollPython()))
+          echo "ACCEPTED — file received. Watch the room in VPS Manager."
+`, base, secret, githubRoomIDStep())
 }
 
 func buildGitHubWorkflowMulti(base, secret string) string {
 	base = trimBase(base)
 	secret = trimSecret(secret)
-	return fmt.Sprintf(`# VPS Manager — MULTI stack
+	return fmt.Sprintf(`# VPS Manager — update a MULTI room
 # Save as: .github/workflows/vps-deploy-multi.yml  (repo PRIVATE)
-# Packs a .tar.gz in this layout, then POST /upload:
-#
-#   compose.yml          (any *.yml name at repo root is copied to compose.yml)
-#   images/image-01.tar
-#   images/image-02.tar
-#
-# Do NOT use this for a single docker save .tar (use vps-deploy-single.yml).
+# Pack compose.yml + images/*.tar → POST /upload. HTTP 200 = file received.
+# The room updates in the panel. This job does not wait for docker load.
 
-name: Deploy multi stack
+name: Update room (multi stack)
 on:
   push:
     branches: [main, master]
   workflow_dispatch:
     inputs:
       room_id:
-        description: "Room id (GET /api/v1/projects)"
+        description: "Room id"
         required: true
         type: string
 
@@ -188,7 +108,7 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -203,12 +123,8 @@ jobs:
             exit 1
           fi
 
-      - name: Reject single-image repos
+      - name: Pack project.vps.tar.gz
         run: |
-          if [ ! -d images ] || ! ls images/*.tar >/dev/null 2>&1; then
-            echo "::error::Multi needs images/*.tar (docker save each service). For one image use vps-deploy-single.yml."
-            exit 1
-          fi
           FOUND=
           for f in *.yml *.yaml; do
             [ -f "$f" ] || continue
@@ -217,47 +133,25 @@ jobs:
             break
           done
           if [ -z "$FOUND" ]; then
-            echo "::error::Multi needs a .yml compose file at repo root."
+            echo "::error::Need a compose .yml at repo root."
+            exit 1
+          fi
+          if [ ! -d images ] || ! ls images/*.tar >/dev/null 2>&1; then
+            echo "::error::Need images/*.tar (docker save each service)."
             exit 1
           fi
           cp -f "$FOUND" compose.yml
-          echo "Using compose file $FOUND → compose.yml"
-
-      - name: Note current deploy stamp
-        run: |
-%s
-
-      - name: Pack project.vps.tar.gz
-        run: |
           tar -czf project.vps.tar.gz compose.yml images
           ls -lh project.vps.tar.gz
 
-      - name: POST project.vps.tar.gz
+      - name: POST tar.gz to the room API
         run: |
-          curl -fS --connect-timeout 30 --max-time 21600 \
+          curl -fS --connect-timeout 30 --max-time 1800 \
             -H "Authorization: Bearer ${VPS_TOKEN}" \
-            -F "file=@project.vps.tar.gz;filename=project.vps.tar.gz;type=application/octet-stream" \
+            -F "file=@project.vps.tar.gz;filename=project.vps.tar.gz" \
             "${VPS_BASE}/api/v1/projects/${ROOM_ID}/upload"
-
-      - name: Wait until running
-        timeout-minutes: 60
-        run: |
-%s
-`, base, secret, indentRun(githubStampPython()), indentRun(githubPollPython()))
-}
-
-func indentRun(s string) string {
-	var b strings.Builder
-	for _, line := range strings.Split(s, "\n") {
-		if line == "" {
-			b.WriteByte('\n')
-			continue
-		}
-		b.WriteString("          ")
-		b.WriteString(line)
-		b.WriteByte('\n')
-	}
-	return strings.TrimRight(b.String(), "\n")
+          echo "ACCEPTED — file received. Watch the room in VPS Manager."
+`, base, secret)
 }
 
 func trimBase(base string) string {

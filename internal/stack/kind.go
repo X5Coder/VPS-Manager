@@ -2,7 +2,9 @@ package stack
 
 import (
 	"archive/tar"
+	"compress/gzip"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,61 +33,78 @@ func FilenameKind(name string) string {
 	return ""
 }
 
-// LooksLikeDockerSave is true for docker save / OCI image tars (manifest.json at the root).
-func LooksLikeDockerSave(path string) bool {
+func withTarEntries(path string, max int, fn func(name string) bool) bool {
 	f, err := os.Open(path)
 	if err != nil {
 		return false
 	}
 	defer f.Close()
-	tr := tar.NewReader(f)
-	for i := 0; i < 80; i++ {
+	var r io.Reader = f
+	hdr := make([]byte, 2)
+	n, _ := io.ReadFull(f, hdr)
+	_, _ = f.Seek(0, io.SeekStart)
+	if n == 2 && hdr[0] == 0x1f && hdr[1] == 0x8b {
+		gz, err := gzip.NewReader(f)
+		if err != nil {
+			return false
+		}
+		defer gz.Close()
+		r = gz
+	}
+	tr := tar.NewReader(r)
+	for i := 0; i < max; i++ {
 		h, err := tr.Next()
 		if err != nil {
 			return false
 		}
-		n := strings.TrimPrefix(filepath.ToSlash(h.Name), "./")
-		base := filepath.Base(n)
-		if base == "manifest.json" || base == "index.json" || base == "oci-layout" || n == "repositories" {
+		if fn(strings.TrimPrefix(filepath.ToSlash(h.Name), "./")) {
 			return true
 		}
 	}
 	return false
 }
 
-// CheckUpload enforces filename vs contents vs room kind.
-// containerID allows a single .tar onto one service of a multi room.
+// LooksLikeDockerSave is true for docker save / OCI image tars (manifest.json at the root).
+func LooksLikeDockerSave(path string) bool {
+	return withTarEntries(path, 80, func(n string) bool {
+		base := filepath.Base(n)
+		return base == "manifest.json" || base == "index.json" || base == "oci-layout" || n == "repositories"
+	})
+}
+
+func detectPackageContent(path string) string {
+	if ArchiveHasCompose(path) {
+		return "multi"
+	}
+	if LooksLikeDockerSave(path) {
+		return "single"
+	}
+	return ""
+}
+
+// CheckUpload looks at the archive contents (not the filename) vs the room kind.
+// containerID allows a single image onto one service of a multi room.
 func CheckUpload(fname, path, roomKind, containerID string, emptyRoom bool) error {
 	fname = filepath.Base(fname)
-	fk := FilenameKind(fname)
-	if fk == "" {
-		return fmt.Errorf("package_empty: not a .tar (docker save) or .tar.gz (compose + images) package")
+	if FilenameKind(fname) == "" && !LooksLikeArchive(fname) {
+		return fmt.Errorf("package_empty: send a .tar (one image) or .tar.gz (compose + images)")
 	}
-	content := "single"
-	if ArchiveHasCompose(path) {
-		content = "multi"
-	}
-	if fk == "single" && content == "multi" {
-		return fmt.Errorf("package_kind_mismatch: file is .tar (single) but the archive is a multi package (compose + images). Use .tar.gz and the multi GitHub Action")
-	}
-	if fk == "multi" && content != "multi" {
-		return fmt.Errorf("package_kind_mismatch: file is .tar.gz (multi) but there is no compose .yml inside. Multi package must be:\n  compose.yml (any *.yml name)\n  images/image-01.tar …")
-	}
-	if fk == "single" && content == "single" && !LooksLikeDockerSave(path) {
-		return fmt.Errorf("package_invalid: not a docker save .tar (missing manifest.json). Use docker save, not a random .tar")
+	content := detectPackageContent(path)
+	if content == "" {
+		return fmt.Errorf("package_invalid: not a docker save image and not a compose stack. One image: docker save -o app.tar IMAGE. Multi: compose.yml + images/*.tar inside a .tar.gz")
 	}
 	if emptyRoom {
 		return nil
 	}
 	rk := strings.ToLower(strings.TrimSpace(roomKind))
 	if rk == "multi" && content == "single" && strings.TrimSpace(containerID) == "" {
-		return fmt.Errorf("package_kind_mismatch: this room is multi. Send a .tar.gz stack, or send a .tar with container_id to update one container")
+		return fmt.Errorf("package_kind_mismatch: this room is multi. Send a compose stack, or send one image with container_id")
 	}
 	if rk == "single" && content == "multi" {
-		return fmt.Errorf("package_kind_mismatch: this room is single. Send a docker-save .tar, not a multi .tar.gz")
+		return fmt.Errorf("package_kind_mismatch: this room is single. Send one docker-save image, not a compose stack")
 	}
-	if fk == "multi" && strings.TrimSpace(containerID) != "" {
-		return fmt.Errorf("package_kind_mismatch: container_id is for a single .tar on one container, not a multi .tar.gz")
+	if content == "multi" && strings.TrimSpace(containerID) != "" {
+		return fmt.Errorf("package_kind_mismatch: container_id is for one image, not a compose stack")
 	}
 	return nil
 }

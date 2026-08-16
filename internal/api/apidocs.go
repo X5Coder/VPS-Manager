@@ -49,22 +49,14 @@ Docs page: Tokens sidebar → Docs. Copy page copies this API brief (no install)
 
 401 unauthorized if the token is missing or wrong.`,
 
-	"github": `GITHUB ACTIONS — pick one workflow
+	"github": `GITHUB ACTIONS — optional helper
 
-SINGLE (one image):
-  File: .github/workflows/vps-deploy-single.yml
-  Builds Docker, docker save app.tar (MUST be .tar), POST /upload.
-  Fails if compose.yml or images/*.tar exist (use multi).
+The Action builds or packs a file, POSTs it to /upload, and exits.
+HTTP 200 = the room received the file. Watch the room in the panel. Do not wait in GitHub for docker load.
 
-MULTI (stack):
-  File: .github/workflows/vps-deploy-multi.yml
-  Packs project.vps.tar.gz:
-    compose.yml   (any *.yml at repo root)
-    images/image-01.tar
-    images/image-02.tar
-  Fails if .yml or images/*.tar is missing (use single).
-
-Set ROOM_ID. Repo PRIVATE. Optional container_id only on the single workflow.`,
+SINGLE: .github/workflows/vps-deploy-single.yml  → app.tar
+MULTI:  .github/workflows/vps-deploy-multi.yml   → compose.yml + images/*.tar as .tar.gz
+Set ROOM_ID. Repo PRIVATE.`,
 
 	"create_room": `AVAILABLE SPACE then CREATE ROOM
 
@@ -91,30 +83,31 @@ curl -sS -X POST "{{BASE}}/api/v1/projects" \
   -H "Authorization: Bearer YOUR_TOKEN" -H "Content-Type: application/json" \
   -d '{"name":"my-app","quota_gb":10,"password":"secret6+","kind":"single"}'`,
 
-	"update": `UPLOAD / UPDATE
+	"update": `HOW TO UPDATE A ROOM
+
+Same endpoint for the first image and every later update.
 
 POST {{BASE}}/api/v1/projects/ROOM_ID/upload
 Field name: file
 
-Single: filename *.tar only (docker save).
-  -F "file=@app.tar;filename=app.tar"
-  Optional: -F container_id=CONTAINER_ID (one container; others stay up)
+One image:
+  docker save -o app.tar IMAGE:TAG
+  curl -fS -H "Authorization: Bearer YOUR_TOKEN" -F "file=@app.tar" \
+    "{{BASE}}/api/v1/projects/ROOM_ID/upload"
 
-Multi: filename *.tar.gz
-  compose.yml (any .yml name)
-  images/image-01.tar …
+Compose stack:
+  tar -czf stack.tar.gz compose.yml images
+  curl -fS -H "Authorization: Bearer YOUR_TOKEN" -F "file=@stack.tar.gz" \
+    "{{BASE}}/api/v1/projects/ROOM_ID/upload"
 
-  -F "file=@project.vps.tar.gz;filename=project.vps.tar.gz"
+The API inspects the archive. 200 = file received; the room updates in the background.
+Optional: -F container_id=CONTAINER_ID (one container in a multi room)
 
-  400 package_empty — not .tar / .tar.gz (or empty file)
-  400 package_invalid — .tar is not docker save (no manifest.json)
-  400 package_kind_mismatch — single vs multi swapped, or multi room got a .tar without container_id
-  400 content_type — not multipart/form-data
-  400 file_required
+  400 package_empty | package_invalid | package_kind_mismatch | content_type | file_required
   404 container not found
   409 deploy already running
 
-Panel: empty room dropzone .tar or .tar.gz. Click a container or volume to browse files.`,
+Panel: room Overview → Update. Drop the same file there.`,
 
 	"list": `LIST / ONE ROOM
 

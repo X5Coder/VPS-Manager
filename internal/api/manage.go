@@ -1211,7 +1211,7 @@ func (s *Server) handleRoomImageTar(w http.ResponseWriter, r *http.Request, room
 		fmt.Fprintf(logw, "Updated. Container is running. The rest of the room is unchanged.\n")
 		return
 	}
-	if s.Stack != nil && (stack.LooksLikeMultiPackage(fname) || stack.ArchiveHasCompose(dest)) {
+	if s.Stack != nil && stack.ArchiveHasCompose(dest) {
 		fmt.Fprintf(logw, "Multi-container package detected. Loading stack...\n")
 		jobKey := room.ID
 		if err := s.tryBeginJob(jobKey, "deploy"); err != nil {

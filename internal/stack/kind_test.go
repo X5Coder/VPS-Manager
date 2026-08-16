@@ -37,12 +37,12 @@ func TestCheckUploadMismatch(t *testing.T) {
 	tw.Close()
 	f.Close()
 	err = CheckUpload("app.tar", tarPath, "single", "", true)
-	if err == nil || !strings.Contains(err.Error(), "package_kind_mismatch") {
-		t.Fatalf("expected mismatch, got %v", err)
+	if err != nil {
+		t.Fatalf("empty room accepts compose archive regardless of .tar name: %v", err)
 	}
-	err = CheckUpload("project.tar.gz", tarPath, "single", "", false)
+	err = CheckUpload("app.tar", tarPath, "single", "", false)
 	if err == nil || !strings.Contains(err.Error(), "package_kind_mismatch") {
-		t.Fatalf("single room + multi name, got %v", err)
+		t.Fatalf("occupied single room + compose, got %v", err)
 	}
 }
 

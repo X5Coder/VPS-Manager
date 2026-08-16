@@ -31,39 +31,17 @@ func LooksLikeArchive(name string) bool {
 }
 
 func ArchiveHasCompose(src string) bool {
-	f, err := os.Open(src)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	low := strings.ToLower(src)
-	var r io.Reader = f
-	if strings.HasSuffix(low, ".gz") || strings.HasSuffix(low, ".tgz") {
-		gz, err := gzip.NewReader(f)
-		if err != nil {
-			return false
-		}
-		defer gz.Close()
-		r = gz
-	}
-	tr := tar.NewReader(r)
-	for i := 0; i < 400; i++ {
-		hdr, err := tr.Next()
-		if err != nil {
-			return false
-		}
-		base := strings.ToLower(filepath.Base(hdr.Name))
+	return withTarEntries(src, 400, func(n string) bool {
+		base := strings.ToLower(filepath.Base(n))
 		if strings.Contains(base, "override") {
-			continue
+			return false
 		}
 		if strings.HasSuffix(base, ".yml") || strings.HasSuffix(base, ".yaml") {
-			dir := strings.Trim(filepath.ToSlash(filepath.Dir(hdr.Name)), ".")
-			if dir == "" || dir == "." {
-				return true
-			}
+			dir := strings.Trim(filepath.ToSlash(filepath.Dir(n)), ".")
+			return dir == "" || dir == "."
 		}
-	}
-	return false
+		return false
+	})
 }
 
 // DeployMulti extracts project.vps.tar.gz (compose.yml + images/*.tar) and

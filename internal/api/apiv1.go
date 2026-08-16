@@ -1037,7 +1037,7 @@ func (s *Server) apiUploadProject(w http.ResponseWriter, r *http.Request, id str
 		})
 		return
 	}
-	if s.Stack != nil && (stack.LooksLikeMultiPackage(fname) || stack.ArchiveHasCompose(dest)) {
+	if s.Stack != nil && stack.ArchiveHasCompose(dest) {
 		go func() {
 			defer os.RemoveAll(tmp)
 			_ = s.Stack.DeployMulti(room, dest, io.Discard)

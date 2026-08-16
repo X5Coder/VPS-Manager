@@ -238,7 +238,7 @@ func (s *Server) applyImageTarOneContainer(room *store.Room, ct *store.Container
 }
 
 func (s *Server) applyUploadedPackage(room *store.Room, p *store.Project, dest, fname string, containerID string, logw io.Writer) error {
-	if s.Stack != nil && (stack.LooksLikeMultiPackage(fname) || stack.ArchiveHasCompose(dest)) {
+	if s.Stack != nil && stack.ArchiveHasCompose(dest) {
 		fmt.Fprintf(logw, "Multi package — other rooms are not touched.\n")
 		return s.Stack.DeployMulti(room, dest, logw)
 	}

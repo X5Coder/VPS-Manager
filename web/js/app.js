@@ -2508,6 +2508,16 @@
     }).join("");
   }
 
+  function roomUpdateHelpHTML(roomId) {
+    const origin = (typeof location !== "undefined" && location.origin) ? location.origin : "http://YOUR_VPS_IP:9090";
+    const curl = `curl -fS -H "Authorization: Bearer YOUR_TOKEN" \\\n  -F "file=@app.tar" \\\n  ${origin}/api/v1/projects/${roomId}/upload`;
+    return `<div class="panel"><h3>How to update</h3>
+      <p class="muted" style="margin:0 0 10px">Same call for the first image and later updates. Send the tar. <strong>200 = received</strong> — this room updates here. GitHub should POST and exit (do not wait for docker load).</p>
+      ${cmdCard("POST /upload", curl)}
+      <p class="muted" style="margin:10px 0 0">One image: <code>docker save -o app.tar IMAGE</code>. Several containers: <code>tar -czf stack.tar.gz compose.yml images</code> then <code>-F file=@stack.tar.gz</code>.</p>
+    </div>`;
+  }
+
   function cmdCard(title, code) {
     return `<div class="cmd-card">
       <div class="cmd-card-head"><h4>${esc(title)}</h4>
@@ -2531,12 +2541,12 @@
   -H "Authorization: Bearer YOUR_TOKEN" \\
   -H "Content-Type: application/json" \\
   -d '{"name":"my-app","quota_gb":10,"password":"secret6+","kind":"single"}'`;
-    const uploadTar = `curl -sS -X POST "http://YOUR_VPS_IP:9090/api/v1/projects/ROOM_ID/upload" \\
-  -H "Authorization: Bearer YOUR_TOKEN" \\
-  -F "file=@app.tar;filename=app.tar"`;
-    const uploadMulti = `curl -sS -X POST "http://YOUR_VPS_IP:9090/api/v1/projects/ROOM_ID/upload" \\
-  -H "Authorization: Bearer YOUR_TOKEN" \\
-  -F "file=@project.vps.tar.gz;filename=project.vps.tar.gz"`;
+    const uploadTar = `curl -fS -H "Authorization: Bearer YOUR_TOKEN" \\
+  -F "file=@app.tar" \\
+  "http://YOUR_VPS_IP:9090/api/v1/projects/ROOM_ID/upload"`;
+    const uploadMulti = `curl -fS -H "Authorization: Bearer YOUR_TOKEN" \\
+  -F "file=@stack.tar.gz" \\
+  "http://YOUR_VPS_IP:9090/api/v1/projects/ROOM_ID/upload"`;
     const oneRoom = `curl -sS "http://YOUR_VPS_IP:9090/api/v1/projects/ROOM_ID" \\
   -H "Authorization: Bearer YOUR_TOKEN"`;
     const patchQuota = `curl -sS -X PATCH "http://YOUR_VPS_IP:9090/api/v1/projects/ROOM_ID" \\
@@ -2583,7 +2593,7 @@
       </div>
         <button class="btn sm primary action" type="button" id="docs-copy-page">Copy page</button>
       </div>
-      <p class="docs-lead">One API token controls <strong>every room</strong>. Create it on <button type="button" class="docs-link" id="docs-goto-tokens">Tokens</button>. Always call <span class="mono">GET /api/v1/quota</span> before creating a room. Single = <span class="mono">.tar</span>. Multi = <span class="mono">.tar.gz</span> in the layout below.</p>
+      <p class="docs-lead">One API token controls <strong>every room</strong>. Create it on <button type="button" class="docs-link" id="docs-goto-tokens">Tokens</button>. Always call <span class="mono">GET /api/v1/quota</span> before creating a room. To update a room: POST the tar to <span class="mono">/upload</span> — 200 means received.</p>
       <p class="docs-repo">Repository: <a href="https://github.com/X5Coder/VPS-Manager" target="_blank" rel="noopener">github.com/X5Coder/VPS-Manager</a> · Developer <strong>X5Coder</strong></p>
       <textarea class="hidden" id="docs-copy-src" readonly></textarea>
 
@@ -2608,15 +2618,12 @@
 400 { code:"invalid_request" }
 401 unauthorized`), createEmpty)}
 
-      <h3 class="docs-h">5. Upload — single vs multi</h3>
-      ${step("E", "Single · .tar only", "docker save one image. Optional container_id updates one container in a multi room.", errBox(`202/200 deploying
-400 { code:"package_kind_mismatch" } if the file is actually a multi stack
-400 { code:"package_empty" } if not .tar
-400 { code:"package_invalid" } if .tar is not docker save
+      <h3 class="docs-h">5. Update a room — send the file</h3>
+      ${step("E", "POST /upload", "Same call for first image and later updates. docker save one image, or pack compose.yml + images. HTTP 200 = received; watch the room. Do not wait in CI.", errBox(`200 { ok:true, accepted:true, status:"deploying" }
+400 package_empty | package_invalid | package_kind_mismatch | content_type | file_required
 404 container not found
 409 deploy already running`), uploadTar)}
-      ${step("F", "Multi · .tar.gz only", "Fixed layout. Any root *.yml is accepted as compose.", cmdCard("Package layout", multiTree) + errBox(`400 package_kind_mismatch if you send .tar.gz without compose.yml, or send multi to a single room
-400 package_empty if not .tar.gz`), uploadMulti)}
+      ${step("F", "Compose stack", "compose.yml at the root plus images/*.tar, usually packed as .tar.gz.", cmdCard("Package layout", multiTree), uploadMulti)}
 
       <h3 class="docs-h">6. Logs</h3>
       ${step("G0", "By container name", "One container. There is no combined log for the whole room.", errBox(`200 { log, container_id, name, containers[] }
@@ -2637,8 +2644,7 @@
       ${step("J", "Exec", "Runs inside the selected container.", "", execCmd)}
 
       <h3 class="docs-h">9. GitHub Actions</h3>
-      <p class="muted">Tokens → Copy single script → <code>.github/workflows/vps-deploy-single.yml</code> (builds, saves <code>app.tar</code>, fails if compose/images exist).<br>
-      Tokens → Copy multi script → <code>.github/workflows/vps-deploy-multi.yml</code> (packs <code>project.vps.tar.gz</code>, fails if .yml or images/*.tar missing). Set ROOM_ID. Repo PRIVATE.</p>
+      <p class="muted">Optional. Tokens → Copy script → set ROOM_ID. The Action POSTs the tar and exits. Watch the room in the panel. Repo PRIVATE.</p>
     `, "docs");
     const copySrc = document.querySelector("#docs-copy-src");
     if (copySrc) copySrc.value = docsPagePlain();
@@ -2670,11 +2676,9 @@ Errors: { "ok": false, "error": "...", "code": "..." } + HTTP status.
    400 quota_required | quota_exceeds_available (includes quota_available_gb) | password_required | password_invalid | invalid_request
 
 4) POST /api/v1/projects/ROOM_ID/upload  field: file
-   SINGLE: filename *.tar (docker save). Optional container_id.
-   MULTI: filename *.tar.gz or *.vps.tar.gz
-     compose.yml   (any *.yml at root)
-     images/image-01.tar
-     images/image-02.tar
+   Same call for first image and later updates. 200 = received; room updates in the panel.
+   One image: docker save -o app.tar IMAGE then -F file=@app.tar
+   Stack: tar -czf stack.tar.gz compose.yml images then -F file=@stack.tar.gz
    400 package_empty | package_invalid | package_kind_mismatch | content_type | file_required
    404 container not found  409 deploy running
 
@@ -2692,10 +2696,8 @@ Errors: { "ok": false, "error": "...", "code": "..." } + HTTP status.
 
 7) PATCH quota  POST exec  GET /api/v1/ports
 
-8) GitHub
-   Single: .github/workflows/vps-deploy-single.yml  (Copy single script)
-   Multi:  .github/workflows/vps-deploy-multi.yml   (Copy multi script)
-   Action builds/packs and POSTs to the API. Wrong kind fails with package_kind_mismatch.
+8) GitHub (optional)
+   Copy script, set ROOM_ID, POST tar, exit. Watch the room. Do not wait for docker load.
 
 Never DELETE via API. One token = all rooms.`;
   }
@@ -3363,7 +3365,7 @@ Never DELETE via API. One token = all rooms.`;
       <div class="modal-card logout-card tok-create-card">
         <div id="tok-create-form">
           <h3>Create API</h3>
-          <p class="muted">One key for <strong>all rooms</strong>. In GitHub, set <code>ROOM_ID</code> to the room you update.</p>
+          <p class="muted">One key for <strong>all rooms</strong>. Update a room by POSTing a tar to <code>/upload</code>. In GitHub, set <code>ROOM_ID</code> — the Action should exit after HTTP 200.</p>
           <div class="field" style="margin-top:14px"><label>Name</label>
             <input id="tok-create-name" type="text" maxlength="64" placeholder="My API key" autocomplete="off" /></div>
           <p class="error" id="tok-create-err"></p>
@@ -3374,7 +3376,7 @@ Never DELETE via API. One token = all rooms.`;
         </div>
         <div id="tok-create-done" class="hidden">
           <h3>API created</h3>
-          <p class="muted" id="tok-create-done-note">Copy prompt = AI brief. Copy single / multi script = GitHub YAML. Copy API = BASE and TOKEN.</p>
+          <p class="muted" id="tok-create-done-note">Copy prompt = AI brief. Copy API = BASE and TOKEN. Copy script = GitHub YAML that POSTs the tar and exits.</p>
           <div class="secret-row" style="margin-top:12px">
             <code class="tok-plain" id="tok-create-secret"></code>
           </div>
@@ -3542,17 +3544,14 @@ Never DELETE via API. One token = all rooms.`;
     const qgb = room.quota_bytes ? gb(room.quota_bytes).toFixed(2) : "";
     if (emptyRoom) {
       body = `<div class="panel"><h3>Empty room</h3>
-        <p class="muted" style="margin:0 0 12px">This room is isolated and empty. Use <strong>Terminal</strong> + the agent to <code>git clone</code> and Dockerize, or upload a file:</p>
-        <ul class="muted" style="margin:0 0 14px;padding-left:18px;line-height:1.6">
-          <li><code>.tar</code> — single image (<code>docker save -o app.tar image:tag</code>)</li>
-          <li><code>.tar.gz</code> — multi stack (<code>compose.yml</code> + <code>images/*.tar</code>)</li>
-        </ul>
+        <p class="muted" style="margin:0 0 12px">Isolated and empty. Drop a file here, or POST it to the API (same update call later).</p>
+        ${roomUpdateHelpHTML(id)}
         <form id="tar-update-form">
           <label class="dropzone" id="tar-dz">
             <input type="file" name="file" accept=".tar,.tar.gz,.tgz,.vps.tar.gz" />
             <div class="dz-icon">▣</div>
-            <div class="dz-title">Drop .tar or .tar.gz</div>
-            <div class="dz-sub">Single = one image .tar · Multi = compose + images .tar.gz</div>
+            <div class="dz-title">Drop the tar here</div>
+            <div class="dz-sub">One image or a compose stack — the panel reads the archive</div>
             <div class="dz-file" id="tar-fname"></div>
           </label>
           <div class="row-actions" style="margin-top:12px">
@@ -3639,16 +3638,15 @@ Never DELETE via API. One token = all rooms.`;
           <table class="table"><thead><tr><th>#</th><th>Container</th><th>Docker</th><th>Status</th><th>Port</th><th>Image</th></tr></thead>
           <tbody id="containers-live">${containers.map((p) => `<tr data-cid="${esc(p.id)}" class="ctr-row" style="cursor:pointer"><td class="mono">${ctrNum(p)}</td><td>${esc(ctrLabel(p))}<div class="muted" style="font-size:0.75rem">${esc(p.name || "")}</div></td><td><code class="copyable" data-copy="${esc(p.docker_id || p.id)}">${esc(shortDocker(p.docker_id || p.id))}</code></td><td><span class="badge ${p.status === "running" ? "ok" : "stop"}" data-cstatus>${esc(p.status)}</span></td><td data-cport>${p.host_port || "—"}</td><td class="mono muted">${esc(p.image)}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">No containers</td></tr>`}</tbody></table>
         </div>
-        <div class="panel"><h3>${emptyRoom ? "Upload image" : "Update"}</h3>
-          <p class="muted" style="margin:0 0 10px">${emptyRoom
-            ? `Empty room. Drop a single <code>image.tar</code> (docker save) or a <code>project.vps.tar.gz</code> (compose.yml + images/). Room id <code>${esc(id)}</code>.`
-            : "Upload <code>.tar</code> for a single image, or <code>.tar.gz</code> for a multi stack (compose.yml + images/)."}</p>
+        <div class="panel"><h3>Update</h3>
+          <p class="muted" style="margin:0 0 10px">Send a new tar to this room. Same as the first upload. Watch the log below — the API returns as soon as the file arrives.</p>
+          ${roomUpdateHelpHTML(id)}
           <form id="tar-update-form">
             <label class="dropzone" id="tar-dz">
               <input type="file" name="file" accept=".tar,.tar.gz,.tgz" />
               <div class="dz-icon">▣</div>
-              <div class="dz-title">Drop .tar here</div>
-              <div class="dz-sub">docker save -o app.tar yourimage:tag</div>
+              <div class="dz-title">Drop the tar here</div>
+              <div class="dz-sub">docker save -o app.tar IMAGE  ·  or compose.yml + images in a .tar.gz</div>
               <div class="dz-file" id="tar-fname"></div>
             </label>
             <div class="row-actions" style="margin-top:12px">
@@ -3865,6 +3863,7 @@ Never DELETE via API. One token = all rooms.`;
       </div>
       ${body}`, "room");
 
+    bindCmdCopies();
     document.querySelectorAll("[data-tab]").forEach((b) => b.onclick = () => setView("room", { roomTab: b.dataset.tab, filePath: b.dataset.tab === "files" ? (state.filePath || ".") : state.filePath }));
     bindAction(document.querySelector("#backrooms"), async () => {
       if (state.me?.kind !== "owner") {
@@ -4301,7 +4300,7 @@ Never DELETE via API. One token = all rooms.`;
           `Disk used ${fmtBytes(room.usage_bytes)} of quota ${room.quota_bytes ? fmtBytes(room.quota_bytes) : "not set"}. ` +
           `Containers: ${(containers || []).map((c) => `${ctrNum(c)} ${ctrLabel(c)} image=${c.image} status=${c.status}`).join("; ") || "none (empty room — git clone and dockerize here)"}. ` +
           `Commands run in the room shell on the VPS unless they pick a container. Put every action in command; explain it in say. ` +
-          `If they ask for usage, answer with those numbers in one say. You may publish a Docker update on this same id (image + start). They can also drop a docker save .tar on Overview → Update image. GitHub: Tokens → pick this project → Copy script into .github/workflows/vps-deploy.yml. You may edit files via the terminal after reading them. Refuse deleting this room.`,
+          `If they ask for usage, answer with those numbers in one say. To update this room they POST a tar to /api/v1/projects/${id}/upload (or Overview → Update). Same call every time. GitHub should POST and exit; watch this page. You may also publish a Docker update on this same id (image + start). You may edit files via the terminal after reading them. Refuse deleting this room.`,
         onQuota: (gb) => api(`/api/rooms/${id}/quota`, { method: "POST", body: JSON.stringify({ quota_gb: gb }) }),
         onStart: async (image) => {
           const text = await streamFetch(`/api/rooms/${id}/update`, {

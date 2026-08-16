@@ -3,8 +3,8 @@
 One token controls **every room**. Tokens → Create token.
 
 - **Copy API** = `BASE` + `TOKEN`
-- **Copy single script** = GitHub Action that builds and uploads `app.tar`
-- **Copy multi script** = GitHub Action that packs and uploads `project.vps.tar.gz`
+- **Copy single script** = GitHub Action: `docker save` then POST `/upload` and **exit** (room updates in the panel)
+- **Copy multi script** = GitHub Action: pack compose + images, POST `/upload` and exit
 - **Copy prompt** = full AI brief (all commands, responses, errors, both YAMLs)
 
 Auth: `Authorization: Bearer YOUR_TOKEN`  
@@ -43,39 +43,33 @@ curl -sS -X POST "http://YOUR_VPS_IP:9090/api/v1/projects" \
 **200** `{ ok, empty:true, status:"empty", password, project: { id: ROOM_ID } }`  
 **400** `quota_required` · `quota_exceeds_available` (includes `quota_available_gb`) · `password_required` · `password_invalid` · `invalid_request`
 
-## 4. Upload
+## 4. Update a room
+
+Same call for the **first image** and every later update. Send the file. **200 = received** — the room updates in the panel. Do not wait in CI for docker load.
 
 `POST /api/v1/projects/ROOM_ID/upload` field name `file`.
 
-**Single** — filename **must** be `.tar` (`docker save`):
+One image (`docker save`):
 
 ```bash
+docker save -o app.tar IMAGE:TAG
 curl -fS -H "Authorization: Bearer YOUR_TOKEN" \
-  -F "file=@app.tar;filename=app.tar" \
+  -F "file=@app.tar" \
   "http://YOUR_VPS_IP:9090/api/v1/projects/ROOM_ID/upload"
 ```
 
-Optional `-F container_id=CONTAINER_ID` updates one container; the rest stay running.
-
-**Multi** — filename **must** be `.tar.gz`:
-
-```
-VPS Manager Multi-Container Package
-│
-├── compose.yml          # any *.yml name at the root is accepted
-└── images/
-    ├── image-01.tar
-    ├── image-02.tar
-    └── image-03.tar
-```
+Compose stack (`compose.yml` + `images/*.tar`):
 
 ```bash
+tar -czf stack.tar.gz compose.yml images
 curl -fS -H "Authorization: Bearer YOUR_TOKEN" \
-  -F "file=@project.vps.tar.gz;filename=project.vps.tar.gz" \
+  -F "file=@stack.tar.gz" \
   "http://YOUR_VPS_IP:9090/api/v1/projects/ROOM_ID/upload"
 ```
 
-**400** `package_empty` (not `.tar` / `.tar.gz`, or tiny file) · `package_invalid` (`.tar` is not `docker save`) · `package_kind_mismatch` (single vs multi swapped) · `content_type` (not multipart) · `file_required`  
+The API inspects the archive. Optional `-F container_id=CONTAINER_ID` updates one container in a multi room.
+
+**400** `package_empty` · `package_invalid` · `package_kind_mismatch` · `content_type` · `file_required`  
 **404** container not found · **409** deploy already running
 
 ## 5. Logs
