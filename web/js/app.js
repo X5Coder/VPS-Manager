@@ -4441,6 +4441,10 @@ Never DELETE via API. One token = all rooms.`;
 
   const boot = parsePath(location.pathname);
   if (boot) Object.assign(state, boot);
+  if (/^\/deploy\/?$/.test(location.pathname)) {
+    history.replaceState({ view: "rooms" }, "", "/projects");
+    state.view = "rooms";
+  }
   window.addEventListener("popstate", () => {
     saveChatDraft();
     const parsed = parsePath(location.pathname) || { view: "server" };

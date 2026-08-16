@@ -164,6 +164,10 @@ func (s *Server) Handler(webFS http.FileSystem) http.Handler {
 			s.Mux.ServeHTTP(w, r)
 			return
 		}
+		if r.URL.Path == "/deploy" || r.URL.Path == "/deploy/" {
+			http.Redirect(w, r, "/projects", http.StatusMovedPermanently)
+			return
+		}
 		path := r.URL.Path
 		if strings.HasSuffix(path, ".js") || strings.HasSuffix(path, ".css") || path == "/" || isAppRoute(path) {
 			w.Header().Set("Cache-Control", "no-store, max-age=0, must-revalidate")
