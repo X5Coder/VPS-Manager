@@ -32,3 +32,30 @@ func SweepStaleUploads(olderThan time.Duration) {
 		_ = os.RemoveAll(filepath.Join(dir, name))
 	}
 }
+
+func wipeHostDirContents(dir string) error {
+	dir = filepath.Clean(strings.TrimSpace(dir))
+	if dir == "" || dir == "/" || dir == "." {
+		return os.ErrInvalid
+	}
+	st, err := os.Stat(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if !st.IsDir() {
+		return os.Remove(dir)
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range ents {
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}

@@ -64,6 +64,51 @@ func TestSkipCombinedCustom(t *testing.T) {
 	}
 	_ = os.WriteFile(filepath.Join(av, "studix"), []byte("server_name app.studixzone.com;\n"), 0o644)
 	if customVhostOwner("app.studixzone.com") != "studix" {
-		t.Fatal("custom single-name file must not be replaced by a new dedicated vhost")
+		t.Fatal("other filename still owns the hostname")
+	}
+	if skipCustomFile("server_name app.studixzone.com;\n    location / {\n", "app.studixzone.com") {
+		t.Fatal("simple leftover must be taken over")
+	}
+}
+
+func TestSkipCustomFile(t *testing.T) {
+	awn := "server_name api.awnlearn.com;\nserver_name app.awnlearn.com;\nlocation / {\n"
+	if !skipCustomFile(awn, "api.awnlearn.com") {
+		t.Fatal("combined file must be skipped")
+	}
+	split := "server_name api.awnlearn.com;\nlocation /auth/ {\n        proxy_pass http://127.0.0.1:2000;\n}\nlocation / {\n        proxy_pass http://127.0.0.1:3000;\n}\n"
+	if !skipCustomFile(split, "api.awnlearn.com") {
+		t.Fatal("extra locations must be skipped")
+	}
+	leftover := `server {
+    server_name host.awnlearn.com;
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+    }
+}`
+	if skipCustomFile(leftover, "host.awnlearn.com") {
+		t.Fatal("python-hosting style leftover must be rewritten")
+	}
+}
+
+func TestInspectNginxLeftover(t *testing.T) {
+	av := t.TempDir()
+	oldAv := NginxAvailableDir
+	NginxAvailableDir = av
+	t.Cleanup(func() { NginxAvailableDir = oldAv })
+	_ = os.WriteFile(filepath.Join(av, "python-hosting"), []byte(`server_name host.awnlearn.com;
+    location / { proxy_pass http://127.0.0.1:8080; }
+`), 0o644)
+	st := InspectNginx("host.awnlearn.com", 11003)
+	if st.Matches {
+		t.Fatal("old leftover must not match new port")
+	}
+	if st.ReplacedVhost != "python-hosting" && st.File != "python-hosting" {
+		t.Fatalf("expected leftover file, got %+v", st)
+	}
+	_ = os.WriteFile(filepath.Join(av, "host.awnlearn.com"), []byte("server_name host.awnlearn.com;\nproxy_pass http://127.0.0.1:11003;\n"), 0o644)
+	st = InspectNginx("host.awnlearn.com", 11003)
+	if !st.Matches {
+		t.Fatalf("dedicated vhost should match: %+v", st)
 	}
 }

@@ -260,13 +260,20 @@ func (s *Server) handleV1Volumes(w http.ResponseWriter, r *http.Request, roomID 
 		if src == "" {
 			src = vol.Name
 		}
-		if s.Docker == nil {
-			writeErr(w, 400, "Docker unavailable")
-			return
-		}
-		if err := s.Docker.CleanVolume(src); err != nil {
-			writeJSON(w, 400, map[string]any{"ok": false, "error": err.Error(), "code": "volume_clean_failed"})
-			return
+		if strings.HasPrefix(src, "/") {
+			if err := wipeHostDirContents(src); err != nil {
+				writeJSON(w, 400, map[string]any{"ok": false, "error": err.Error(), "code": "volume_clean_failed"})
+				return
+			}
+		} else {
+			if s.Docker == nil {
+				writeErr(w, 400, "Docker unavailable")
+				return
+			}
+			if err := s.Docker.CleanVolume(src); err != nil {
+				writeJSON(w, 400, map[string]any{"ok": false, "error": err.Error(), "code": "volume_clean_failed"})
+				return
+			}
 		}
 		writeJSON(w, 200, map[string]any{"ok": true, "cleaned": true, "id": vol.ID})
 	default:

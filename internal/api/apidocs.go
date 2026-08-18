@@ -15,7 +15,7 @@ func APIDocSection(id, base string) string {
 	id = strings.ToLower(strings.TrimSpace(id))
 	if id == "full" || id == "docs_full" {
 		var b strings.Builder
-		for _, k := range []string{"overview", "token", "github", "create_room", "update", "list", "logs", "exec"} {
+		for _, k := range []string{"overview", "token", "github", "create_room", "update", "list", "logs", "exec", "domain", "wipe"} {
 			b.WriteString(APIDocSection(k, base))
 			b.WriteString("\n\n")
 		}
@@ -162,4 +162,43 @@ EXEC waits until the command ends. stdout, stderr, exit_code. No 2-minute cap.
 Create room: generate_password, domain, ssl, ssh_certificate optional.
 
 Never DELETE rooms via API.`,
+
+	"domain": `PORT & DOMAIN BINDING
+
+ROOM_ID from GET /api/v1/projects.
+
+Full bind (port + nginx + SSL status) in one call:
+POST {{BASE}}/api/v1/projects/ROOM_ID/domain
+  {"domain":"host.example.com","enabled":true,"host_port":11003}
+  200: {ok, domain, domain_enabled, ssl_status, host_port, links[], nginx}
+
+nginx: {file, proxy_pass, matches, replaced_vhost}
+  leftover files like python-hosting (same hostname, only location /) are taken over.
+  combined files (awn: several hostnames or /auth/) are NOT overwritten → 400 names the file.
+
+GET {{BASE}}/api/v1/projects/ROOM_ID/domain  current bind + nginx inspect
+POST …/port  {"host_port":11003}     then POST …/domain if you split the steps
+Disable: {"domain":"","enabled":false}
+
+ssl_status: disabled | pending | active | http-only | error: …
+PATCH {"domain":"…"} does NOT configure nginx.
+
+curl -sS -X POST "{{BASE}}/api/v1/projects/ROOM_ID/domain" \
+  -H "Authorization: Bearer YOUR_TOKEN" -H "Content-Type: application/json" \
+  -d '{"domain":"host.example.com","enabled":true,"host_port":11003}'`,
+
+	"wipe": `WIPE PROJECT DATA
+
+Delete all persisted app files without deleting the project or .env.
+
+POST {{BASE}}/api/v1/projects/ROOM_ID/wipe-data
+  200: {ok:true, wiped:true, project_id, room_id, status}
+  400 wipe_failed (compose stacks not supported)
+
+Wipe one Docker volume contents (volume object kept):
+POST {{BASE}}/api/v1/projects/ROOM_ID/volumes/VOLUME_ID/clean
+  200: {ok:true, cleaned:true, id}
+
+curl -sS -X POST "{{BASE}}/api/v1/projects/ROOM_ID/wipe-data" \
+  -H "Authorization: Bearer YOUR_TOKEN"`,
 }

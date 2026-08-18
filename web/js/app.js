@@ -13,7 +13,7 @@
     ws: null,
     sidebarOpen: false,
     gateStep: "token",
-    expiresIn: 30,
+    expiresIn: 1200,
     filePath: ".",
     fileContent: "",
     termLines: [],
@@ -1800,7 +1800,7 @@
       const card = el(`<div class="auth-wrap"><div class="auth-card">
         <p class="auth-kicker">${brandMarkHTML()}VPS Manager</p>
         <h1>Enter the code</h1>
-        <p class="lead">Sent to your Telegram · valid ${state.expiresIn} seconds</p>
+        <p class="lead">Temporary password sent to Telegram · valid 20 minutes · one person</p>
         <form id="f">
           <div class="field"><label>Login code</label>
             <input name="code" required autofocus inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code" /></div>
@@ -1822,21 +1822,44 @@
     const card = el(`<div class="auth-wrap"><div class="auth-card">
       <p class="auth-kicker">${brandMarkHTML()}VPS Manager</p>
       <h1>Unlock the panel</h1>
-      <p class="lead">Paste your Telegram bot token. A one-time code is sent to the owner chat set at install.</p>
+      <p class="lead">Paste your Telegram bot token. A numeric password is sent to the owner — valid 20 minutes for one person.</p>
       <form id="f">
         <div class="field"><label>Telegram bot token</label>
           <input name="bot_token" type="password" required value="${esc(saved)}" autocomplete="off" placeholder="123456:ABC…" /></div>
         <p class="error" id="err"></p>
-        <button class="btn primary" style="width:100%" type="submit">Send code</button>
-      </form></div></div>`);
+        <button class="btn primary" style="width:100%" type="submit">Send password</button>
+      </form>
+      <p class="auth-pass-toggle"><button type="button" class="auth-pass-link" id="show-pass">ادخل باسورد</button></p>
+      <form id="pass-form" class="auth-pass-box" hidden>
+        <div class="field"><label>Temporary password</label>
+          <input name="code" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit password" /></div>
+        <p class="error" id="pass-err"></p>
+        <button class="btn primary" style="width:100%" type="submit">Continue</button>
+      </form>
+    </div></div>`);
     app.appendChild(card);
+    card.querySelector("#show-pass").onclick = () => {
+      const box = card.querySelector("#pass-form");
+      box.hidden = !box.hidden;
+      if (!box.hidden) box.querySelector("input[name=code]")?.focus();
+    };
+    card.querySelector("#pass-form").onsubmit = async (e) => {
+      e.preventDefault();
+      const token = String(card.querySelector("#f input[name=bot_token]")?.value || saved || "").trim();
+      const code = String(new FormData(e.target).get("code") || "").trim();
+      try {
+        if (token) localStorage.setItem(BOT_KEY, token);
+        await api("/api/gate/verify", { method: "POST", body: JSON.stringify({ bot_token: token, code }) });
+        state.gated = true; state.me = null; render();
+      } catch (ex) { card.querySelector("#pass-err").textContent = ex.message || "Server stopped"; }
+    };
     card.querySelector("#f").onsubmit = async (e) => {
       e.preventDefault();
       const token = String(new FormData(e.target).get("bot_token") || "").trim();
       try {
         localStorage.setItem(BOT_KEY, token);
         const res = await api("/api/gate/challenge", { method: "POST", body: JSON.stringify({ bot_token: token }) });
-        state.expiresIn = res.expires_in || 30; state.gateStep = "code"; renderGate();
+        state.expiresIn = res.expires_in || 1200; state.gateStep = "code"; renderGate();
       } catch (ex) { card.querySelector("#err").textContent = ex.message || "Server stopped"; }
     };
   }
@@ -3694,6 +3717,7 @@ Never DELETE via API. One token = all rooms.`;
             </div>
           </form>
           <p class="error" id="linkerr"></p>
+          <p class="muted" style="margin-top:8px;font-size:0.82rem">API: <code>POST /api/v1/projects/${esc(id)}/port</code> then <code>POST …/domain</code> with Bearer token. See Docs → domain.</p>
         </div>`;
         })()}
         <div class="panel"><h3>Containers</h3>
@@ -3821,16 +3845,17 @@ Never DELETE via API. One token = all rooms.`;
         } else {
           const base = listing.path === "/" ? "" : listing.path;
           body = `<div class="panel"><div class="head-row"><h3>Volume · ${esc(vol.name || "volume")} · ${esc(listing.path || "/")}</h3>
-            <div class="row-actions"><button class="btn sm action" id="back-vols">Volumes</button><button class="btn sm action" id="updir">Up</button></div></div>
+            <div class="row-actions"><button class="btn sm danger action" type="button" data-vol-clean="${esc(vol.id)}">Clean volume</button><button class="btn sm action" id="back-vols">Volumes</button><button class="btn sm action" id="updir">Up</button></div></div>
             <p class="muted" style="margin:0 0 10px"><code>${esc(vol.docker_name || "")}</code></p>
             <ul class="file-list">${(listing.entries || []).map((e) => `<li><a href="#" data-vol-path="${esc((base === "" ? "" : base) + "/" + e.name)}">${e.dir ? "📁" : "📄"} ${esc(e.name)}</a><span class="muted">${e.dir ? "dir" : fmtBytes(e.size)}</span></li>`).join("") || `<li class="muted">${esc(listing.note || "Empty")}</li>`}</ul></div>`;
         }
       }
     } else if (tab === "volumes") {
-      body = `<div class="panel"><h3>Volumes</h3>
-        <p class="muted">Click a volume to browse files inside it.</p>
-        <table class="table"><thead><tr><th>#</th><th>Volume</th><th>Source</th></tr></thead>
-        <tbody>${(volumes || []).map((v) => `<tr data-vid="${esc(v.id)}" class="vol-row" style="cursor:pointer"><td class="mono">#${String(v.ordinal || 1).padStart(3,"0")}</td><td>${esc(v.name || "volume")}</td><td class="mono muted">${esc(v.docker_name || v.name || "")}</td></tr>`).join("") || `<tr><td colspan="3" class="muted">No volumes in this room.</td></tr>`}</tbody></table>
+      body = `<div class="panel"><div class="head-row"><h3>Volumes</h3>
+        <div class="row-actions">${mainProj ? `<button class="btn sm danger action" type="button" id="wipe-all-data">Wipe all project data</button>` : ""}</div></div>
+        <p class="muted">Click a volume to browse files. <strong>Wipe all project data</strong> deletes config.db, profiles, uploads, etc. — keeps the project and .env. <strong>Clean</strong> empties one volume mount.</p>
+        <table class="table"><thead><tr><th>#</th><th>Volume</th><th>Source</th><th></th></tr></thead>
+        <tbody>${(volumes || []).map((v) => `<tr data-vid="${esc(v.id)}" class="vol-row" style="cursor:pointer"><td class="mono">#${String(v.ordinal || 1).padStart(3,"0")}</td><td>${esc(v.name || "volume")}</td><td class="mono muted">${esc(v.docker_name || v.name || "")}</td><td><button type="button" class="btn sm danger action" data-vol-clean="${esc(v.id)}">Clean</button></td></tr>`).join("") || `<tr><td colspan="4" class="muted">No volumes in this room.</td></tr>`}</tbody></table>
       </div>`;
     } else if (tab === "files") {
       let listing = { entries: [], path: state.filePath || "." };
@@ -3846,7 +3871,7 @@ Never DELETE via API. One token = all rooms.`;
           <textarea class="file-editor" id="fedit">${esc(listing.content)}</textarea></div>`;
       } else {
         body = `<div class="panel"><div class="head-row"><h3>Files · ${esc(listing.path || ".")}</h3>
-          <button class="btn sm action" id="updir">Up</button></div>
+          <div class="row-actions">${mainProj ? `<button class="btn sm danger action" type="button" id="wipe-all-data">Wipe all data</button>` : ""}<button class="btn sm action" id="updir">Up</button></div></div>
           <ul class="file-list">${(listing.entries || []).map((e) => `<li><a href="#" data-path="${esc((listing.path === "." ? "" : listing.path + "/") + e.name)}">${e.dir ? "📁" : "📄"} ${esc(e.name)}</a><span class="muted">${e.dir ? "dir" : fmtBytes(e.size)}</span></li>`).join("") || "<li class='muted'>Empty</li>"}</ul></div>`;
       }
     } else if (tab === "logs") {
@@ -4055,6 +4080,27 @@ Never DELETE via API. One token = all rooms.`;
         await api(`/api/projects/${mainProj.id}/domain`, { method: "POST", body: JSON.stringify({ domain: "", enabled: false }) });
         state.showNetPanel = false;
         render();
+      });
+      bindAction(document.querySelector("#wipe-all-data"), async () => {
+        if (!mainProj) return;
+        if (!confirm("Delete ALL persisted project data (config.db, profiles, uploads, …)? The project and .env are kept. The container will restart.")) return;
+        try {
+          await api(`/api/projects/${mainProj.id}/wipe-data`, { method: "POST", body: "{}" });
+          flashOk();
+          render();
+        } catch (ex) { document.querySelector("#rerr").textContent = ex.message; }
+      });
+      document.querySelectorAll("[data-vol-clean]").forEach((btn) => {
+        bindAction(btn, async (ev) => {
+          ev.stopPropagation();
+          const vid = btn.getAttribute("data-vol-clean");
+          if (!vid || !confirm("Delete all files inside this volume? The volume mount is kept.")) return;
+          try {
+            await api(`/api/rooms/${id}/volumes/${encodeURIComponent(vid)}/clean`, { method: "POST", body: "{}" });
+            flashOk();
+            render();
+          } catch (ex) { document.querySelector("#rerr").textContent = ex.message; }
+        });
       });
       updateMetricsDOM();
       if (state._containersPoll) clearInterval(state._containersPoll);

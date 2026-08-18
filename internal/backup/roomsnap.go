@@ -182,10 +182,8 @@ func (s *Service) pruneGoneRoomGithub(gh *GitHub, rooms []store.Room) {
 	if gh == nil {
 		return
 	}
-	live := map[string]bool{}
 	liveID := map[string]bool{}
 	for _, r := range rooms {
-		live[roomSlugID(r.ID)] = true
 		liveID[r.ID] = true
 	}
 	if rows, err := s.Store.ListMetaPrefix("room_snap_"); err == nil {
@@ -207,21 +205,8 @@ func (s *Service) pruneGoneRoomGithub(gh *GitHub, rooms []store.Room) {
 			_ = s.Store.DeleteMeta(kv[0])
 		}
 	}
-	names, err := gh.ListOwnerRepoNames()
-	if err != nil {
-		s.logf("list github repos for prune: %v", err)
-		return
-	}
-	for _, name := range names {
-		slug, _, ok := parseRoomRepo(name)
-		if !ok || live[slug] {
-			continue
-		}
-		s.report(-1, "No matching VPS room for %s — deleting GitHub repo", name)
-		if err := gh.deleteRepo(name, true); err != nil {
-			s.logf("delete orphan repo %s: %v", name, err)
-		}
-	}
+	// Do not delete remote vps-room-* just because this VPS has no matching
+	// room (fresh panel / restore-first). Only local room_snap_* of gone rooms.
 }
 
 func (s *Service) nextRoomRepo(gh *GitHub, roomID string, localSeq int) (string, int, error) {
@@ -687,12 +672,17 @@ func (s *Service) InspectRemoteRooms(token string) ([]RoomRemote, error) {
 		return nil, err
 	}
 	var out []RoomRemote
+	var lastErr error
+	foundRepos := 0
 	for _, name := range names {
 		if !strings.HasPrefix(strings.ToLower(name), RoomRepoPrefix) {
 			continue
 		}
+		foundRepos++
 		var man RoomSnapManifest
 		if err := gh.GetJSON(name, "manifest.json", &man); err != nil {
+			lastErr = err
+			s.logf("inspect %s: %v", name, err)
 			continue
 		}
 		if man.Format != RoomSnapFormat {
@@ -701,6 +691,9 @@ func (s *Service) InspectRemoteRooms(token string) ([]RoomRemote, error) {
 		out = append(out, RoomRemote{
 			Name: man.Name, RoomID: man.RoomID, Repo: name, Seq: man.Seq, At: man.At, Kind: man.Room.Kind,
 		})
+	}
+	if len(out) == 0 && foundRepos > 0 && lastErr != nil {
+		return nil, fmt.Errorf("could not read room snapshots: %w", lastErr)
 	}
 	return out, nil
 }

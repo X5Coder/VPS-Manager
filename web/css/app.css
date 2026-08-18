@@ -634,6 +634,14 @@ button, input, textarea, select { font: inherit; color: inherit; }
   background: var(--line);
 }
 .auth-card .field input { padding: 13px 14px; border-radius: 10px; }
+.auth-pass-toggle { text-align: center; margin: 16px 0 0; }
+.auth-pass-link {
+  background: none; border: 0; color: var(--text, #eee);
+  font-size: 1rem; font-weight: 600; cursor: pointer; padding: 0;
+  text-decoration: underline; text-underline-offset: 4px;
+}
+.auth-pass-link:hover { color: #fff; }
+.auth-pass-box { margin-top: 14px; }
 
 .field { display: flex; flex-direction: column; gap: 7px; margin-bottom: 12px; }
 .field label { color: var(--muted); font-size: 0.8rem; }

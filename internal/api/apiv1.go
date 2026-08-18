@@ -361,6 +361,15 @@ func (s *Server) handleAPIV1Projects(w http.ResponseWriter, r *http.Request, par
 	case "containers":
 		s.handleAPIV1ProjectContainers(w, r, id, parts[2:])
 		return
+	case "domain":
+		s.handleV1Domain(w, r, id)
+		return
+	case "port":
+		s.handleV1Port(w, r, id)
+		return
+	case "wipe-data", "wipe_data":
+		s.handleV1WipeData(w, r, id)
+		return
 	case "exec", "terminal":
 		if len(parts) >= 3 && parts[2] == "ws" {
 			s.handleV1TerminalWS(w, r, id)

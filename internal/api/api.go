@@ -1387,7 +1387,21 @@ func (s *Server) handleProjectByID(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, err.Error())
 			return
 		}
-		writeJSON(w, 200, map[string]any{"ok": "1", "domain": p.Domain, "ssl_status": p.SSLStatus, "links": s.projectLinks(r, p)})
+		s.domainBindJSON(w, r, p)
+	case "wipe-data":
+		if r.Method != http.MethodPost {
+			writeErr(w, 405, "method")
+			return
+		}
+		if err := s.Projects.WipeDataVolume(p); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		p2, _ := s.Projects.Get(id)
+		if p2 != nil {
+			p = p2
+		}
+		writeJSON(w, 200, map[string]any{"ok": "1", "wiped": true, "status": p.Status})
 	case "external-url":
 		if r.Method != http.MethodPost {
 			writeErr(w, 405, "method")

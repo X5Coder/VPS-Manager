@@ -90,6 +90,8 @@ func TestPruneChildDests(t *testing.T) {
 		t.Fatalf("parents kept: %v", got)
 	}
 }
+
+func TestMigrateLegacyAppDataRoot(t *testing.T) {
 	vol := t.TempDir()
 	if err := os.WriteFile(filepath.Join(vol, "config.db"), []byte("db"), 0o644); err != nil {
 		t.Fatal(err)

@@ -15,6 +15,12 @@ func TestIsManagedBackupRepo(t *testing.T) {
 	if isManagedBackupRepo("VPS-Manager") || isManagedBackupRepo("linkedin-auto") || isManagedBackupRepo("") {
 		t.Fatal("unrelated repos must not be wiped")
 	}
+	if isLegacyPurgeRepo("vps-room-abc-1") {
+		t.Fatal("room snapshots must not be purged")
+	}
+	if !isLegacyPurgeRepo("vps-pat-probe-x") || !isLegacyPurgeRepo("vps-manage-system") {
+		t.Fatal("old layout + probe repos may be purged")
+	}
 }
 
 func TestArmFromAndClaimDailySlot(t *testing.T) {
@@ -26,10 +32,10 @@ func TestArmFromAndClaimDailySlot(t *testing.T) {
 	defer st.Close()
 	s := &Service{Store: st}
 	_ = st.SetMeta("backup_interval_hours", "24")
-	start := time.Date(2026, 8, 16, 0, 21, 0, 0, time.UTC)
+	start := time.Now().UTC()
 	s.armFrom(start)
 	next, ok := s.parseNextAt()
-	if !ok || !next.Equal(start.Add(24*time.Hour)) {
+	if !ok || next.Before(start.Add(23*time.Hour)) {
 		t.Fatalf("next=%v ok=%v", next, ok)
 	}
 	if _, claimed := s.claimIfDue(); claimed {

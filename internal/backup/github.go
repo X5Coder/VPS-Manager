@@ -202,6 +202,16 @@ func isManagedBackupRepo(name string) bool {
 	return strings.HasPrefix(n, "vps-manage-") || strings.HasPrefix(n, "vps-room-") || strings.HasPrefix(n, "vps-pat-probe-")
 }
 
+// isLegacyPurgeRepo is the one-shot wipe of old layout / PAT probes.
+// Never includes vps-room-* snapshots.
+func isLegacyPurgeRepo(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	if n == "" || strings.HasPrefix(n, RoomRepoPrefix) {
+		return false
+	}
+	return isManagedBackupRepo(n)
+}
+
 func (g *GitHub) ListOwnerRepoNames() ([]string, error) {
 	var names []string
 	for page := 1; page <= 20; page++ {
@@ -242,7 +252,7 @@ func (g *GitHub) PurgeManagedBackupRepos() ([]string, error) {
 	}
 	var deleted []string
 	for _, name := range all {
-		if !isManagedBackupRepo(name) {
+		if !isLegacyPurgeRepo(name) {
 			continue
 		}
 		if err := g.deleteRepo(name, true); err != nil {
@@ -280,8 +290,12 @@ func (g *GitHub) CloneOrPull(repo, dir string) error {
 		_, _ = gitRun(g.ctx(), 10*time.Minute, env, "git", "-C", dir, "fetch", "--prune", "origin")
 		if _, err := gitRun(g.ctx(), 5*time.Minute, env, "git", "-C", dir, "pull", "--rebase", "origin", "main"); err != nil {
 			if _, err2 := gitRun(g.ctx(), 5*time.Minute, env, "git", "-C", dir, "pull", "--rebase", "origin", "HEAD"); err2 != nil {
-				_, _ = gitRun(g.ctx(), 2*time.Minute, env, "git", "-C", dir, "reset", "--hard", "origin/main")
-				_, _ = gitRun(g.ctx(), 2*time.Minute, env, "git", "-C", dir, "reset", "--hard", "origin/HEAD")
+				if _, err3 := gitRun(g.ctx(), 2*time.Minute, env, "git", "-C", dir, "reset", "--hard", "origin/main"); err3 != nil {
+					out, err4 := gitRun(g.ctx(), 2*time.Minute, env, "git", "-C", dir, "reset", "--hard", "origin/HEAD")
+					if err4 != nil {
+						return fmt.Errorf("git pull %s: %s", repo, truncate(string(out)+" "+err4.Error(), 300))
+					}
+				}
 			}
 		}
 		return nil
@@ -362,9 +376,10 @@ func (g *GitHub) CommitPush(dir, message string) error {
 }
 
 func (g *GitHub) DownloadFile(repo, path, dest string) error {
-	url := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/HEAD/%s", g.User, repo, path)
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s", g.User, repo, strings.TrimPrefix(path, "/"))
 	req, _ := http.NewRequest("GET", url, nil)
 	g.auth(req)
+	req.Header.Set("Accept", "application/vnd.github.raw")
 	res, err := g.Client.Do(req)
 	if err != nil {
 		return err

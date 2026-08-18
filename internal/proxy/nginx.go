@@ -23,6 +23,8 @@ var (
 	serverNameRe = regexp.MustCompile(`(?m)^\s*server_name\s+([^;]+);`)
 	sslCertRe    = regexp.MustCompile(`(?m)^\s*ssl_certificate\s+([^;]+);`)
 	sslKeyRe     = regexp.MustCompile(`(?m)^\s*ssl_certificate_key\s+([^;]+);`)
+	proxyPassRe  = regexp.MustCompile(`proxy_pass\s+http://127\.0\.0\.1:(\d+)\s*;`)
+	locationRe   = regexp.MustCompile(`(?m)^\s*location\s+([^{;]+)`)
 )
 
 func NginxInstalled() bool {
@@ -79,12 +81,68 @@ func nginxLocation(hostPort int) string {
 }
 
 func VhostPointsTo(domain string, hostPort int) bool {
-	b, err := os.ReadFile(VhostFile(domain))
-	if err != nil {
-		return false
+	st := InspectNginx(domain, hostPort)
+	return st.Matches
+}
+
+type NginxStatus struct {
+	File          string `json:"file,omitempty"`
+	ProxyPass     string `json:"proxy_pass,omitempty"`
+	Matches       bool   `json:"matches"`
+	SkippedCustom string `json:"skipped_custom,omitempty"`
+	ReplacedVhost string `json:"replaced_vhost,omitempty"`
+}
+
+func InspectNginx(domain string, hostPort int) NginxStatus {
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	st := NginxStatus{}
+	if domain == "" {
+		return st
 	}
-	want := fmt.Sprintf("proxy_pass http://127.0.0.1:%d;", hostPort)
-	return strings.Contains(string(b), want)
+	if owner := customVhostOwner(domain); owner != "" {
+		body, _ := os.ReadFile(filepath.Join(NginxAvailableDir, owner))
+		if skipCustomFile(string(body), domain) {
+			st.File = owner
+			st.SkippedCustom = owner
+			st.ProxyPass = firstProxyPass(string(body))
+			st.Matches = hostPort > 0 && strings.Contains(string(body), fmt.Sprintf("proxy_pass http://127.0.0.1:%d;", hostPort))
+			return st
+		}
+		st.ReplacedVhost = owner
+	}
+	for _, name := range nginxSearchFiles(domain) {
+		b, err := os.ReadFile(filepath.Join(NginxAvailableDir, name))
+		if err != nil {
+			continue
+		}
+		text := string(b)
+		if !containsName(parseServerNames(text), domain) && name != domain {
+			continue
+		}
+		st.File = name
+		st.ProxyPass = firstProxyPass(text)
+		if hostPort > 0 && strings.Contains(text, fmt.Sprintf("proxy_pass http://127.0.0.1:%d;", hostPort)) {
+			st.Matches = true
+			return st
+		}
+	}
+	return st
+}
+
+func firstProxyPass(body string) string {
+	m := proxyPassRe.FindStringSubmatch(body)
+	if len(m) > 1 {
+		return "http://127.0.0.1:" + m[1]
+	}
+	return ""
+}
+
+func nginxSearchFiles(domain string) []string {
+	out := []string{domain}
+	if owner := customVhostOwner(domain); owner != "" {
+		out = append(out, owner)
+	}
+	return out
 }
 
 func resolveCerts(domain, existingBody string) (cert, key string) {
@@ -124,11 +182,19 @@ func SyncNginx(sites []Site) error {
 		if d == "" || !s.Enabled || port <= 0 {
 			continue
 		}
-		if owner := customVhostOwner(d); owner != "" {
-			continue
+		owner := customVhostOwner(d)
+		var old []byte
+		if owner != "" {
+			ob, err := os.ReadFile(filepath.Join(NginxAvailableDir, owner))
+			if err == nil && skipCustomFile(string(ob), d) {
+				continue
+			}
+			old = ob
 		}
 		avail := filepath.Join(NginxAvailableDir, d)
-		old, _ := os.ReadFile(avail)
+		if len(old) == 0 {
+			old, _ = os.ReadFile(avail)
+		}
 		cert, key := resolveCerts(d, string(old))
 		body := RenderNginxVhost(d, port, cert, key)
 		if err := os.WriteFile(avail, []byte(body), 0o644); err != nil {
@@ -170,7 +236,46 @@ func customVhostOwner(domain string) string {
 }
 
 func skipCombinedCustom(domain string) bool {
-	return customVhostOwner(domain) != ""
+	owner := customVhostOwner(domain)
+	if owner == "" {
+		return false
+	}
+	b, err := os.ReadFile(filepath.Join(NginxAvailableDir, owner))
+	if err != nil {
+		return true
+	}
+	return skipCustomFile(string(b), domain)
+}
+
+// skipCustomFile is true for combined hostnames (awn) or extra location
+// blocks (/auth/). A leftover single-name reverse proxy (python-hosting)
+// is rewritten so Bind Domain can retarget proxy_pass.
+func skipCustomFile(body, domain string) bool {
+	names := uniqueNames(parseServerNames(body))
+	if len(names) > 1 {
+		return true
+	}
+	if len(names) == 1 && names[0] != domain {
+		return true
+	}
+	return hasExtraLocations(body)
+}
+
+func hasExtraLocations(body string) bool {
+	for _, m := range locationRe.FindAllStringSubmatch(body, -1) {
+		if len(m) < 2 {
+			continue
+		}
+		loc := strings.TrimSpace(m[1])
+		if loc == "" || loc == "/" {
+			continue
+		}
+		if strings.Contains(loc, ".well-known") {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func disableSingleNameLeftovers(domain string) error {

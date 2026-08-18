@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	OTPTTL      = 30 * time.Second
+	OTPTTL      = 20 * time.Minute
 	DeniedMsg   = "Server stopped"
 	secretsName = "telegram.env"
 )
@@ -34,10 +34,11 @@ type Secrets struct {
 type Gate struct {
 	mu         sync.Mutex
 	secretsDir string
-	pending    map[string]pendingOTP
+	pending    *pendingOTP
 }
 
 type pendingOTP struct {
+	TokenHash string
 	CodeHash  string
 	ExpiresAt time.Time
 }
@@ -47,7 +48,6 @@ func NewGate(dataDir string) *Gate {
 	_ = os.MkdirAll(dir, 0o700)
 	return &Gate{
 		secretsDir: dir,
-		pending:    map[string]pendingOTP{},
 	}
 }
 
@@ -218,6 +218,10 @@ func (g *Gate) Challenge(botToken string) (*ChallengeResult, error) {
 		g.mu.Unlock()
 		return nil, fmt.Errorf(DeniedMsg)
 	}
+	if g.pending != nil && time.Now().Before(g.pending.ExpiresAt) {
+		g.mu.Unlock()
+		return nil, fmt.Errorf("a password is already active for one person (20 minutes)")
+	}
 	// Never allow chat id change from the web. Only refresh bot token.
 	sec.BotToken = botToken
 	sec.Locked = true
@@ -233,13 +237,14 @@ func (g *Gate) Challenge(botToken string) (*ChallengeResult, error) {
 		return nil, fmt.Errorf(DeniedMsg)
 	}
 
-	msg := "<b>VPS MANAGE</b>\n\n<b>Login code</b>\n<b>" + html.EscapeString(code) + "</b>\n<b>Valid 30 seconds</b>"
+	msg := "<b>VPS MANAGE</b>\n\n<b>Temporary password</b>\n<b>" + html.EscapeString(code) + "</b>\n<b>Valid 20 minutes · one person</b>"
 	if err := sendMessageHTML(botToken, chatID, msg); err != nil {
 		return nil, fmt.Errorf(DeniedMsg)
 	}
 
 	g.mu.Lock()
-	g.pending[tokenKey(botToken)] = pendingOTP{
+	g.pending = &pendingOTP{
+		TokenHash: tokenKey(botToken),
 		CodeHash:  hashCode(code),
 		ExpiresAt: time.Now().Add(OTPTTL),
 	}
@@ -263,18 +268,22 @@ func (g *Gate) Verify(botToken, code string) error {
 	}
 
 	g.mu.Lock()
-	pend, ok := g.pending[tokenKey(botToken)]
-	if ok {
-		delete(g.pending, tokenKey(botToken))
+	pend := g.pending
+	if pend == nil || time.Now().After(pend.ExpiresAt) {
+		g.pending = nil
+		g.mu.Unlock()
+		return fmt.Errorf(DeniedMsg)
 	}
-	g.mu.Unlock()
-
-	if !ok || time.Now().After(pend.ExpiresAt) {
+	if pend.TokenHash != tokenKey(botToken) {
+		g.mu.Unlock()
 		return fmt.Errorf(DeniedMsg)
 	}
 	if subtle.ConstantTimeCompare([]byte(pend.CodeHash), []byte(hashCode(code))) != 1 {
+		g.mu.Unlock()
 		return fmt.Errorf(DeniedMsg)
 	}
+	g.pending = nil
+	g.mu.Unlock()
 	return nil
 }
 

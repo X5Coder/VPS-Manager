@@ -119,6 +119,7 @@ POST /api/v1/projects/ROOM_ID/volumes   {"name":"data"}
 GET  /api/v1/projects/ROOM_ID/volumes/VOLUME_ID
 POST /api/v1/projects/ROOM_ID/volumes/VOLUME_ID/clean
 DELETE /api/v1/projects/ROOM_ID/volumes/VOLUME_ID
+POST /api/v1/projects/ROOM_ID/wipe-data   wipe all project data (keeps project + .env)
 GET  /api/v1/projects/ROOM_ID/compose
 GET  /api/v1/projects/ROOM_ID/compose/validate
 GET  /api/v1/projects/ROOM_ID/compose/analyze
@@ -135,7 +136,125 @@ POST /api/v1/agent/chat  {"messages":[{"role":"user","text":"..."}]}
 
 Create empty room also accepts `generate_password`, `domain`, `ssl`, `ssh_certificate`.
 
-## 8. Files (panel)
+## 8. Port & domain binding
+
+Point a public hostname at your app. **Set the host port first**, then bind the domain. The panel updates nginx (and Caddy if installed) to `proxy_pass http://127.0.0.1:HOST_PORT`.
+
+DNS must already point the domain to this VPS.
+
+### Step 1 — host port
+
+```bash
+curl -sS -X POST "http://YOUR_VPS_IP:9090/api/v1/projects/ROOM_ID/port" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"host_port":11002}'
+```
+
+Disable port mapping:
+
+```bash
+curl -sS -X POST "http://YOUR_VPS_IP:9090/api/v1/projects/ROOM_ID/port" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"clear":true}'
+```
+
+**200** `{ ok, domain, domain_enabled, ssl_status, host_port, project_id, links[] }`  
+**400** `port_failed` — port in use or invalid
+
+### Step 2 — bind domain
+
+```bash
+curl -sS -X POST "http://YOUR_VPS_IP:9090/api/v1/projects/ROOM_ID/domain" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"domain":"app.example.com","enabled":true}'
+```
+
+Set port and domain in one call:
+
+```bash
+curl -sS -X POST "http://YOUR_VPS_IP:9090/api/v1/projects/ROOM_ID/domain" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"domain":"app.example.com","enabled":true,"host_port":11002}'
+```
+
+Disable domain:
+
+```bash
+curl -sS -X POST "http://YOUR_VPS_IP:9090/api/v1/projects/ROOM_ID/domain" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"domain":"","enabled":false}'
+```
+
+**200** `{ ok, domain, domain_enabled, ssl_status, host_port, links[], nginx }`  
+**400** `domain_bind_failed`
+
+`nginx` tells you what the live vhost is doing:
+
+```json
+{
+  "file": "host.awnlearn.com",
+  "proxy_pass": "http://127.0.0.1:11003",
+  "matches": true,
+  "replaced_vhost": "python-hosting"
+}
+```
+
+**What Bind does on the VPS**
+
+1. Saves `domain` + `host_port` on the project.
+2. Writes `/etc/nginx/sites-available/DOMAIN` with `proxy_pass http://127.0.0.1:HOST_PORT` on port 80 and 443 (reuses Let’s Encrypt / existing certs).
+3. Enables the site and reloads nginx.
+4. If an **old leftover file** already has that hostname only (example: `python-hosting` → `host.awnlearn.com` still pointing at `:8080`), Bind **takes it over**: new dedicated vhost, leftover disabled in `sites-enabled`. That is the `proxy_pass does not match host_port` case — call Bind again after this update and it should return `ssl_status: "active"`.
+5. **Combined** custom files are **not** overwritten (`awn` with `api.awnlearn.com` + `app.awnlearn.com`, or extra `location /auth/`). Error names the nginx file. Use another hostname or edit that file.
+
+Check current bind (no change):
+
+```bash
+curl -sS "http://YOUR_VPS_IP:9090/api/v1/projects/ROOM_ID/domain" \
+  -H "Authorization: Bearer YOUR_TOKEN"
+```
+
+Disable domain:
+
+`ssl_status`: `disabled` · `pending` · `active` · `http-only` · `error: …`
+
+Check current settings: `GET /api/v1/projects/ROOM_ID` → `host_port`, `domain`, `domain_enabled`, `ssl_status`, `links`.
+
+Panel equivalent (session cookie): `POST /api/projects/PROJECT_ID/port` and `POST /api/projects/PROJECT_ID/domain`.
+
+> **Note:** `PATCH /api/v1/projects/ROOM_ID` with `"domain":"…"` only stores the string in the database — it does **not** configure nginx. Always use `POST …/domain`.
+
+## 9. Wipe project data
+
+Delete all persisted app files (`config.db`, profiles, uploads, …) **without** deleting the project, `.env`, or room.
+
+```bash
+curl -sS -X POST "http://YOUR_VPS_IP:9090/api/v1/projects/ROOM_ID/wipe-data" \
+  -H "Authorization: Bearer YOUR_TOKEN"
+```
+
+**200** `{ ok:true, wiped:true, project_id, room_id, status }`  
+**400** `wipe_failed` — compose/multi stacks are not supported
+
+The container is recreated with empty volume binds. `.env` in runtime is kept.
+
+Wipe one Docker named volume (keeps the volume object):
+
+```bash
+curl -sS -X POST "http://YOUR_VPS_IP:9090/api/v1/projects/ROOM_ID/volumes/VOLUME_ID/clean" \
+  -H "Authorization: Bearer YOUR_TOKEN"
+```
+
+**200** `{ ok:true, cleaned:true, id }`
+
+Panel: Volumes tab → **Wipe all data** or per-volume **Clean**.
+
+## 10. Files (panel)
 
 Containers tab → click a container → Files / Logs / Update image.  
 Volumes tab → click a volume → browse files inside it.
@@ -149,7 +268,7 @@ GET /api/v1/projects/ROOM_ID/volumes/VOLUME_ID/files?path=/
 
 Bearer API token is accepted on these paths (same as `/api/v1`). Invalid token → **401** `invalid api token`. Invalid `path` → **400**.
 
-## 9. GitHub Actions
+## 11. GitHub Actions
 
 The Action **builds or packs**, then POSTs to the API. Use **one** workflow:
 

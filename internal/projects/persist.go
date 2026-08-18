@@ -1,6 +1,8 @@
 package projects
 
 import (
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -333,4 +335,39 @@ func (s *Service) AttachMissingDataVolumes() {
 			_ = s.bindsForRun(p)
 		}
 	}
+}
+
+// WipeDataVolume deletes all persisted files under the project volume
+// (config.db, profiles, output, …) but keeps the project, runtime .env,
+// and container record. The container is recreated so empty binds are live.
+func (s *Service) WipeDataVolume(p *store.Project) error {
+	if p == nil || p.ID == "" {
+		return fmt.Errorf("project not found")
+	}
+	if s.skipMandatoryVolume(p) {
+		return fmt.Errorf("compose stack: wipe data not supported")
+	}
+	vol := s.dataVolumeDir(p.ID)
+	if st, err := os.Stat(vol); err == nil && st.IsDir() {
+		ents, err := os.ReadDir(vol)
+		if err != nil {
+			return err
+		}
+		for _, e := range ents {
+			if err := os.RemoveAll(filepath.Join(vol, e.Name())); err != nil {
+				return fmt.Errorf("wipe %s: %w", e.Name(), err)
+			}
+		}
+	}
+	for _, dest := range s.persistDests(p) {
+		_ = os.MkdirAll(filepath.Join(vol, persistSubdir(dest)), 0o755)
+	}
+	room, err := s.Store.GetRoom(p.RoomID)
+	if err != nil || room == nil {
+		return fmt.Errorf("room not found")
+	}
+	if p.ContainerID == "" {
+		return nil
+	}
+	return s.recreateKeep(p, room, p.Image, room.QuotaBytes, io.Discard)
 }

@@ -69,11 +69,9 @@ func (s *Service) SaveToken(token string) error {
 		return err
 	}
 	_ = s.Store.SetMeta("backup_github_user", u.Login)
-	_ = s.Store.SetMeta("backup_enabled", "1")
 	if s.IntervalHours() <= 0 {
 		_ = s.Store.SetMeta("backup_interval_hours", "24")
 	}
-	s.armFrom(time.Now().UTC())
 	return nil
 }
 
@@ -331,11 +329,11 @@ func (s *Service) recoverStaleJob() {
 		var j Job
 		if err := json.Unmarshal([]byte(raw), &j); err == nil && (j.Status == "running" || j.Status == "queued") {
 			j.Status = "error"
-			j.Error = "Interrupted — click Backup / Restore to resume from the last point"
+			j.Error = "Interrupted — start Backup or Restore again"
 			j.Message = "Interrupted"
-			j.Progress = "Interrupted — resume from last point"
+			j.Progress = "Interrupted"
 			j.EndedAt = time.Now().UTC().Format(time.RFC3339)
-			j.Logs = append(j.Logs, time.Now().UTC().Format("15:04:05")+"  Interrupted — resume from last point")
+			j.Logs = append(j.Logs, time.Now().UTC().Format("15:04:05")+"  Interrupted")
 			s.flushJob(j)
 			s.mu.Lock()
 			s.liveJob = &j

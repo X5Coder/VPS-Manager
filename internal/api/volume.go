@@ -22,18 +22,51 @@ func (s *Server) handleRoomVolume(w http.ResponseWriter, r *http.Request, roomID
 		return
 	}
 	if len(rest) == 1 {
-		writeJSON(w, 200, map[string]any{
-			"id": vol.ID, "ordinal": vol.Ordinal, "name": vol.Name,
-			"docker_name": vol.DockerName, "size_bytes": vol.SizeBytes,
-		})
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(w, 200, map[string]any{
+				"id": vol.ID, "ordinal": vol.Ordinal, "name": vol.Name,
+				"docker_name": vol.DockerName, "size_bytes": vol.SizeBytes,
+			})
+		default:
+			writeErr(w, 405, "method")
+		}
 		return
 	}
-	if rest[1] != "files" {
+	switch rest[1] {
+	case "clean", "wipe":
+		if r.Method != http.MethodPost {
+			writeErr(w, 405, "method")
+			return
+		}
+		src := strings.TrimSpace(vol.DockerName)
+		if src == "" {
+			src = vol.Name
+		}
+		if strings.HasPrefix(src, "/") {
+			if err := wipeHostDirContents(src); err != nil {
+				writeErr(w, 400, err.Error())
+				return
+			}
+		} else {
+			if s.Docker == nil || !s.Docker.Available() {
+				writeErr(w, 400, "Docker unavailable")
+				return
+			}
+			if err := s.Docker.CleanVolume(src); err != nil {
+				writeErr(w, 400, err.Error())
+				return
+			}
+		}
+		writeJSON(w, 200, map[string]any{"ok": "1", "cleaned": true, "id": vol.ID})
+		return
+	case "files":
+		if r.Method != http.MethodGet {
+			writeErr(w, 405, "method")
+			return
+		}
+	default:
 		writeErr(w, 404, "not found")
-		return
-	}
-	if r.Method != http.MethodGet {
-		writeErr(w, 405, "method")
 		return
 	}
 	rel := dockerx.CleanContainerPath(r.URL.Query().Get("path"))

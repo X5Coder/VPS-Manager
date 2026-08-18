@@ -120,10 +120,18 @@ func (s *Server) applyDomain(p *store.Project, domain string, enabled bool) erro
 		return err
 	}
 	port := s.upstreamPort(p)
-	if proxy.NginxInstalled() && !proxy.VhostPointsTo(domain, port) {
-		p.SSLStatus = "error: nginx proxy_pass does not match host_port"
-		_ = s.Store.UpdateProject(*p)
-		return fmt.Errorf("nginx vhost %s is not proxying to 127.0.0.1:%d", domain, port)
+	if proxy.NginxInstalled() {
+		st := proxy.InspectNginx(domain, port)
+		if !st.Matches {
+			if st.SkippedCustom != "" {
+				p.SSLStatus = "error: custom nginx vhost not overwritten"
+				_ = s.Store.UpdateProject(*p)
+				return fmt.Errorf("nginx file %q already serves %s with extra hosts or locations; not overwritten (proxy_pass %s). Use a dedicated hostname or update that file", st.SkippedCustom, domain, st.ProxyPass)
+			}
+			p.SSLStatus = "error: nginx proxy_pass does not match host_port"
+			_ = s.Store.UpdateProject(*p)
+			return fmt.Errorf("nginx vhost %s is not proxying to 127.0.0.1:%d", domain, port)
+		}
 	}
 	p.SSLStatus = "active"
 	return s.Store.UpdateProject(*p)
