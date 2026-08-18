@@ -858,21 +858,52 @@ func (s *Server) resolveRoomContainer(roomID, want string) *store.Container {
 				return &c
 			}
 		}
-		return nil
-	}
-	for i := range list {
-		c := list[i]
-		if s.Docker != nil && c.DockerID != "" {
-			if st, err := s.Docker.InspectStatus(c.DockerID); err == nil && st == "running" {
+	} else {
+		for i := range list {
+			c := list[i]
+			if s.Docker != nil && c.DockerID != "" {
+				if st, err := s.Docker.InspectStatus(c.DockerID); err == nil && st == "running" {
+					return &c
+				}
+			}
+			if c.Status == "running" {
 				return &c
 			}
 		}
-		if c.Status == "running" {
-			return &c
+		if len(list) > 0 {
+			return &list[0]
 		}
 	}
-	if len(list) > 0 {
-		return &list[0]
+	projs, _ := s.Store.ListProjects(roomID)
+	matchProj := func(p store.Project) *store.Container {
+		st := p.Status
+		if s.Docker != nil && p.ContainerID != "" {
+			if x, err := s.Docker.InspectStatus(p.ContainerID); err == nil && x != "" {
+				st = x
+			}
+		}
+		return &store.Container{
+			ID: p.ID, RoomID: p.RoomID, Name: p.Name, Service: p.Name,
+			Image: p.Image, DockerID: p.ContainerID, HostPort: p.HostPort,
+			ContainerPort: p.ContainerPort, Status: st,
+		}
+	}
+	if want != "" {
+		for _, p := range projs {
+			if p.ID == want || p.ContainerID == want || strings.EqualFold(p.Name, want) {
+				return matchProj(p)
+			}
+		}
+		return nil
+	}
+	for _, p := range projs {
+		c := matchProj(p)
+		if c.Status == "running" {
+			return c
+		}
+	}
+	if len(projs) > 0 {
+		return matchProj(projs[0])
 	}
 	return nil
 }
@@ -880,26 +911,35 @@ func (s *Server) resolveRoomContainer(roomID, want string) *store.Container {
 func (s *Server) containerLogsJSON(roomID, want string) (map[string]any, int) {
 	list := s.roomContainersJSON(roomID)
 	want = strings.TrimSpace(want)
-	if want == "" {
-		return map[string]any{
-			"ok": false, "error": "pass name=CONTAINER_NAME or container=CONTAINER_ID",
-			"code": "logs_target_required", "containers": list,
-		}, 400
-	}
 	ct := s.resolveRoomContainer(roomID, want)
 	if ct == nil {
+		if want == "" && len(list) == 0 {
+			return map[string]any{
+				"ok": false, "error": "no containers", "code": "no containers", "containers": list,
+			}, 404
+		}
+		if want == "" {
+			return map[string]any{
+				"ok": false, "error": "pass name=CONTAINER_NAME or container=CONTAINER_ID",
+				"code": "logs_target_required", "containers": list,
+			}, 400
+		}
 		return map[string]any{
 			"ok": false, "error": "container not found", "code": "container_not_found",
 			"containers": list,
 		}, 404
+	}
+	ref := ct.DockerID
+	if ref == "" {
+		ref = ct.Name
 	}
 	name := ct.Name
 	if ct.Service != "" {
 		name = ct.Service
 	}
 	var b strings.Builder
-	if s.Docker != nil && ct.DockerID != "" {
-		out, err := s.Docker.Logs(ct.DockerID, 300)
+	if s.Docker != nil && ref != "" {
+		out, err := s.Docker.Logs(ref, 300)
 		if err != nil {
 			b.WriteString(err.Error())
 		} else {

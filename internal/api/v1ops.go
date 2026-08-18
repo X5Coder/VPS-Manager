@@ -22,14 +22,20 @@ import (
 
 func (s *Server) logsTarget(roomID, want string) (string, int, string) {
 	want = strings.TrimSpace(want)
-	list, _ := s.Store.ListContainers(roomID)
 	if want != "" {
 		return want, 0, ""
 	}
-	if len(list) == 0 {
-		return "", 404, "no containers"
+	if ct := s.resolveRoomContainer(roomID, ""); ct != nil {
+		id := ct.ID
+		if id == "" {
+			id = ct.DockerID
+		}
+		if id == "" {
+			id = ct.Name
+		}
+		return id, 0, ""
 	}
-	return "", 400, "logs_target_required"
+	return "", 404, "no containers"
 }
 
 func (s *Server) handleV1Logs(w http.ResponseWriter, r *http.Request, roomID string) {

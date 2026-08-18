@@ -141,6 +141,15 @@
     return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
   };
   const ctrLabel = (c) => (c && (c.label || c.service || c.name)) || "container";
+  const logContainerKey = (c) => (c && (c.id || c.docker_id || c.name)) || "";
+  function pickLogContainer(list) {
+    const rows = Array.isArray(list) ? list : [];
+    if (!rows.length) return "";
+    const cur = state.roomLogCtr;
+    if (cur && rows.some((c) => c.id === cur || c.docker_id === cur || c.name === cur)) return cur;
+    const run = rows.find((c) => c.status === "running");
+    return logContainerKey(run || rows[0]);
+  }
   const ctrNum = (c) => "#" + String((c && c.ordinal) || 1).padStart(3, "0");
   const shortDocker = (id) => {
     const s = String(id || "").replace(/^sha256:/, "");
@@ -3779,7 +3788,7 @@ Never DELETE via API. One token = all rooms.`;
         <p class="muted" style="margin:0 0 12px">${esc(ctrNum(ct))} ${esc(ctrLabel(ct))} · <code>${esc(shortDocker(ct.docker_id))}</code> · ${esc(ct.image || "")}</p>`;
         if (sub === "logs") {
           let lg = { log: "" };
-          try { lg = await api(`/api/rooms/${id}/logs?container=${encodeURIComponent(ct.id)}`); } catch {}
+          try { lg = await api(`/api/rooms/${id}/logs?container=${encodeURIComponent(ct.docker_id || ct.id || ct.name || "")}`); } catch (ex) { lg = { log: ex.message || "" }; }
           body = `<div class="panel"><div class="head-row"><h3>Logs · ${esc(ctrLabel(ct))}</h3>
             <div class="row-actions"><button class="btn sm action" id="back-ctrs">Containers</button><button class="btn sm action" id="copylog">Copy</button><button class="btn sm action" id="reflog">Refresh</button></div></div>
             ${subnav}
@@ -3875,14 +3884,22 @@ Never DELETE via API. One token = all rooms.`;
           <ul class="file-list">${(listing.entries || []).map((e) => `<li><a href="#" data-path="${esc((listing.path === "." ? "" : listing.path + "/") + e.name)}">${e.dir ? "📁" : "📄"} ${esc(e.name)}</a><span class="muted">${e.dir ? "dir" : fmtBytes(e.size)}</span></li>`).join("") || "<li class='muted'>Empty</li>"}</ul></div>`;
       }
     } else if (tab === "logs") {
-      const pick = state.roomLogCtr || (containers[0] && containers[0].id) || "";
-      let lg = { log: "", containers };
-      try { lg = await api(`/api/rooms/${id}/logs?container=${encodeURIComponent(pick)}`); } catch {}
-      const list = lg.containers && lg.containers.length ? lg.containers : containers;
-      if (lg.container_id) state.roomLogCtr = lg.container_id;
+      const list0 = containers || [];
+      const pick = pickLogContainer(list0);
+      if (pick) state.roomLogCtr = pick;
+      let lg = { log: "", containers: list0, container_id: pick };
+      try {
+        const q = pick ? `?container=${encodeURIComponent(pick)}` : "";
+        lg = await api(`/api/rooms/${id}/logs${q}`);
+      } catch (ex) {
+        lg = { log: ex.message || "(empty)", containers: list0, container_id: pick };
+      }
+      const list = lg.containers && lg.containers.length ? lg.containers : list0;
+      const active = lg.container_id || pick || pickLogContainer(list);
+      if (active) state.roomLogCtr = active;
       body = `<div class="panel"><div class="head-row"><h3>Logs</h3>
         <div class="row-actions"><button class="btn sm action" id="copylog">Copy</button><button class="btn sm action" id="reflog">Refresh</button></div></div>
-        <div class="row-actions" style="flex-wrap:wrap;margin:0 0 10px" id="log-ctrs">${list.map((c) => `<button type="button" class="btn sm action ${(state.roomLogCtr || pick) === c.id ? "primary" : ""}" data-log-ctr="${esc(c.id)}">${esc(ctrNum(c))} ${esc(ctrLabel(c))}</button>`).join("") || `<span class="muted">No containers</span>`}</div>
+        <div class="row-actions" style="flex-wrap:wrap;margin:0 0 10px" id="log-ctrs">${list.map((c) => `<button type="button" class="btn sm action ${active === c.id || active === c.docker_id ? "primary" : ""}" data-log-ctr="${esc(logContainerKey(c))}">${esc(ctrNum(c))} ${esc(ctrLabel(c))}</button>`).join("") || `<span class="muted">No containers</span>`}</div>
         <p class="muted" style="margin:0 0 8px;font-size:0.78rem">One container at a time · newest at bottom · live</p>
         <div class="logs-viewer room-logs-viewer">
           <div class="logs-body" id="rlog">${formatLogHTML(lg.log || "(empty)")}</div>
@@ -4215,7 +4232,7 @@ Never DELETE via API. One token = all rooms.`;
             return;
           }
           try {
-            const lg = await api(`/api/rooms/${id}/logs?container=${encodeURIComponent(state.ctrId || "")}`);
+            const lg = await api(`/api/rooms/${id}/logs?container=${encodeURIComponent((containers.find((c) => c.id === state.ctrId) || {}).docker_id || state.ctrId || "")}`);
             const el = document.querySelector("#rlog");
             if (!el) return;
             const html = formatLogHTML(lg.log || "(empty)");
@@ -4310,8 +4327,10 @@ Never DELETE via API. One token = all rooms.`;
           return;
         }
         try {
-          if (!state.roomLogCtr) return;
-          const lg = await api(`/api/rooms/${id}/logs?container=${encodeURIComponent(state.roomLogCtr)}`);
+          const cid = state.roomLogCtr || document.querySelector("#log-ctrs [data-log-ctr]")?.getAttribute("data-log-ctr") || "";
+          if (!cid) return;
+          if (!state.roomLogCtr) state.roomLogCtr = cid;
+          const lg = await api(`/api/rooms/${id}/logs?container=${encodeURIComponent(cid)}`);
           const el = document.querySelector("#rlog");
           if (!el) return;
           const html = formatLogHTML(lg.log || "(empty)");
