@@ -104,6 +104,7 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("/api/tokens/ai", s.withGate(s.handleTokensAI))
 	s.Mux.HandleFunc("/api/logs/ai", s.withGate(s.handleLogsAI))
 	s.Mux.HandleFunc("/api/usage/ai", s.withGate(s.handleUsageAI))
+	s.Mux.HandleFunc("/api/agent/chat", s.withGate(s.handlePanelAgent))
 	s.Mux.HandleFunc("/api/agent/tool", s.withGate(s.handleAgentTool))
 	s.routesManage()
 	s.routesAPITokens()

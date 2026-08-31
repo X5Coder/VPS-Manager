@@ -109,6 +109,10 @@ func (s *Service) DeployMulti(room *store.Room, archive string, log io.Writer) e
 	if _, err := os.Stat(envPath); err != nil {
 		_ = os.WriteFile(envPath, []byte{}, 0o600)
 	}
+	// Compose reads .env from the project directory for ${VAR} substitution.
+	if b, err := os.ReadFile(envPath); err == nil {
+		_ = os.WriteFile(filepath.Join(root, ".env"), b, 0o600)
+	}
 	over := filepath.Join(root, "compose.vps-override.yml")
 	net := room.NetworkName
 	if err := s.Docker.EnsureNetwork(net); err != nil {

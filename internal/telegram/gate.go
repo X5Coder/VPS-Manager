@@ -219,8 +219,8 @@ func (g *Gate) Challenge(botToken string) (*ChallengeResult, error) {
 		return nil, fmt.Errorf(DeniedMsg)
 	}
 	if g.pending != nil && time.Now().Before(g.pending.ExpiresAt) {
-		g.mu.Unlock()
-		return nil, fmt.Errorf("a password is already active for one person (20 minutes)")
+		// New challenge replaces the previous code — only the latest OTP works.
+		g.pending = nil
 	}
 	// Never allow chat id change from the web. Only refresh bot token.
 	sec.BotToken = botToken
@@ -237,7 +237,7 @@ func (g *Gate) Challenge(botToken string) (*ChallengeResult, error) {
 		return nil, fmt.Errorf(DeniedMsg)
 	}
 
-	msg := "<b>VPS MANAGE</b>\n\n<b>Temporary password</b>\n<b>" + html.EscapeString(code) + "</b>\n<b>Valid 20 minutes · one person</b>"
+	msg := "<b>VPS MANAGE</b>\n\n<b>One-time unlock code</b>\n<code>" + html.EscapeString(code) + "</code>\n<b>Valid 20 minutes · any device · one use</b>\nPrevious codes are void."
 	if err := sendMessageHTML(botToken, chatID, msg); err != nil {
 		return nil, fmt.Errorf(DeniedMsg)
 	}

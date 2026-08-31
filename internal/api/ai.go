@@ -353,6 +353,119 @@ func (s *Server) handleHostAI(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handlePanelAgent is the single full-VPS Agent (root terminal + tools + create room).
+func (s *Server) handlePanelAgent(w http.ResponseWriter, r *http.Request) {
+	if s.requireOwner(w, r) == nil {
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeErr(w, 405, "method")
+		return
+	}
+	var body struct {
+		Messages []ai.Message `json:"messages"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, 400, "invalid request")
+		return
+	}
+	if len(body.Messages) == 0 {
+		writeErr(w, 400, "messages required")
+		return
+	}
+	st := s.storageInfo()
+	freeGB := float64(asInt64(st["quota_available"])) / (1024 * 1024 * 1024)
+	roomsList, _ := s.Store.ListRooms()
+	var rb strings.Builder
+	rb.WriteString("Page: Agent. Full VPS root operator. Working directory /root. ")
+	rb.WriteString(s.usageSnapshot())
+	fmt.Fprintf(&rb, " Free quota for NEW rooms: %.2f GB. Rooms (%d): ", freeGB, len(roomsList))
+	for _, rm := range roomsList {
+		usage, _ := s.Rooms.UsageBytes(rm.ID)
+		projs, _ := s.Store.ListProjects(rm.ID)
+		stt := "empty"
+		img := ""
+		if len(projs) > 0 {
+			stt = projs[0].Status
+			img = projs[0].Image
+			if stt == "" {
+				stt = "ready"
+			}
+		}
+		fmt.Fprintf(&rb, "%s id=%s status=%s image=%s quota_gb=%.2f usage_gb=%.2f; ",
+			rm.Name, rm.ID, stt, img,
+			float64(rm.QuotaBytes)/(1024*1024*1024),
+			float64(usage)/(1024*1024*1024))
+	}
+	rb.WriteString(" create_room needs room_name + room_password(≥6) + quota_gb. Prefer tools for inventory; command for shell work.")
+	hist := append([]ai.Message{{Role: "system-note", Text: diskSystemNote(st, rb.String())}}, body.Messages...)
+	rep, raw, err := ai.TurnWithTools(ai.AgentPrompt, ai.AgentTools, hist)
+	if err != nil {
+		writeErr(w, 502, err.Error())
+		return
+	}
+	if ai.LooksLikeRemoteLogin(rep.Command) {
+		rep.Command = ""
+		rep.TypeOnly = false
+		rep.Say = strings.TrimSpace(rep.Say + " You are already on this VPS. I will not SSH.")
+		rep.Done = true
+	}
+	if ai.Dangerous(rep.Command) {
+		rep.Say = strings.TrimSpace(rep.Say + " That command is not allowed.")
+		rep.Command = ""
+		rep.Done = true
+	}
+	out := map[string]any{
+		"say":          rep.Say,
+		"says":         rep.Says,
+		"command":      rep.Command,
+		"ask":          rep.Ask,
+		"choices":      rep.Choices,
+		"quota_gb":     rep.QuotaGB,
+		"image":        strings.TrimSpace(rep.Image),
+		"update_id":    strings.TrimSpace(rep.UpdateID),
+		"start":        rep.Start,
+		"done":         rep.Done,
+		"type_only":    rep.TypeOnly,
+		"tool":         rep.Tool,
+		"tool_arg":     rep.ToolArg,
+		"create_room":  false,
+		"create_token": false,
+		"raw":          raw,
+	}
+	if rep.CreateRoom && strings.TrimSpace(rep.RoomName) != "" && rep.QuotaGB > 0 {
+		pass := strings.TrimSpace(rep.RoomPassword)
+		if len(pass) < 6 {
+			out["say"] = strings.TrimSpace(rep.Say)
+			if out["say"] == "" {
+				out["say"] = "Need a room password (at least 6 characters) and disk size."
+			}
+			out["ask"] = []string{"Room password?"}
+			out["command"] = ""
+			out["done"] = false
+		} else if rm, _, err := s.createEmptyRoom(rep.RoomName, rep.QuotaGB, 8080, 0, pass, "", "", false, ""); err != nil {
+			out["say"] = strings.TrimSpace(rep.Say + " Could not create the room: " + err.Error())
+			out["command"] = ""
+			out["done"] = false
+		} else {
+			out["create_room"] = true
+			out["room_id"] = rm.ID
+			out["room_name"] = rm.Name
+			out["quota_gb"] = rep.QuotaGB
+			if strings.TrimSpace(rep.Say) == "" {
+				out["say"] = fmt.Sprintf("Empty room **%s** ready (id `%s`, %.2f GB). Next I can clone into it.", rm.Name, rm.ID, rep.QuotaGB)
+			}
+			runtime := filepath.Join(s.Cfg.RuntimeDir, rm.ID)
+			out["room_path"] = runtime
+			// Prefer continuing into the room workspace on the next command turn.
+			if strings.TrimSpace(rep.Command) == "" {
+				out["done"] = false
+			}
+		}
+	}
+	writeJSON(w, 200, out)
+}
+
 func (s *Server) handleTokensAI(w http.ResponseWriter, r *http.Request) {
 	if s.requireOwner(w, r) == nil {
 		return

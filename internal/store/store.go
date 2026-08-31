@@ -476,6 +476,16 @@ func (s *Store) DeleteSession(token string) error {
 	return err
 }
 
+// DeleteSessionsByRoom removes every active room session for roomID (all devices).
+func (s *Store) DeleteSessionsByRoom(roomID string) error {
+	roomID = strings.TrimSpace(roomID)
+	if roomID == "" {
+		return nil
+	}
+	_, err := s.DB.Exec(`DELETE FROM sessions WHERE room_id=? AND kind=?`, roomID, "room")
+	return err
+}
+
 func (s *Store) CleanupSessions() error {
 	_, err := s.DB.Exec(`DELETE FROM sessions WHERE expires_at < ?`, time.Now().UTC().Format(time.RFC3339))
 	return err

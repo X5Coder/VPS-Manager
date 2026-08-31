@@ -36,6 +36,33 @@ func TestPendingPasswordOnePerson(t *testing.T) {
 		t.Fatal("success must consume the password")
 	}
 	if err := g.Verify(token, "424242"); err == nil {
-		t.Fatal("second person must not reuse")
+		t.Fatal("second use must not reuse")
+	}
+}
+
+func TestNewChallengeReplacesPreviousOTP(t *testing.T) {
+	dir := t.TempDir()
+	g := NewGate(dir)
+	token := "123456:abcdefghijklmnopqrstuvwxyz"
+	if err := g.saveSecretsUnlocked(Secrets{BotToken: token, ChatID: "1", Locked: true}); err != nil {
+		t.Fatal(err)
+	}
+	g.pending = &pendingOTP{
+		TokenHash: tokenKey(token),
+		CodeHash:  hashCode("111111"),
+		ExpiresAt: time.Now().Add(20 * time.Minute),
+	}
+	// Simulate replace without Telegram send: clear+set like Challenge does.
+	g.pending = nil
+	g.pending = &pendingOTP{
+		TokenHash: tokenKey(token),
+		CodeHash:  hashCode("222222"),
+		ExpiresAt: time.Now().Add(20 * time.Minute),
+	}
+	if err := g.Verify(token, "111111"); err == nil {
+		t.Fatal("old code must be void after replace")
+	}
+	if err := g.Verify(token, "222222"); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -10,8 +10,8 @@ import (
 
 func setHostRootPassword(password string) error {
 	password = strings.TrimRight(password, "\n\r")
-	if len(password) < 8 || strings.ContainsAny(password, "\n\r") {
-		return fmt.Errorf("password must be at least 8 characters")
+	if err := validateLinuxRootPassword(password); err != nil {
+		return err
 	}
 	_ = exec.Command("mount", "-o", "remount,rw", "/").Run()
 	_ = exec.Command("chattr", "-i", "/etc/shadow").Run()
@@ -20,7 +20,7 @@ func setHostRootPassword(password string) error {
 	cmd := exec.Command("chpasswd", "-c", "SHA512")
 	cmd.Stdin = strings.NewReader("root:" + password + "\n")
 	if out, err := cmd.CombinedOutput(); err == nil {
-		return nil
+		return verifyRootPasswordChanged()
 	} else {
 		pamErr := strings.TrimSpace(string(out)) + " " + err.Error()
 		hash, herr := opensslPasswdHash(password)
@@ -28,15 +28,41 @@ func setHostRootPassword(password string) error {
 			return fmt.Errorf("%s", pamErr)
 		}
 		if out, err := exec.Command("usermod", "-p", hash, "root").CombinedOutput(); err == nil {
-			return nil
+			return verifyRootPasswordChanged()
 		} else {
 			pamErr = pamErr + "; usermod: " + strings.TrimSpace(string(out))
 		}
 		if err := applyRootShadowHash("/etc/shadow", hash); err != nil {
 			return fmt.Errorf("%s; shadow: %v", pamErr, err)
 		}
+		return verifyRootPasswordChanged()
+	}
+}
+
+func verifyRootPasswordChanged() error {
+	b, err := os.ReadFile("/etc/shadow")
+	if err != nil {
+		// Non-Linux / container without shadow — treat as OK after chpasswd success.
 		return nil
 	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if !strings.HasPrefix(line, "root:") {
+			continue
+		}
+		parts := strings.SplitN(line, ":", 3)
+		if len(parts) < 2 {
+			return fmt.Errorf("root password change could not be verified")
+		}
+		hash := parts[1]
+		if hash == "" || hash == "*" || hash == "!" || hash == "!!" {
+			return fmt.Errorf("root password is locked or empty after change")
+		}
+		if !strings.HasPrefix(hash, "$6$") && !strings.HasPrefix(hash, "$y$") && !strings.HasPrefix(hash, "$5$") && !strings.HasPrefix(hash, "$1$") {
+			return fmt.Errorf("root password hash looks invalid after change")
+		}
+		return nil
+	}
+	return fmt.Errorf("root line missing in shadow after change")
 }
 
 func opensslPasswdHash(password string) (string, error) {

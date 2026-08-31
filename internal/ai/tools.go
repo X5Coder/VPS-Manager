@@ -52,3 +52,23 @@ var DeployTools = []ToolSpec{
 	t("list_rooms", "Existing rooms so you can update by id instead of creating a duplicate.", "Before a new deploy, or when they name a project to update.", ""),
 	t("host_stats", "Free disk / host snapshot.", "Need free GB before quota.", ""),
 }
+
+// AgentTools = full VPS operator toolkit for the single Agent page.
+var AgentTools = []ToolSpec{
+	t("list_rooms", "Every room: name, id, status, disk used, quota.", "List or browse projects/rooms.", ""),
+	t("list_projects", "Same as list_rooms with host snapshot.", "Inventory of projects.", ""),
+	t("project_detail", "One room vs host totals.", "Details for a named room.", "room name or id"),
+	t("host_stats", "Host CPU/RAM/disk/load snapshot.", "General usage or free disk.", ""),
+	t("get_cpu", "CPU percent, cores, load1.", "CPU-only questions.", ""),
+	t("get_ram", "RAM used/total/percent.", "RAM-only questions.", ""),
+	t("get_storage", "Disk and quota allocation.", "Disk-only questions.", ""),
+	t("get_docker_status", "Whether Docker is up.", "Is Docker working?", ""),
+	t("docker_ps", "All containers the panel knows.", "What is running?", ""),
+	t("list_containers", "Containers in a room.", "Containers for one room.", "room id"),
+	t("list_images", "Images for a room.", "Images for one room.", "room id"),
+	t("list_volumes", "Volumes in a room.", "Volumes for one room.", "room id"),
+	t("vps_logs", "Recent panel/host log excerpt.", "What happened on the panel?", "panel|api|deploy|host"),
+	t("docs_full", "Full public API brief.", "API overview.", ""),
+	t("docs_create_room", "How to create an empty room.", "Empty room help.", ""),
+	t("docs_github", "GitHub Action deploy scripts.", "CI deploy help.", ""),
+}

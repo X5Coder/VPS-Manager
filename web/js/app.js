@@ -192,6 +192,7 @@
       logs: `<svg ${p}><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></svg>`,
       docs: `<svg ${p}><path d="M7 3h8l5 5v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M15 3v5h5M9 13h6M9 17h4"/></svg>`,
       settings: `<svg ${p}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9c.3.7.9 1.2 1.6 1.4H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>`,
+      agent: `<svg ${p}><circle cx="12" cy="8" r="3.5"/><path d="M5 19a7 7 0 0 1 14 0"/><path d="M12 11.5v3M10 16h4"/></svg>`,
       tokens: `<svg ${p}><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`,
       room: `<svg ${p}><path d="M4 10.5L12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1z"/></svg>`,
     };
@@ -231,6 +232,7 @@
   const ROOM_HELLO = "Hello — I’m inside this room on the VPS. Commands run in this terminal (room files by default). I can clone from GitHub, build Docker, and explain each command in chat. I won’t SSH and I won’t delete the room.";
   const LOGS_HELLO = "Hello — I analyze panel logs. Ask me to analyze, then pick which log.";
   const USAGE_HELLO = "Hello — I report real VPS numbers. 72 GB is the whole disk, not project quota. Room quota is DATA only (files/volumes), not Docker images.";
+  const AGENT_PAGE_HELLO = "Hello — I am the VPS Agent with a live root terminal. Ask me to clone a repo, create a room, check Docker, or run any task. I loop until it is done.";
   const HOST_HELLO = "Hello — this is a real root shell on the VPS. Type a command or ask me; I will type it here and explain it in chat. I will not SSH.";
 
   function sendIconHTML() {
@@ -281,6 +283,19 @@
           </div>
         </form>
       </section>
+    </div>`;
+  }
+
+
+  function realTermHTML({ prompt = "root@vps:~#", termLines = "", hints = "" } = {}) {
+    const p = String(prompt || "root@vps:~#").replace(/\s+$/, "");
+    return `<div class="real-term" dir="ltr">
+      <div class="real-term-screen" id="term-out">${esc(termLines || "")}</div>
+      <form class="real-term-in" id="term-form">
+        <span class="real-term-prompt">${esc(p)}</span>
+        <input id="term-cmd" autocomplete="off" spellcheck="false" autocapitalize="off" />
+      </form>
+      ${hints ? `<div class="cmd-hints">${hints}</div>` : ""}
     </div>`;
   }
 
@@ -1245,6 +1260,15 @@
             onToken(res);
             break;
           }
+          if (res.create_room && res.room_id) {
+            pack.messages.push({
+              role: "terminal",
+              text: `ROOM_CREATED id=${res.room_id} name=${res.room_name || ""} path=${res.room_path || ""} quota_gb=${res.quota_gb || 0}`,
+            });
+            pack.typing = true;
+            paintAIChat(aiLog, pack);
+            if (!res.done) continue;
+          }
           const typeOnly = !!(res.type_only || res.draft);
           const draftCmd = cmd || String(res.draft || "").trim();
           if (typeOnly && draftCmd && execFn) {
@@ -1593,6 +1617,7 @@
         }
         return "/projects";
       case "server": return "/server";
+      case "agent": return "/agent";
       case "terminal": return "/terminal";
       case "tokens": return "/tokens";
       case "logs": return "/logs";
@@ -1616,6 +1641,7 @@
     if (p === "/docs" || p === "/guide") return { view: "docs" };
     if (p === "/tokens" || p === "/api") return { view: "tokens" };
     if (p === "/deploy") return { view: "rooms" };
+    if (p === "/agent") return { view: "agent" };
     if (p === "/terminal") return { view: "terminal" };
     if (p === "/logs") return { view: "logs" };
     if (p === "/settings") return { view: "settings" };
@@ -1802,7 +1828,7 @@
       const card = el(`<div class="auth-wrap"><div class="auth-card">
         <p class="auth-kicker">${brandMarkHTML()}VPS Manager</p>
         <h1>Enter the code</h1>
-        <p class="lead">Temporary password sent to Telegram · valid 20 minutes · one person</p>
+        <p class="lead">One-time code sent to Telegram · valid 20 minutes · any device · previous codes void</p>
         <form id="f">
           <div class="field"><label>Login code</label>
             <input name="code" required autofocus inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code" /></div>
@@ -1824,7 +1850,7 @@
     const card = el(`<div class="auth-wrap"><div class="auth-card">
       <p class="auth-kicker">${brandMarkHTML()}VPS Manager</p>
       <h1>Unlock the panel</h1>
-      <p class="lead">Paste your Telegram bot token. A numeric password is sent to the owner — valid 20 minutes for one person.</p>
+      <p class="lead">Paste your Telegram bot token. A one-time code is sent to Telegram — works on any device, one use. Sending again voids the previous code.</p>
       <form id="f">
         <div class="field"><label>Telegram bot token</label>
           <input name="bot_token" type="password" required value="${esc(saved)}" autocomplete="off" placeholder="123456:ABC…" /></div>
@@ -2054,7 +2080,7 @@
 
     const nav = root.querySelector("#nav");
     const items = isOwner
-      ? [["server", "Server"], ["rooms", "Rooms"], ["terminal", "Terminal"], ["logs", "Logs"], ["tokens", "Tokens"], ["docs", "Docs"], ["settings", "Settings"]]
+      ? [["server", "Server"], ["rooms", "Rooms"], ["agent", "Agent"], ["terminal", "Terminal"], ["logs", "Logs"], ["tokens", "Tokens"], ["docs", "Docs"], ["settings", "Settings"]]
       : [["room", "Room"], ["rooms", "All rooms"]];
     const highlight = navHighlight(active || state.view);
     nav.innerHTML = items.map(([k, label]) => {
@@ -2181,23 +2207,9 @@
           ])}
         </div>
       </div>
-      ${roomsDiskTable(state.cache.rooms, host)}
-      ${ready ? agentDeskHTML({
-        title: "Ai Agent | Usage",
-        showTerm: false,
-        placeholder: "Ask about CPU, RAM, disk, load…",
-      }) : ""}`, "server");
+      ${roomsDiskTable(state.cache.rooms, host)}`, "server");
       bindCopyables();
       updateMetricsDOM();
-      if (ready) {
-        bindAgentChat({
-          key: "usage",
-          stillHere: () => state.view === "server",
-          aiPath: "/api/usage/ai",
-          hello: USAGE_HELLO,
-          toolScope: "usage",
-        });
-      }
     };
     paint(state.cache.host || null, false);
     try {
@@ -2505,23 +2517,10 @@
           </div>
           <div class="logs-body" id="logbox">${formatLogHTML(raw)}</div>
         </div>
-      </div>
-      ${agentDeskHTML({
-        title: "Logs agent",
-        showTerm: false,
-        placeholder: "Ask to analyze logs…",
-      })}`, "logs");
+      </div>`, "logs");
 
     const box = document.querySelector("#logbox");
     pinLogBottom(box);
-
-    bindAgentChat({
-      key: "logs",
-      stillHere: () => state.view === "logs",
-      aiPath: "/api/logs/ai",
-      hello: LOGS_HELLO,
-      logMode: true,
-    });
 
     const refreshLive = async () => {
       if (state.view !== "logs") { stopLogLive(); return; }
@@ -2608,6 +2607,377 @@
     root.querySelectorAll("[data-copy-cmd]").forEach((b) => {
       b.onclick = () => copyText(b.closest(".cmd-card")?.querySelector(".cmd-pre")?.textContent || "");
     });
+  }
+
+  async function renderTokens() {
+    const gen = state._gen;
+    shell(`<div class="topbar"><div><h2>Tokens</h2><div class="sub">API keys for all rooms</div></div></div>${skel(3)}`, "tokens");
+    let tokens = [];
+    try {
+      tokens = await api("/api/settings/tokens");
+    } catch (e) {
+      if (!alive("tokens", gen)) return;
+      shell(`<p class="error">${esc(e.message)}</p>`, "tokens"); return;
+    }
+    if (!alive("tokens", gen)) return;
+    let list = tokens || [];
+    const empty = !list.length;
+    const cards = list.map((t) => tokenCardHTML(t)).join("");
+    const hero = empty ? `
+      <div class="tok-hero" id="tok-hero">
+        <p class="muted">One API for all rooms. Create by name only — then set ROOM_ID in GitHub.</p>
+        <button class="btn primary action" id="tok-hero-new" type="button">Create API</button>
+      </div>` : "";
+    shell(`
+      <div class="topbar"><div>
+        <h2>Tokens</h2>
+        <div class="sub">${list.length ? `${list.length} saved` : "One API for all rooms · set ROOM_ID in GitHub"}</div>
+      </div>
+        ${`<button class="btn primary action" id="tok-new" type="button">Create token</button>`}
+      </div>
+      <div id="tok-fresh"></div>
+      <div id="tok-list" class="tok-list">${cards}${hero}</div>`, "tokens");
+
+    const paintList = (items, fresh) => {
+      const box = document.querySelector("#tok-list");
+      if (!box) return;
+      const freshTok = fresh ? (fresh.token || fresh) : null;
+      const freshId = freshTok && freshTok.id;
+      const rest = (items || []).filter((t) => !freshId || t.id !== freshId);
+      box.innerHTML = rest.map((t) => tokenCardHTML(t)).join("") || (freshId ? "" : `<div class="tok-hero" id="tok-hero"><p class="muted">No API tokens yet</p><button class="btn primary action" id="tok-hero-new" type="button">Create new token</button></div>`);
+      const top = document.querySelector("#tok-fresh");
+      if (top) {
+        top.innerHTML = freshTok ? tokenCardHTML(freshTok, { secret: fresh.secret || freshTok.secret, prompt: fresh.prompt || freshTok.prompt, api: fresh.api || freshTok.api, script: fresh.script || freshTok.script, fresh: true }) : "";
+      }
+      bindCopyables();
+      document.querySelectorAll("[data-copy-prompt]").forEach((b) => {
+        b.onclick = async () => {
+          const pre = b.closest(".tok-card")?.querySelector(".tok-prompt");
+          await copyText(pre ? pre.value || pre.textContent : "");
+        };
+      });
+      document.querySelectorAll("[data-copy-api]").forEach((b) => {
+        b.onclick = async () => {
+          const pre = b.closest(".tok-card")?.querySelector(".tok-api");
+          await copyText(pre ? pre.value || pre.textContent : "");
+        };
+      });
+      document.querySelectorAll("[data-copy-script]").forEach((b) => {
+        b.onclick = async () => {
+          const pre = b.closest(".tok-card")?.querySelector(".tok-script");
+          await copyText(pre ? pre.value || pre.textContent : "");
+        };
+      });
+      document.querySelectorAll("[data-copy-script-multi]").forEach((b) => {
+        b.onclick = async () => {
+          const pre = b.closest(".tok-card")?.querySelector(".tok-script-multi");
+          await copyText(pre ? pre.value || pre.textContent : "");
+        };
+      });
+      document.querySelectorAll("[data-del-tok]").forEach((btn) => bindAction(btn, async () => {
+        if (!confirm("Revoke this API token?")) return;
+        await api(`/api/settings/tokens/${btn.dataset.delTok}`, { method: "DELETE" });
+        renderTokens();
+      }));
+      document.querySelector("#tok-hero-new")?.addEventListener("click", openCreate);
+    };
+    const openCreate = () => openCreateTokenModal(async (created) => {
+      if (!created) return;
+      list = [created, ...list.filter((t) => t.id !== created.id)];
+      await renderTokens();
+    });
+    paintList(list);
+    document.querySelector("#tok-new")?.addEventListener("click", openCreate);
+  }
+
+  function tokenCardHTML(t, opts = {}) {
+    const secret = t.secret || opts.secret || "";
+    const prompt = t.prompt || opts.prompt || "";
+    const apiSheet = t.api || opts.api || "";
+    const script = t.script || t.script_single || opts.script || "";
+    const scriptMulti = t.script_multi || opts.scriptMulti || "";
+    const fresh = opts.fresh ? " tok-fresh" : "";
+    const copyVal = secret || "";
+    const roomLabel = "all rooms";
+    return `<div class="tok-card${fresh}" data-tok-id="${esc(t.id)}">
+      <div class="tok-card-top">
+        <div>
+          <strong>${esc(t.name)}</strong>
+          <span class="badge ok">${esc(roomLabel)}</span>
+        </div>
+        <div class="row-actions">
+          <button class="btn sm action" type="button" data-copy-prompt ${prompt ? "" : "disabled"} title="Full AI prompt">Copy prompt</button>
+          <button class="btn sm action" type="button" data-copy-api ${apiSheet ? "" : "disabled"} title="BASE and TOKEN only">Copy API</button>
+          <button class="btn sm action" type="button" data-copy-script ${script ? "" : "disabled"} title="GitHub Action — single .tar">Copy single script</button>
+          <button class="btn sm action" type="button" data-copy-script-multi ${scriptMulti ? "" : "disabled"} title="GitHub Action — multi .tar.gz">Copy multi script</button>
+          <button class="btn sm danger action" data-del-tok="${esc(t.id)}">Revoke</button>
+        </div>
+      </div>
+      <div class="secret-row tok-secret-row">
+        <span class="secret-mask">${copyVal ? "••••••••••••••••••••" : (esc(t.token_prefix || "••••") + "…")}</span>
+      </div>
+      ${prompt ? `<textarea class="hidden tok-prompt" readonly>${esc(prompt)}</textarea>` : ""}
+      ${apiSheet ? `<textarea class="hidden tok-api" readonly>${esc(apiSheet)}</textarea>` : ""}
+      ${script ? `<textarea class="hidden tok-script" readonly>${esc(script)}</textarea>` : ""}
+      ${scriptMulti ? `<textarea class="hidden tok-script-multi" readonly>${esc(scriptMulti)}</textarea>` : ""}
+      <div class="muted" style="font-size:0.75rem;margin-top:6px">one API · all rooms · set ROOM_ID in the script · created ${esc(t.created_at || "")}${t.last_used_at ? " · last used " + esc(t.last_used_at) : ""}</div>
+    </div>`;
+  }
+
+  async function renderTokens() {
+    const gen = state._gen;
+    shell(`<div class="topbar"><div><h2>Tokens</h2><div class="sub">API keys · agent helps you create and use them</div></div></div>${skel(3)}`, "tokens");
+    let tokens = [];
+    try {
+      tokens = await api("/api/settings/tokens");
+    } catch (e) {
+      if (!alive("tokens", gen)) return;
+      shell(`<p class="error">${esc(e.message)}</p>`, "tokens"); return;
+    }
+    if (!alive("tokens", gen)) return;
+    let list = tokens || [];
+    const empty = !list.length;
+    const cards = list.map((t) => tokenCardHTML(t)).join("");
+    const hero = empty ? `
+      <div class="tok-hero" id="tok-hero">
+        <p class="muted">One API for all rooms. Create by name only — then set ROOM_ID in GitHub.</p>
+        <button class="btn primary action" id="tok-hero-new" type="button">Create API</button>
+      </div>` : "";
+    const agentBlock = agentDeskHTML({
+      title: "Tokens agent",
+      showTerm: false,
+    });
+
+    shell(`
+      <div class="topbar"><div>
+        <h2>Tokens</h2>
+        <div class="sub">${list.length ? `${list.length} saved` : "One API for all rooms · set ROOM_ID in GitHub"}</div>
+      </div>
+        ${`<button class="btn primary action" id="tok-new" type="button">Create token</button>`}
+      </div>
+      <div id="tok-fresh"></div>
+      <div id="tok-list" class="tok-list">${cards}${hero}</div>
+      ${agentBlock}`, "tokens");
+
+    const paintList = (items, fresh) => {
+      const box = document.querySelector("#tok-list");
+      if (!box) return;
+      const freshTok = fresh ? (fresh.token || fresh) : null;
+      const freshId = freshTok && freshTok.id;
+      const rest = (items || []).filter((t) => !freshId || t.id !== freshId);
+      box.innerHTML = rest.map((t) => tokenCardHTML(t)).join("") || (freshId ? "" : `<div class="tok-hero" id="tok-hero"><p class="muted">No API tokens yet</p><button class="btn primary action" id="tok-hero-new" type="button">Create new token</button></div>`);
+      const top = document.querySelector("#tok-fresh");
+      if (top) {
+        top.innerHTML = freshTok ? tokenCardHTML(freshTok, { secret: fresh.secret || freshTok.secret, prompt: fresh.prompt || freshTok.prompt, api: fresh.api || freshTok.api, script: fresh.script || freshTok.script, fresh: true }) : "";
+      }
+      bindCopyables();
+      document.querySelectorAll("[data-copy-prompt]").forEach((b) => {
+        b.onclick = async () => {
+          const pre = b.closest(".tok-card")?.querySelector(".tok-prompt");
+          await copyText(pre ? pre.value || pre.textContent : "");
+        };
+      });
+      document.querySelectorAll("[data-copy-api]").forEach((b) => {
+        b.onclick = async () => {
+          const pre = b.closest(".tok-card")?.querySelector(".tok-api");
+          await copyText(pre ? pre.value || pre.textContent : "");
+        };
+      });
+      document.querySelectorAll("[data-copy-script]").forEach((b) => {
+        b.onclick = async () => {
+          const pre = b.closest(".tok-card")?.querySelector(".tok-script");
+          await copyText(pre ? pre.value || pre.textContent : "");
+        };
+      });
+      document.querySelectorAll("[data-copy-script-multi]").forEach((b) => {
+        b.onclick = async () => {
+          const pre = b.closest(".tok-card")?.querySelector(".tok-script-multi");
+          await copyText(pre ? pre.value || pre.textContent : "");
+        };
+      });
+      document.querySelectorAll("[data-del-tok]").forEach((btn) => bindAction(btn, async () => {
+        if (!confirm("Revoke this API token?")) return;
+        await api(`/api/settings/tokens/${btn.dataset.delTok}`, { method: "DELETE" });
+        renderTokens();
+      }));
+      document.querySelector("#tok-hero-new")?.addEventListener("click", openCreate);
+    };
+    const openCreate = () => openCreateTokenModal(async (created) => {
+      if (!created) return;
+      list = [created, ...list.filter((t) => t.id !== created.id)];
+      await renderTokens();
+    });
+    paintList(list);
+    document.querySelector("#tok-new")?.addEventListener("click", openCreate);
+
+    bindAgentChat({
+        key: "tokens",
+        stillHere: () => state.view === "tokens",
+        aiPath: "/api/tokens/ai",
+        hello: TOKEN_HELLO,
+        toolScope: "tokens",
+        onToken: (res) => {
+          const tok = Object.assign({}, res.token || {}, { secret: res.secret, prompt: res.prompt, api: res.api, script: res.script, script_multi: res.script_multi });
+          if (!tok.id) return;
+          list = [tok, ...list.filter((t) => t.id !== tok.id && String(t.name || "").toLowerCase() !== String(tok.name || "").toLowerCase())];
+          paintList(list, { token: tok, secret: tok.secret, prompt: res.prompt || tok.prompt, api: res.api || tok.api, script: res.script || tok.script, scriptMulti: res.script_multi || tok.script_multi });
+        },
+      });
+  }
+
+
+  function openCreateTokenModal(onDone) {
+    document.getElementById("tok-create-modal")?.remove();
+    const modal = el(`<div class="modal-back logout-modal" id="tok-create-modal">
+      <div class="modal-card logout-card tok-create-card">
+        <div id="tok-create-form">
+          <h3>Create API</h3>
+          <p class="muted">One key for <strong>all rooms</strong>. Update a room by POSTing a tar to <code>/upload</code>. In GitHub, set <code>ROOM_ID</code> — the Action should exit after HTTP 200.</p>
+          <div class="field" style="margin-top:14px"><label>Name</label>
+            <input id="tok-create-name" type="text" maxlength="64" placeholder="My API key" autocomplete="off" /></div>
+          <p class="error" id="tok-create-err"></p>
+          <div class="row-actions" style="margin-top:16px">
+            <button class="btn ghost" type="button" data-cancel>Cancel</button>
+            <button class="btn primary action" type="button" data-save>Create API</button>
+          </div>
+        </div>
+        <div id="tok-create-done" class="hidden">
+          <h3>API created</h3>
+          <p class="muted" id="tok-create-done-note">Copy prompt = AI brief. Copy API = BASE and TOKEN. Copy script = GitHub YAML that POSTs the tar and exits.</p>
+          <div class="secret-row" style="margin-top:12px">
+            <code class="tok-plain" id="tok-create-secret"></code>
+          </div>
+          <div class="row-actions" style="margin-top:16px;flex-wrap:wrap">
+            <button class="btn primary action" type="button" data-copy-script>Copy single script</button>
+            <button class="btn action" type="button" data-copy-script-multi>Copy multi script</button>
+            <button class="btn action" type="button" data-copy-api>Copy API</button>
+            <button class="btn action" type="button" data-copy-prompt>Copy prompt</button>
+            <button class="btn ghost" type="button" data-close>Done</button>
+          </div>
+        </div>
+      </div>
+    </div>`);
+    const close = (created) => {
+      modal.classList.remove("show");
+      modal.classList.add("hide");
+      setTimeout(() => {
+        modal.remove();
+        if (created && onDone) onDone(created);
+      }, 280);
+    };
+    modal.querySelector("[data-cancel]").onclick = () => close(null);
+    modal.addEventListener("click", (e) => { if (e.target === modal) close(null); });
+    modal.querySelector("[data-save]").onclick = async () => {
+      const err = modal.querySelector("#tok-create-err");
+      const saveBtn = modal.querySelector("[data-save]");
+      err.textContent = "";
+      const name = (modal.querySelector("#tok-create-name").value || "").trim() || "API token";
+      saveBtn.disabled = true;
+      try {
+        const res = await api("/api/settings/tokens", { method: "POST", body: JSON.stringify({ name }) });
+        const tok = Object.assign({}, res.token || {}, { secret: res.secret, prompt: res.prompt, api: res.api, script: res.script, script_multi: res.script_multi });
+        const secret = res.secret || tok.secret || "";
+        modal.querySelector("#tok-create-form").classList.add("hidden");
+        const done = modal.querySelector("#tok-create-done");
+        done.classList.remove("hidden");
+        done.classList.add("tok-in");
+        modal.querySelector("#tok-create-secret").textContent = secret;
+        const promptText = res.prompt || tok.prompt || "";
+        const apiText = res.api || tok.api || "";
+        const scriptText = res.script || tok.script || "";
+        const scriptMultiText = res.script_multi || tok.script_multi || "";
+        modal.querySelector("[data-copy-prompt]").onclick = async () => { await copyText(promptText); };
+        modal.querySelector("[data-copy-api]").onclick = async () => { await copyText(apiText); };
+        modal.querySelector("[data-copy-script]").onclick = async () => { await copyText(scriptText); };
+        modal.querySelector("[data-copy-script-multi]").onclick = async () => { await copyText(scriptMultiText); };
+        modal.querySelector("[data-close]").onclick = () => close(tok);
+      } catch (ex) {
+        saveBtn.disabled = false;
+        err.textContent = ex.message || "Could not create token";
+      }
+    };
+    document.body.appendChild(modal);
+    requestAnimationFrame(() => requestAnimationFrame(() => modal.classList.add("show")));
+    setTimeout(() => modal.querySelector("#tok-create-name")?.focus(), 80);
+  }
+
+  function showRestorePrompt() {
+    if (state.restoreGateDone || state.askedRestore || state.me?.kind !== "owner") return;
+    state.askedRestore = true;
+    const modal = el(`<div class="modal-back" id="restore-modal">
+      <div class="modal-card">
+        <h3>Do you have a GitHub backup?</h3>
+        <p class="muted">If yes, enter your classic PAT and we validate the account. If no, continue to the panel.</p>
+        <div id="rm-step1" class="row-actions" style="margin-top:16px">
+          <button class="btn primary action" id="rm-yes">Yes, I have a backup</button>
+          <button class="btn ghost action" id="rm-no">No</button>
+        </div>
+        <form id="rm-pat" class="hidden" style="margin-top:14px">
+          <div class="field"><label>GitHub PAT (classic · repo + delete_repo)</label>
+            <input name="token" type="password" required placeholder="ghp_…" autocomplete="off" /></div>
+          <p class="error" id="rm-err"></p>
+          <div class="row-actions">
+            <button class="btn primary action" type="submit">Validate & unlock Restore</button>
+            <button class="btn ghost" type="button" id="rm-back">Back</button>
+          </div>
+        </form>
+      </div>
+    </div>`);
+    document.body.appendChild(modal);
+    const done = () => {
+      localStorage.setItem("vr_restore_gate", "1");
+      state.restoreGateDone = true;
+      modal.remove();
+    };
+    modal.querySelector("#rm-no").onclick = () => { done(); };
+    modal.querySelector("#rm-yes").onclick = () => {
+      modal.querySelector("#rm-step1").classList.add("hidden");
+      modal.querySelector("#rm-pat").classList.remove("hidden");
+    };
+    modal.querySelector("#rm-back").onclick = () => {
+      modal.querySelector("#rm-pat").classList.add("hidden");
+      modal.querySelector("#rm-step1").classList.remove("hidden");
+    };
+    modal.querySelector("#rm-pat").onsubmit = async (e) => {
+      e.preventDefault();
+      const err = modal.querySelector("#rm-err");
+      err.textContent = "";
+      try {
+        const bk = await api("/api/backup/token", {
+          method: "POST",
+          body: JSON.stringify({ token: new FormData(e.target).get("token") }),
+        });
+        state.backupReady = !!bk.configured;
+        done();
+        setView("restore");
+      } catch (ex) {
+        err.textContent = ex.message || "Invalid token";
+      }
+    };
+  }
+
+  function parseEnvForm(text) {
+    const rows = [];
+    String(text || "").split(/\r?\n/).forEach((line) => {
+      const t = line.trim();
+      if (!t || t.startsWith("#")) return;
+      const i = t.indexOf("=");
+      if (i < 0) return;
+      rows.push({ key: t.slice(0, i).trim(), value: t.slice(i + 1) });
+    });
+    if (!rows.length) rows.push({ key: "", value: "" });
+    return rows;
+  }
+
+  function envToText(form) {
+    const lines = [];
+    form.querySelectorAll(".env-row").forEach((row) => {
+      const k = row.querySelector("[name=key]").value.trim();
+      const v = row.querySelector("[name=value]").value;
+      if (!k) return;
+      lines.push(`${k}=${v}`);
+    });
+    return lines.join("\n") + (lines.length ? "\n" : "");
   }
 
   async function renderDocs() {
@@ -3272,12 +3642,9 @@ Never DELETE via API. One token = all rooms.`;
       const lines = (state.termLines || []).join("") || "Room shell. Default: isolated room files on the VPS (not docker exec). Pick a running container only if you need a shell inside it.\n";
       const prompt = `root@${room.name}:~#`;
       const hostBtn = `<button type="button" class="btn sm action ${pick === "host" ? "primary" : ""}" data-term-ctr="host">Room shell</button>`;
-      body = `<div class="panel" style="margin-bottom:10px"><div class="row-actions" style="flex-wrap:wrap" id="term-ctrs">${hostBtn}${containers.map((c) => `<button type="button" class="btn sm action ${pick === c.id ? "primary" : ""}" data-term-ctr="${esc(c.id)}">${esc(ctrNum(c))} ${esc(ctrLabel(c))}</button>`).join("")}</div></div>` + agentDeskHTML({
-        title: "Terminal",
+      body = `<div class="panel" style="margin-bottom:10px"><div class="row-actions" style="flex-wrap:wrap" id="term-ctrs">${hostBtn}${containers.map((c) => `<button type="button" class="btn sm action ${pick === c.id ? "primary" : ""}" data-term-ctr="${esc(c.id)}">${esc(ctrNum(c))} ${esc(ctrLabel(c))}</button>`).join("")}</div></div>` + realTermHTML({
         prompt,
         termLines: lines,
-        showTerm: true,
-        hints: TERM_HINTS.map((h) => `<button type="button" class="hint" data-hint="${esc(h.cmd)}" title="${esc(h.tip)}">${esc(h.cmd)}</button>`).join(""),
       });
     }
 
@@ -3396,8 +3763,16 @@ Never DELETE via API. One token = all rooms.`;
       document.querySelector("#rpass")?.addEventListener("submit", async (e) => {
         e.preventDefault();
         try {
-          await api(`/api/rooms/${id}/password`, { method: "POST", body: JSON.stringify({ password: new FormData(e.target).get("password") }) });
+          const res = await api(`/api/rooms/${id}/password`, { method: "POST", body: JSON.stringify({ password: new FormData(e.target).get("password") }) });
           e.target.reset();
+          toast("Password updated — all devices signed out");
+          if (res.logged_out && state.me?.kind === "room") {
+            state.me = null;
+            setView("server");
+            await loadMe();
+            renderUnlock();
+            return;
+          }
           flashOk();
           render();
         } catch (ex) { document.querySelector("#rerr").textContent = ex.message; }
@@ -3725,91 +4100,17 @@ Never DELETE via API. One token = all rooms.`;
           render();
         };
       });
-      const termOut = document.querySelector("#term-out");
-      const prompt = `root@${room.name}:~# `;
-      const persist = (line) => {
-        state.termLines = state.termLines || [];
-        state.termLines.push(line);
-      };
-      const execBody = (cmd) => JSON.stringify({
-        command: cmd,
-        host: state.termCtr === "host" || !state.termCtr,
-        container_id: state.termCtr && state.termCtr !== "host" ? state.termCtr : "",
-        project_id: mainProj?.id || "",
-        timeout_sec: 600,
-      });
-      const agent = bindAgentChat({
-        key: id,
-        stillHere: () => state.view === "room" && state.roomId === id && (state.roomTab || "") === "terminal",
-        aiPath: `/api/rooms/${id}/ai`,
-        execFn: (cmd) => api(`/api/rooms/${id}/exec`, {
-          method: "POST",
-          body: execBody(cmd),
-        }),
-        termOut,
+      const prompt = `root@${room.name}:~#`;
+      bindPlainTerminal({
+        persistKey: "termLines",
         prompt,
-        hello: ROOM_HELLO,
-        toolScope: "room",
-        roomId: id,
-        seedContext: `SYSTEM CONTEXT (do not ask again): You are inside room "${room.name}". id=${id}. ` +
-          `Disk used ${fmtBytes(room.usage_bytes)} of quota ${room.quota_bytes ? fmtBytes(room.quota_bytes) : "not set"} (writable data). Project size ${fmtBytes(room.footprint_bytes)} including image ${fmtBytes(room.image_bytes)}. ` +
-          `Containers: ${(containers || []).map((c) => `${ctrNum(c)} ${ctrLabel(c)} image=${c.image} status=${c.status}`).join("; ") || "none (empty room — git clone and dockerize here)"}. ` +
-          `Commands run in the room shell on the VPS unless they pick a container. Put every action in command; explain it in say. ` +
-          `If they ask for usage, answer with those numbers in one say. To update this room they POST a tar to /api/v1/projects/${id}/upload (or Overview → Update). Same call every time. GitHub should POST and exit; watch this page. You may also publish a Docker update on this same id (image + start). You may edit files via the terminal after reading them. Refuse deleting this room.`,
-        onQuota: (gb) => api(`/api/rooms/${id}/quota`, { method: "POST", body: JSON.stringify({ quota_gb: gb }) }),
-        onStart: async (image) => {
-          const text = await streamFetch(`/api/rooms/${id}/update`, {
-            method: "POST",
-            body: JSON.stringify({ image, project_id: mainProj?.id || "" }),
-          }, (chunk) => appendTerm(termOut, chunk));
-          if (/error:/i.test(text) && !/OK project=/.test(text)) throw new Error(text.slice(-300));
+        execPath: `/api/rooms/${id}/exec`,
+        bodyExtra: {
+          host: state.termCtr === "host" || !state.termCtr,
+          container_id: state.termCtr && state.termCtr !== "host" ? state.termCtr : "",
+          project_id: mainProj?.id || "",
         },
-        onAction: (action) => api(`/api/rooms/${id}/${action}`, { method: "POST" }),
-        onTermLine: persist,
       });
-      document.querySelectorAll("[data-hint]").forEach((b) => {
-        b.onclick = () => {
-          const inp = document.querySelector("#term-cmd");
-          if (inp) { inp.value = b.dataset.hint; inp.focus(); }
-        };
-      });
-      document.querySelector("#term-form")?.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const inp = document.querySelector("#term-cmd");
-        const cmd = String(inp?.value || "").trim();
-        if (!cmd) return;
-        inp.value = "";
-        const head = prompt + cmd + "\n";
-        if (termOut) {
-          termOut.textContent += head;
-          termOut.scrollTop = termOut.scrollHeight;
-        }
-        persist(head);
-        try {
-          const res = await api(`/api/rooms/${id}/exec`, {
-            method: "POST",
-            body: execBody(cmd),
-          });
-          const where = res.where ? `[${res.where}] ` : "";
-          const out = where + (res.output || "") + (res.error ? `\n${res.error}` : "");
-          const line = out + (out.endsWith("\n") ? "" : "\n");
-          if (termOut) {
-            termOut.textContent += line;
-            termOut.scrollTop = termOut.scrollHeight;
-          }
-          persist(line);
-          agent.pack.messages.push({ role: "user", text: "I ran this in the terminal: " + cmd });
-          agent.pack.messages.push({
-            role: "terminal",
-            text: `exit ${res.exit ?? (res.error ? 1 : 0)}\n${out}`.slice(0, 12000),
-          });
-        } catch (ex) {
-          const err = (ex.message || ex) + "\n";
-          if (termOut) termOut.textContent += err;
-          persist(err);
-        }
-      });
-      document.querySelector("#term-cmd")?.focus();
     }
 
     if (deploying && state.view === "room" && state.roomId === id) {
@@ -3838,47 +4139,78 @@ Never DELETE via API. One token = all rooms.`;
   async function renderTerminal() {
     const gen = state._gen;
     const prompt = "root@vps:~#";
-    const lines = (state.termHostLines || []).join("") || "Connected to this VPS as root. Commands run on the host (not inside a room container).\n";
+    const lines = (state.termHostLines || []).join("") || "";
     shell(`
       <div class="topbar"><div>
         <h2>Terminal</h2>
-        <div class="sub">Live VPS shell · already connected</div>
+        <div class="sub">Root shell on this VPS</div>
       </div></div>
-      ${agentDeskHTML({
-        title: "Host agent",
-        prompt,
-        termLines: lines,
-        showTerm: true,
-        placeholder: "Ask to run something, or type below…",
-        hints: TERM_HINTS.map((h) => `<button type="button" class="hint" data-hint="${esc(h.cmd)}" title="${esc(h.tip)}">${esc(h.cmd)}</button>`).join(""),
-      })}`, "terminal");
+      ${realTermHTML({ prompt, termLines: lines })}`, "terminal");
     if (!alive("terminal", gen)) return;
+    bindPlainTerminal({
+      persistKey: "termHostLines",
+      prompt,
+      execPath: "/api/host/exec",
+    });
+  }
+
+  async function renderAgent() {
+    const gen = state._gen;
+    const prompt = "root@vps:~#";
+    const lines = (state.agentTermLines || []).join("") || "";
+    shell(`
+      <div class="topbar"><div>
+        <h2>Agent</h2>
+        <div class="sub">Full VPS operator · root terminal + tools</div>
+      </div></div>
+      <div class="agent-workbench">
+        ${realTermHTML({ prompt, termLines: lines })}
+        <section class="ai-sheet ai-sheet-embed agent-panel" id="ai-chat">
+          <header class="ai-sheet-bar"><span class="ai-live"></span>Agent</header>
+          <div class="ai-chat-log" id="ai-log"></div>
+          <form class="ai-compose" id="ai-form" dir="ltr">
+            <div class="ai-compose-box">
+              <textarea id="ai-q" rows="1" maxlength="8000" dir="auto" placeholder="Ask the agent to do something…"></textarea>
+              ${sendIconHTML()}
+            </div>
+          </form>
+        </section>
+      </div>`, "agent");
+    if (!alive("agent", gen)) return;
     const termOut = document.querySelector("#term-out");
     const persist = (line) => {
-      state.termHostLines = state.termHostLines || [];
-      state.termHostLines.push(line);
+      state.agentTermLines = state.agentTermLines || [];
+      state.agentTermLines.push(line);
     };
-    const agent = bindAgentChat({
-      key: "host-term",
-      stillHere: () => state.view === "terminal",
-      aiPath: "/api/host/ai",
+    bindAgentChat({
+      key: "panel-agent",
+      stillHere: () => state.view === "agent",
+      aiPath: "/api/agent/chat",
       execFn: (cmd) => api("/api/host/exec", {
         method: "POST",
         body: JSON.stringify({ command: cmd, timeout_sec: 600 }),
       }),
       termOut,
       prompt: prompt + " ",
-      hello: HOST_HELLO,
-      toolScope: "host",
-      seedContext: "SYSTEM: You are root on this VPS. The terminal is already connected. Run real host commands. Explain each command in say. Use tools for metrics.",
+      hello: AGENT_PAGE_HELLO,
+      toolScope: "agent",
+      seedContext: "SYSTEM: You are the single VPS Agent with root shell. Use tools for inventory. Use command for real work. Create rooms when needed. Loop until done.",
       onTermLine: persist,
     });
-    document.querySelectorAll("[data-hint]").forEach((b) => {
-      b.onclick = () => {
-        const inp = document.querySelector("#term-cmd");
-        if (inp) { inp.value = b.dataset.hint; inp.focus(); }
-      };
+    bindPlainTerminal({
+      persistKey: "agentTermLines",
+      prompt,
+      execPath: "/api/host/exec",
+      alsoNotifyAgent: true,
     });
+  }
+
+  function bindPlainTerminal({ persistKey, prompt, execPath, alsoNotifyAgent, bodyExtra }) {
+    const termOut = document.querySelector("#term-out");
+    const persist = (line) => {
+      state[persistKey] = state[persistKey] || [];
+      state[persistKey].push(line);
+    };
     document.querySelector("#term-form")?.addEventListener("submit", async (e) => {
       e.preventDefault();
       const inp = document.querySelector("#term-cmd");
@@ -3892,10 +4224,8 @@ Never DELETE via API. One token = all rooms.`;
       }
       persist(head);
       try {
-        const res = await api("/api/host/exec", {
-          method: "POST",
-          body: JSON.stringify({ command: cmd, timeout_sec: 600 }),
-        });
+        const payload = Object.assign({ command: cmd, timeout_sec: 600 }, bodyExtra || {});
+        const res = await api(execPath, { method: "POST", body: JSON.stringify(payload) });
         const where = res.where ? `[${res.where}] ` : "";
         const out = where + (res.output || "") + (res.error ? `\n${res.error}` : "");
         const line = out + (out.endsWith("\n") ? "" : "\n");
@@ -3904,11 +4234,14 @@ Never DELETE via API. One token = all rooms.`;
           termOut.scrollTop = termOut.scrollHeight;
         }
         persist(line);
-        agent.pack.messages.push({ role: "user", text: "I ran this in the terminal: " + cmd });
-        agent.pack.messages.push({
-          role: "terminal",
-          text: `exit ${res.exit ?? (res.error ? 1 : 0)}\n${out}`.slice(0, 12000),
-        });
+        if (alsoNotifyAgent) {
+          const pack = roomAIState("panel-agent");
+          pack.messages.push({ role: "user", text: "I ran this in the terminal: " + cmd });
+          pack.messages.push({
+            role: "terminal",
+            text: `exit ${res.exit ?? (res.error ? 1 : 0)}\n${out}`.slice(0, 12000),
+          });
+        }
       } catch (ex) {
         const err = (ex.message || ex) + "\n";
         if (termOut) termOut.textContent += err;
@@ -3924,6 +4257,7 @@ Never DELETE via API. One token = all rooms.`;
     if (!state.me) { renderUnlock(); return; }
     if (state.me.kind === "owner") {
       if (state.view === "rooms") return renderRooms();
+      if (state.view === "agent") return renderAgent();
       if (state.view === "terminal") return renderTerminal();
       if (state.view === "logs") return renderLogs();
       if (state.view === "docs") return renderDocs();

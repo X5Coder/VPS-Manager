@@ -76,8 +76,12 @@ func (s *Server) handleHostPassword(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Password) < 8 {
-		writeErr(w, 400, "password must be at least 8 characters")
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, 400, "invalid request")
+		return
+	}
+	if err := validateLinuxRootPassword(body.Password); err != nil {
+		writeErr(w, 400, err.Error())
 		return
 	}
 	if err := setHostRootPassword(body.Password); err != nil {
@@ -86,7 +90,7 @@ func (s *Server) handleHostPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	saveHostPass(s.Cfg.DataDir, body.Password)
 	_ = appendLog(s.Cfg.DataDir, "host", "root password changed via panel")
-	writeJSON(w, 200, map[string]string{"ok": "1"})
+	writeJSON(w, 200, map[string]string{"ok": "1", "changed": "1"})
 }
 
 func (s *Server) handleNotifySettings(w http.ResponseWriter, r *http.Request) {
@@ -1078,7 +1082,19 @@ func (s *Server) handleRoomPassword(w http.ResponseWriter, r *http.Request, room
 		writeErr(w, 400, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]string{"ok": "1"})
+	tok := s.cookieToken(r)
+	kickSelf := false
+	if tok != "" {
+		if sess, _ := s.Store.GetSession(tok); sess != nil && sess.Kind == "room" && sess.RoomID == roomID {
+			kickSelf = true
+		}
+	}
+	// Force every device out of this room so the new password is required.
+	_ = s.Store.DeleteSessionsByRoom(roomID)
+	if kickSelf {
+		s.clearSessionCookie(w)
+	}
+	writeJSON(w, 200, map[string]any{"ok": "1", "logged_out": true})
 }
 
 func (s *Server) handleRoomName(w http.ResponseWriter, r *http.Request, roomID string) {
