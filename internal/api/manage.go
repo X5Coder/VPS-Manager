@@ -1013,18 +1013,11 @@ func (s *Server) handleRoomEnv(w http.ResponseWriter, r *http.Request, roomID st
 			writeErr(w, 400, "invalid request")
 			return
 		}
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		if err := s.writeRoomEnv(roomID, body.Content); err != nil {
 			writeErr(w, 400, err.Error())
 			return
 		}
-		if err := os.WriteFile(path, []byte(body.Content), 0o600); err != nil {
-			writeErr(w, 400, err.Error())
-			return
-		}
-		if first != nil {
-			_ = s.Projects.WriteEnv(first.ID, body.Content)
-		}
-		writeJSON(w, 200, map[string]string{"ok": "1"})
+		writeJSON(w, 200, map[string]string{"ok": "1", "recreated": "1"})
 		return
 	}
 	writeErr(w, 405, "method")

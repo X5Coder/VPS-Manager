@@ -78,9 +78,9 @@ func (s *Server) writeRoomEnv(roomID, text string) error {
 	}
 	projs, _ := s.Store.ListProjects(roomID)
 	if len(projs) > 0 {
-		_ = s.Projects.WriteEnv(projs[0].ID, text)
+		return s.Projects.WriteEnv(projs[0].ID, text)
 	}
-	return nil
+	return s.Projects.SyncAndApplyRoomEnv(roomID, text)
 }
 
 func (s *Server) envSetKeys(roomID string, pairs [][2]string, replace bool) error {

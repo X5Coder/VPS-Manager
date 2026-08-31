@@ -20,11 +20,7 @@
     termHostLines: [],
     shellBuilt: false,
     busy: false,
-    askedRestore: false,
-    backupReady: false,
-    restoreGateDone: localStorage.getItem("vr_restore_gate") === "1",
     showNetPanel: false,
-    jobWasRunning: false,
     aiByRoom: {},
     _gen: 0,
     cache: {},
@@ -193,7 +189,6 @@
       server: `<svg ${p}><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7h.01M7 17h.01"/></svg>`,
       rooms: `<svg ${p}><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>`,
       terminal: `<svg ${p}><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></svg>`,
-      restore: `<svg ${p}><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>`,
       logs: `<svg ${p}><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></svg>`,
       docs: `<svg ${p}><path d="M7 3h8l5 5v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M15 3v5h5M9 13h6M9 17h4"/></svg>`,
       settings: `<svg ${p}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9c.3.7.9 1.2 1.6 1.4H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>`,
@@ -1599,7 +1594,6 @@
         return "/projects";
       case "server": return "/server";
       case "terminal": return "/terminal";
-      case "restore": return "/restore";
       case "tokens": return "/tokens";
       case "logs": return "/logs";
       case "settings": return "/settings";
@@ -1623,7 +1617,6 @@
     if (p === "/tokens" || p === "/api") return { view: "tokens" };
     if (p === "/deploy") return { view: "rooms" };
     if (p === "/terminal") return { view: "terminal" };
-    if (p === "/restore") return { view: "restore" };
     if (p === "/logs") return { view: "logs" };
     if (p === "/settings") return { view: "settings" };
     if (p === "/room") return { view: "room" };
@@ -2061,7 +2054,7 @@
 
     const nav = root.querySelector("#nav");
     const items = isOwner
-      ? [["server", "Server"], ["rooms", "Rooms"], ["terminal", "Terminal"], ["restore", "Backup"], ["logs", "Logs"], ["tokens", "Tokens"], ["docs", "Docs"], ["settings", "Settings"]]
+      ? [["server", "Server"], ["rooms", "Rooms"], ["terminal", "Terminal"], ["logs", "Logs"], ["tokens", "Tokens"], ["docs", "Docs"], ["settings", "Settings"]]
       : [["room", "Room"], ["rooms", "All rooms"]];
     const highlight = navHighlight(active || state.view);
     nav.innerHTML = items.map(([k, label]) => {
@@ -2917,664 +2910,6 @@ Never DELETE via API. One token = all rooms.`;
     });
   }
 
-  function jobIsLive(bk, job) {
-    return !!(bk && bk.running) || !!(job && (job.status === "running" || job.status === "queued"));
-  }
-
-  async function stopBackupJob() {
-    const err = document.querySelector("#bakerr");
-    if (err) err.textContent = "";
-    const lastPct = Math.max(0, Number(document.querySelector(".job-pct")?.textContent) || 0);
-    try {
-      await api("/api/backup/stop", { method: "POST", body: "{}" });
-      toast("Cancelled — previous snapshot kept");
-      const nowBtn = document.querySelector("#bak-now");
-      if (nowBtn) { nowBtn.disabled = false; nowBtn.dataset.lock = "0"; }
-      document.querySelector(".restore-hero")?.classList.remove("is-running");
-      paintJob({
-        kind: "backup",
-        status: "paused",
-        message: "Paused — press Start to continue from this point",
-        progress: "Paused",
-        percent: lastPct,
-        logs: ["Paused — checkpoint kept"],
-      }, "#job-live");
-      setTimeout(() => { if (state.view === "restore") renderRestore(); }, 800);
-    } catch (ex) {
-      const msg = ex.message || "Cancel failed";
-      if (err) err.textContent = msg;
-      else toast(msg);
-    }
-  }
-
-  async function startBackupNow() {
-    const err = document.querySelector("#bakerr");
-    const ok = document.querySelector("#bakok");
-    if (err) err.textContent = "";
-    ok?.classList.add("hidden");
-    const res = await api("/api/backup/now", {
-      method: "POST",
-      body: JSON.stringify({
-        label: "Backup now",
-        description: "Full per-room snapshot to a new GitHub repository",
-      }),
-    });
-    if (ok) {
-      ok.textContent = res.message || "Backup started on server.";
-      ok.classList.remove("hidden");
-    }
-    const nowBtn = document.querySelector("#bak-now");
-    if (nowBtn) { nowBtn.dataset.lock = "1"; nowBtn.disabled = true; }
-    document.querySelector(".restore-hero")?.classList.add("is-running");
-    const lastPct = Math.max(0, Number(document.querySelector(".job-pct")?.textContent) || 0);
-    paintJob({
-      kind: "backup", status: "running", percent: lastPct || 2,
-      message: "Room backup started",
-      progress: "Checking rooms…", logs: ["Checking rooms…"],
-    }, "#job-live");
-    startJobPoll("restore");
-  }
-
-  function jobPanelHTML(job) {
-    if (!job) return "";
-    const pct = Math.max(0, Math.min(100, Number(job.percent) || 0));
-    const logs = (job.logs || []).map(formatJobLogLine).join("\n");
-    const err = job.error ? `\nERROR: ${job.error}` : "";
-    const when = job.started_at ? fmtWhen(job.started_at) : "";
-    return `<div class="job-banner ${esc(job.status || "")}" id="job-banner">
-      <div class="job-live">
-        <div class="job-live-head">
-          <div>
-            <strong>${esc((job.kind || "job").toUpperCase())} · ${esc(job.status || "")}${job.label ? ` · ${esc(job.label)}` : ""}</strong>
-            <div class="muted" style="margin-top:4px">${esc(job.message || "")}${when ? ` · started ${esc(when)}` : ""}</div>
-            <div class="mono" style="margin-top:6px;font-size:0.8rem">${esc(job.progress || "")}</div>
-          </div>
-          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px">
-            <div class="job-pct mono">${pct}%</div>
-            ${job.status === "running" || job.status === "queued"
-              ? `<button class="btn sm danger action" type="button" id="bak-stop">Cancel</button>`
-              : (job.status === "paused" || job.status === "cancelled"
-                ? `<button class="btn sm primary action" type="button" id="bak-resume">Start</button>`
-                : "")}
-          </div>
-        </div>
-        <div class="job-bar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><span style="width:${pct}%"></span></div>
-        <pre class="job-log">${esc(logs + err) || "Waiting for log…"}</pre>
-      </div>
-    </div>`;
-  }
-
-  function paintJob(job, selector) {
-    const el = document.querySelector(selector || "#job-live");
-    if (!el) return;
-    el.innerHTML = jobPanelHTML(job);
-    const log = el.querySelector(".job-log");
-    if (log) log.scrollTop = log.scrollHeight;
-    const running = !!(job && (job.status === "running" || job.status === "queued"));
-    document.querySelector(".restore-hero")?.classList.toggle("is-running", running);
-    const nowBtn = document.querySelector("#bak-now");
-    if (nowBtn && running) {
-      nowBtn.disabled = true;
-      nowBtn.dataset.lock = "1";
-    } else if (nowBtn) {
-      nowBtn.dataset.lock = "0";
-    }
-    const stopBtn = el.querySelector("#bak-stop");
-    if (stopBtn) bindAction(stopBtn, stopBackupJob);
-    const resumeBtn = el.querySelector("#bak-resume");
-    if (resumeBtn) bindAction(resumeBtn, async () => {
-      try { await startBackupNow(); } catch (ex) { toast(ex.message || "Start failed"); }
-    });
-  }
-
-  function startJobPoll(where) {
-    ensureBackupWatch();
-    clearTimeout(state.jobTimer);
-    const tick = async () => {
-      const onPage = state.view === "restore";
-      if (!onPage) return;
-      try {
-        const bk = await api("/api/backup/status");
-        paintJob(bk.job, "#job-live");
-        const btn = document.querySelector("#bak-now");
-        const running = jobIsLive(bk, bk.job);
-        if (btn) {
-          btn.disabled = running || !bk.enabled;
-          btn.dataset.lock = running ? "1" : "0";
-        }
-        if (running) {
-          state.jobWasRunning = true;
-          state.jobTimer = setTimeout(tick, 1000);
-        } else {
-          state.jobTimer = setTimeout(tick, 2500);
-          if (state.jobWasRunning && !running) {
-            state.jobWasRunning = false;
-            if (where !== "settings" && state.view === "restore") {
-              setTimeout(() => { if (state.view === "restore") renderRestore(); }, 800);
-            }
-          }
-        }
-      } catch {
-        state.jobTimer = setTimeout(tick, 2000);
-      }
-    };
-    tick();
-  }
-
-  function ensureBackupWatch() {
-    if (state._bakWatch) return;
-    state._bakWatch = setInterval(async () => {
-      if (state.me?.kind !== "owner") return;
-      try {
-        const bk = await api("/api/backup/status");
-        const running = jobIsLive(bk, bk.job);
-        document.querySelector('[data-go="restore"]')?.classList.toggle("nav-busy", running);
-        if (running) state.jobWasRunning = true;
-        if (state.view === "restore" && running) {
-          paintJob(bk.job, "#job-live");
-          const btn = document.querySelector("#bak-now");
-          if (btn) btn.disabled = true;
-        }
-      } catch {}
-    }, 2000);
-  }
-
-  async function renderRestore() {
-    const gen = state._gen;
-    shell(`
-      <div class="topbar restore-hero">
-        <div>
-          <h2>Backup</h2>
-          <div class="sub restore-sub"><span class="restore-live" aria-hidden="true"></span>Per-room snapshots · new GitHub repo each time</div>
-        </div>
-      </div>${skel(3)}`, "restore");
-    let bk = {};
-    try { bk = await api("/api/backup/status"); } catch (e) {
-      if (!alive("restore", gen)) return;
-      shell(`<p class="error">${esc(e.message)}</p>`, "restore"); return;
-    }
-    if (!alive("restore", gen)) return;
-    state.backupReady = !!bk.configured;
-    const job = bk.job;
-    const live = jobIsLive(bk, job);
-    const rooms = bk.rooms || [];
-    const days = Number(bk.interval_days) === 2 || Number(bk.interval_hours) === 48 ? 2
-      : (Number(bk.interval_days) === 3 || Number(bk.interval_hours) === 72 ? 3 : 1);
-    const note = bk.enabled
-      ? `On · @${bk.github_user || "?"} · next ${fmtWhen(bk.next_backup_at || "—")}`
-      : "Paste a classic PAT with repo + delete_repo. We test create, upload, and delete before saving.";
-    const roomCards = rooms.map((r) => {
-      const ok = r.ok && r.repo;
-      return `<article class="snap-card ${ok ? "ok" : "miss"}">
-        <div class="snap-card-top">
-          <div>
-            <h3>${esc(r.name || r.room_id)}</h3>
-            <div class="muted">${esc(r.kind || "room")}</div>
-          </div>
-          <span class="snap-mark" title="${ok ? "Last snapshot ok" : "No snapshot yet"}">${ok ? "✓" : "–"}</span>
-        </div>
-        <div class="mono snap-repo">${esc(r.repo || "no repository yet")}</div>
-        <div class="muted">${ok ? `Last backup ${esc(fmtWhen(r.at || ""))}` : "Not backed up yet"}</div>
-      </article>`;
-    }).join("") || `<p class="muted">No rooms on this VPS yet.</p>`;
-
-    shell(`
-      <div class="topbar restore-hero ${live ? "is-running" : ""}">
-        <div>
-          <h2>Backup</h2>
-          <div class="sub restore-sub"><span class="restore-live" aria-hidden="true"></span>${esc(note)}</div>
-        </div>
-        <div class="topbar-actions">
-          <button class="btn primary action bak-now-btn" id="bak-now" ${!bk.enabled || live ? "disabled" : ""}>
-            <span class="bak-now-ring" aria-hidden="true"></span>
-            Backup now
-          </button>
-        </div>
-      </div>
-      <div class="panel bak-switch-card">
-        <div class="bak-switch-row">
-          <div>
-            <h3>GitHub key</h3>
-            <p class="muted">Classic PAT with <span class="mono">repo</span> and <span class="mono">delete_repo</span>. Tested (create → upload → delete) before it is saved.</p>
-          </div>
-          <label class="switch" title="Enable backup">
-            <input type="checkbox" id="bak-enable" ${bk.enabled ? "checked" : ""} />
-            <span class="switch-ui"></span>
-          </label>
-        </div>
-        <p class="ok-text" id="ghsaved">${bk.configured ? `Key saved (${esc(bk.token_hint || "••••")}) for @${esc(bk.github_user || "?")}` : ""}</p>
-        <form id="gh-form" class="form-grid" style="margin-top:12px">
-          <div class="field full"><label>Account key (GitHub PAT)</label>
-            <input name="token" type="password" placeholder="${bk.configured ? "Paste a new key only to replace" : "ghp_…"}" autocomplete="off" /></div>
-          <div class="full" style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="btn primary action" type="submit">Test & save</button>
-            ${bk.configured ? `<button class="btn sm danger action" type="button" id="gh-clear">Remove key</button>` : ""}
-          </div>
-        </form>
-        <p class="error" id="gherr"></p>
-        <div class="field" style="margin-top:14px">
-          <label>Check every</label>
-          <select id="bak-interval">
-            <option value="1"${days === 1 ? " selected" : ""}>1 day</option>
-            <option value="2"${days === 2 ? " selected" : ""}>2 days</option>
-            <option value="3"${days === 3 ? " selected" : ""}>3 days</option>
-          </select>
-          <p class="muted" style="margin-top:6px">Each due run (1–3 days) backs up rooms that are new or changed. Unchanged rooms are skipped. If a room is gone from the VPS, its GitHub backup repos are deleted on that same run.</p>
-        </div>
-      </div>
-      <div id="job-live">${job ? jobPanelHTML(job) : ""}</div>
-      <div class="panel" style="margin-top:12px">
-        <h3>Rooms</h3>
-        <div class="snap-grid">${roomCards}</div>
-        <p class="error" id="bakerr">${esc(bk.last_error || "")}</p>
-        <p class="ok-text hidden" id="bakok"></p>
-      </div>
-      <div class="panel" style="margin-top:12px">
-        <h3>Restore a room</h3>
-        <p class="muted">Paste a PAT (or use the saved one). Rooms appear by name. Restore keeps the original room ID even if the name or password changed. Other rooms stay as they are.</p>
-        <form id="inspect-form" class="form-grid" style="margin-top:10px">
-          <div class="field full"><label>PAT (optional if saved)</label><input name="token" type="password" placeholder="ghp_…" /></div>
-          <div class="full"><button class="btn action" type="submit">Find rooms on GitHub</button></div>
-        </form>
-        <div id="remote-box" class="muted" style="margin-top:10px"></div>
-      </div>`, "restore");
-
-    const setBakErr = (msg) => {
-      const el = document.querySelector("#gherr");
-      if (el) el.textContent = msg || "";
-    };
-    document.querySelector("#bak-interval")?.addEventListener("change", async (e) => {
-      const daysN = Number(e.target.value);
-      try {
-        await api("/api/backup/schedule", { method: "POST", body: JSON.stringify({ days: daysN }) });
-        toast("Schedule saved");
-        renderRestore();
-      } catch (ex) {
-        setBakErr(ex.message);
-      }
-    });
-    document.querySelector("#bak-enable")?.addEventListener("change", async (e) => {
-      const on = !!e.target.checked;
-      setBakErr("");
-      const raw = String(document.querySelector("#gh-form [name=token]")?.value || "").trim();
-      if (on && !bk.configured && !raw) {
-        e.target.checked = false;
-        setBakErr("Paste a GitHub classic PAT with repo and delete_repo, then turn it on.");
-        return;
-      }
-      try {
-        const res = await api("/api/backup/enable", {
-          method: "POST",
-          body: JSON.stringify({ enabled: on, token: raw }),
-        });
-        state.backupReady = !!res.configured;
-        toast(on ? "Backup enabled" : "Backup turned off");
-        renderRestore();
-      } catch (ex) {
-        e.target.checked = !on;
-        setBakErr(ex.message);
-      }
-    });
-    document.querySelector("#gh-form")?.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      setBakErr("");
-      const raw = String(new FormData(e.target).get("token") || "").trim();
-      if (!raw && !bk.configured) {
-        setBakErr("Paste a GitHub classic PAT with repo and delete_repo.");
-        return;
-      }
-      try {
-        const res = await api("/api/backup/enable", {
-          method: "POST",
-          body: JSON.stringify({ enabled: true, token: raw }),
-        });
-        state.backupReady = !!res.configured;
-        toast("Key tested — create, upload, and delete succeeded");
-        renderRestore();
-      } catch (ex) { setBakErr(ex.message); }
-    });
-    bindAction(document.querySelector("#gh-clear"), async () => {
-      await api("/api/backup/token", { method: "DELETE" });
-      state.backupReady = false;
-      toast("GitHub key removed");
-      renderRestore();
-    });
-
-    startJobPoll("restore");
-
-    bindAction(document.querySelector("#bak-now"), async () => {
-      const err = document.querySelector("#bakerr");
-      try {
-        await startBackupNow();
-      } catch (ex) { if (err) err.textContent = ex.message; }
-    });
-
-    document.querySelector("#inspect-form").onsubmit = async (e) => {
-      e.preventDefault();
-      const box = document.querySelector("#remote-box");
-      const tok = new FormData(e.target).get("token");
-      box.textContent = "Checking…";
-      try {
-        const res = await api("/api/backup/inspect", { method: "POST", body: JSON.stringify({ token: tok }) });
-        const list = res.rooms || [];
-        if (!list.length) {
-          box.innerHTML = `<p class="muted">No room snapshots with format VPS-ROOM-SNAP-v1 on this account.</p>`;
-          return;
-        }
-        box.innerHTML = `<p class="ok-text">Format OK · ${list.length} room(s) — tick rooms then Restore selected, or restore all</p>
-          <div class="row-actions" style="margin:10px 0 12px">
-            <button class="btn sm action" type="button" id="snap-all">Select all</button>
-            <button class="btn sm action" type="button" id="snap-none">Clear</button>
-            <button class="btn sm primary action" type="button" id="snap-restore-sel">Restore selected</button>
-            <button class="btn primary action" type="button" id="snap-restore-all">Restore all rooms</button>
-          </div>
-          <div class="snap-grid">${list.map((s) => `
-            <article class="snap-card ok">
-              <label class="snap-check">
-                <input type="checkbox" data-remote="${esc(s.repo)}" data-name="${esc(s.name || s.room_id)}" />
-                <div>
-                  <h3>${esc(s.name || s.room_id)}</h3>
-                  <div class="mono snap-repo">${esc(s.repo)}</div>
-                  <div class="muted">${esc(fmtWhen(s.at || ""))}</div>
-                </div>
-              </label>
-            </article>`).join("")}</div>`;
-        const picked = () => [...box.querySelectorAll("input[data-remote]:checked")].map((el) => el.dataset.remote).filter(Boolean);
-        const runRestore = async (repos, all) => {
-          if (!all && !repos.length) {
-            toast("Tick at least one room");
-            return;
-          }
-          const body = all ? { token: tok, all: true } : { token: tok, repos };
-          const r = await api("/api/backup/restore", { method: "POST", body: JSON.stringify(body) });
-          const ok = document.querySelector("#bakok");
-          if (ok) { ok.textContent = r.message || "Restore started."; ok.classList.remove("hidden"); }
-          setTimeout(() => renderRestore(), 600);
-        };
-        box.querySelector("#snap-all")?.addEventListener("click", () => {
-          box.querySelectorAll("input[data-remote]").forEach((el) => { el.checked = true; });
-        });
-        box.querySelector("#snap-none")?.addEventListener("click", () => {
-          box.querySelectorAll("input[data-remote]").forEach((el) => { el.checked = false; });
-        });
-        bindAction(box.querySelector("#snap-restore-sel"), async () => {
-          const repos = picked();
-          if (!confirm(`Restore ${repos.length} selected room(s)? Each keeps its original room ID. Other rooms stay as they are.`)) return;
-          await runRestore(repos, false);
-        });
-        bindAction(box.querySelector("#snap-restore-all"), async () => {
-          if (!confirm(`Restore ALL ${list.length} rooms from GitHub? Each keeps its original room ID.`)) return;
-          await runRestore([], true);
-        });
-      } catch (ex) { box.innerHTML = `<p class="error">${esc(ex.message)}</p>`; }
-    };
-  }
-
-  function tokenCardHTML(t, opts = {}) {
-    const secret = t.secret || opts.secret || "";
-    const prompt = t.prompt || opts.prompt || "";
-    const apiSheet = t.api || opts.api || "";
-    const script = t.script || t.script_single || opts.script || "";
-    const scriptMulti = t.script_multi || opts.scriptMulti || "";
-    const fresh = opts.fresh ? " tok-fresh" : "";
-    const copyVal = secret || "";
-    const roomLabel = "all rooms";
-    return `<div class="tok-card${fresh}" data-tok-id="${esc(t.id)}">
-      <div class="tok-card-top">
-        <div>
-          <strong>${esc(t.name)}</strong>
-          <span class="badge ok">${esc(roomLabel)}</span>
-        </div>
-        <div class="row-actions">
-          <button class="btn sm action" type="button" data-copy-prompt ${prompt ? "" : "disabled"} title="Full AI prompt">Copy prompt</button>
-          <button class="btn sm action" type="button" data-copy-api ${apiSheet ? "" : "disabled"} title="BASE and TOKEN only">Copy API</button>
-          <button class="btn sm action" type="button" data-copy-script ${script ? "" : "disabled"} title="GitHub Action — single .tar">Copy single script</button>
-          <button class="btn sm action" type="button" data-copy-script-multi ${scriptMulti ? "" : "disabled"} title="GitHub Action — multi .tar.gz">Copy multi script</button>
-          <button class="btn sm danger action" data-del-tok="${esc(t.id)}">Revoke</button>
-        </div>
-      </div>
-      <div class="secret-row tok-secret-row">
-        <span class="secret-mask">${copyVal ? "••••••••••••••••••••" : (esc(t.token_prefix || "••••") + "…")}</span>
-      </div>
-      ${prompt ? `<textarea class="hidden tok-prompt" readonly>${esc(prompt)}</textarea>` : ""}
-      ${apiSheet ? `<textarea class="hidden tok-api" readonly>${esc(apiSheet)}</textarea>` : ""}
-      ${script ? `<textarea class="hidden tok-script" readonly>${esc(script)}</textarea>` : ""}
-      ${scriptMulti ? `<textarea class="hidden tok-script-multi" readonly>${esc(scriptMulti)}</textarea>` : ""}
-      <div class="muted" style="font-size:0.75rem;margin-top:6px">one API · all rooms · set ROOM_ID in the script · created ${esc(t.created_at || "")}${t.last_used_at ? " · last used " + esc(t.last_used_at) : ""}</div>
-    </div>`;
-  }
-
-  async function renderTokens() {
-    const gen = state._gen;
-    shell(`<div class="topbar"><div><h2>Tokens</h2><div class="sub">API keys · agent helps you create and use them</div></div></div>${skel(3)}`, "tokens");
-    let tokens = [];
-    try {
-      tokens = await api("/api/settings/tokens");
-    } catch (e) {
-      if (!alive("tokens", gen)) return;
-      shell(`<p class="error">${esc(e.message)}</p>`, "tokens"); return;
-    }
-    if (!alive("tokens", gen)) return;
-    let list = tokens || [];
-    const empty = !list.length;
-    const cards = list.map((t) => tokenCardHTML(t)).join("");
-    const hero = empty ? `
-      <div class="tok-hero" id="tok-hero">
-        <p class="muted">One API for all rooms. Create by name only — then set ROOM_ID in GitHub.</p>
-        <button class="btn primary action" id="tok-hero-new" type="button">Create API</button>
-      </div>` : "";
-    const agentBlock = agentDeskHTML({
-      title: "Tokens agent",
-      showTerm: false,
-    });
-
-    shell(`
-      <div class="topbar"><div>
-        <h2>Tokens</h2>
-        <div class="sub">${list.length ? `${list.length} saved` : "One API for all rooms · set ROOM_ID in GitHub"}</div>
-      </div>
-        ${`<button class="btn primary action" id="tok-new" type="button">Create token</button>`}
-      </div>
-      <div id="tok-fresh"></div>
-      <div id="tok-list" class="tok-list">${cards}${hero}</div>
-      ${agentBlock}`, "tokens");
-
-    const paintList = (items, fresh) => {
-      const box = document.querySelector("#tok-list");
-      if (!box) return;
-      const freshTok = fresh ? (fresh.token || fresh) : null;
-      const freshId = freshTok && freshTok.id;
-      const rest = (items || []).filter((t) => !freshId || t.id !== freshId);
-      box.innerHTML = rest.map((t) => tokenCardHTML(t)).join("") || (freshId ? "" : `<div class="tok-hero" id="tok-hero"><p class="muted">No API tokens yet</p><button class="btn primary action" id="tok-hero-new" type="button">Create new token</button></div>`);
-      const top = document.querySelector("#tok-fresh");
-      if (top) {
-        top.innerHTML = freshTok ? tokenCardHTML(freshTok, { secret: fresh.secret || freshTok.secret, prompt: fresh.prompt || freshTok.prompt, api: fresh.api || freshTok.api, script: fresh.script || freshTok.script, fresh: true }) : "";
-      }
-      bindCopyables();
-      document.querySelectorAll("[data-copy-prompt]").forEach((b) => {
-        b.onclick = async () => {
-          const pre = b.closest(".tok-card")?.querySelector(".tok-prompt");
-          await copyText(pre ? pre.value || pre.textContent : "");
-        };
-      });
-      document.querySelectorAll("[data-copy-api]").forEach((b) => {
-        b.onclick = async () => {
-          const pre = b.closest(".tok-card")?.querySelector(".tok-api");
-          await copyText(pre ? pre.value || pre.textContent : "");
-        };
-      });
-      document.querySelectorAll("[data-copy-script]").forEach((b) => {
-        b.onclick = async () => {
-          const pre = b.closest(".tok-card")?.querySelector(".tok-script");
-          await copyText(pre ? pre.value || pre.textContent : "");
-        };
-      });
-      document.querySelectorAll("[data-copy-script-multi]").forEach((b) => {
-        b.onclick = async () => {
-          const pre = b.closest(".tok-card")?.querySelector(".tok-script-multi");
-          await copyText(pre ? pre.value || pre.textContent : "");
-        };
-      });
-      document.querySelectorAll("[data-del-tok]").forEach((btn) => bindAction(btn, async () => {
-        if (!confirm("Revoke this API token?")) return;
-        await api(`/api/settings/tokens/${btn.dataset.delTok}`, { method: "DELETE" });
-        renderTokens();
-      }));
-      document.querySelector("#tok-hero-new")?.addEventListener("click", openCreate);
-    };
-    const openCreate = () => openCreateTokenModal(async (created) => {
-      if (!created) return;
-      list = [created, ...list.filter((t) => t.id !== created.id)];
-      await renderTokens();
-    });
-    paintList(list);
-    document.querySelector("#tok-new")?.addEventListener("click", openCreate);
-
-    bindAgentChat({
-        key: "tokens",
-        stillHere: () => state.view === "tokens",
-        aiPath: "/api/tokens/ai",
-        hello: TOKEN_HELLO,
-        toolScope: "tokens",
-        onToken: (res) => {
-          const tok = Object.assign({}, res.token || {}, { secret: res.secret, prompt: res.prompt, api: res.api, script: res.script, script_multi: res.script_multi });
-          if (!tok.id) return;
-          list = [tok, ...list.filter((t) => t.id !== tok.id && String(t.name || "").toLowerCase() !== String(tok.name || "").toLowerCase())];
-          paintList(list, { token: tok, secret: tok.secret, prompt: res.prompt || tok.prompt, api: res.api || tok.api, script: res.script || tok.script, scriptMulti: res.script_multi || tok.script_multi });
-        },
-      });
-  }
-
-  function openCreateTokenModal(onDone) {
-    document.getElementById("tok-create-modal")?.remove();
-    const modal = el(`<div class="modal-back logout-modal" id="tok-create-modal">
-      <div class="modal-card logout-card tok-create-card">
-        <div id="tok-create-form">
-          <h3>Create API</h3>
-          <p class="muted">One key for <strong>all rooms</strong>. Update a room by POSTing a tar to <code>/upload</code>. In GitHub, set <code>ROOM_ID</code> — the Action should exit after HTTP 200.</p>
-          <div class="field" style="margin-top:14px"><label>Name</label>
-            <input id="tok-create-name" type="text" maxlength="64" placeholder="My API key" autocomplete="off" /></div>
-          <p class="error" id="tok-create-err"></p>
-          <div class="row-actions" style="margin-top:16px">
-            <button class="btn ghost" type="button" data-cancel>Cancel</button>
-            <button class="btn primary action" type="button" data-save>Create API</button>
-          </div>
-        </div>
-        <div id="tok-create-done" class="hidden">
-          <h3>API created</h3>
-          <p class="muted" id="tok-create-done-note">Copy prompt = AI brief. Copy API = BASE and TOKEN. Copy script = GitHub YAML that POSTs the tar and exits.</p>
-          <div class="secret-row" style="margin-top:12px">
-            <code class="tok-plain" id="tok-create-secret"></code>
-          </div>
-          <div class="row-actions" style="margin-top:16px;flex-wrap:wrap">
-            <button class="btn primary action" type="button" data-copy-script>Copy single script</button>
-            <button class="btn action" type="button" data-copy-script-multi>Copy multi script</button>
-            <button class="btn action" type="button" data-copy-api>Copy API</button>
-            <button class="btn action" type="button" data-copy-prompt>Copy prompt</button>
-            <button class="btn ghost" type="button" data-close>Done</button>
-          </div>
-        </div>
-      </div>
-    </div>`);
-    const close = (created) => {
-      modal.classList.remove("show");
-      modal.classList.add("hide");
-      setTimeout(() => {
-        modal.remove();
-        if (created && onDone) onDone(created);
-      }, 280);
-    };
-    modal.querySelector("[data-cancel]").onclick = () => close(null);
-    modal.addEventListener("click", (e) => { if (e.target === modal) close(null); });
-    modal.querySelector("[data-save]").onclick = async () => {
-      const err = modal.querySelector("#tok-create-err");
-      const saveBtn = modal.querySelector("[data-save]");
-      err.textContent = "";
-      const name = (modal.querySelector("#tok-create-name").value || "").trim() || "API token";
-      saveBtn.disabled = true;
-      try {
-        const res = await api("/api/settings/tokens", { method: "POST", body: JSON.stringify({ name }) });
-        const tok = Object.assign({}, res.token || {}, { secret: res.secret, prompt: res.prompt, api: res.api, script: res.script, script_multi: res.script_multi });
-        const secret = res.secret || tok.secret || "";
-        modal.querySelector("#tok-create-form").classList.add("hidden");
-        const done = modal.querySelector("#tok-create-done");
-        done.classList.remove("hidden");
-        done.classList.add("tok-in");
-        modal.querySelector("#tok-create-secret").textContent = secret;
-        const promptText = res.prompt || tok.prompt || "";
-        const apiText = res.api || tok.api || "";
-        const scriptText = res.script || tok.script || "";
-        const scriptMultiText = res.script_multi || tok.script_multi || "";
-        modal.querySelector("[data-copy-prompt]").onclick = async () => { await copyText(promptText); };
-        modal.querySelector("[data-copy-api]").onclick = async () => { await copyText(apiText); };
-        modal.querySelector("[data-copy-script]").onclick = async () => { await copyText(scriptText); };
-        modal.querySelector("[data-copy-script-multi]").onclick = async () => { await copyText(scriptMultiText); };
-        modal.querySelector("[data-close]").onclick = () => close(tok);
-      } catch (ex) {
-        saveBtn.disabled = false;
-        err.textContent = ex.message || "Could not create token";
-      }
-    };
-    document.body.appendChild(modal);
-    requestAnimationFrame(() => requestAnimationFrame(() => modal.classList.add("show")));
-    setTimeout(() => modal.querySelector("#tok-create-name")?.focus(), 80);
-  }
-
-  function showRestorePrompt() {
-    if (state.restoreGateDone || state.askedRestore || state.me?.kind !== "owner") return;
-    state.askedRestore = true;
-    const modal = el(`<div class="modal-back" id="restore-modal">
-      <div class="modal-card">
-        <h3>Do you have a GitHub backup?</h3>
-        <p class="muted">If yes, enter your classic PAT and we validate the account. If no, continue to the panel.</p>
-        <div id="rm-step1" class="row-actions" style="margin-top:16px">
-          <button class="btn primary action" id="rm-yes">Yes, I have a backup</button>
-          <button class="btn ghost action" id="rm-no">No</button>
-        </div>
-        <form id="rm-pat" class="hidden" style="margin-top:14px">
-          <div class="field"><label>GitHub PAT (classic · repo + delete_repo)</label>
-            <input name="token" type="password" required placeholder="ghp_…" autocomplete="off" /></div>
-          <p class="error" id="rm-err"></p>
-          <div class="row-actions">
-            <button class="btn primary action" type="submit">Validate & unlock Restore</button>
-            <button class="btn ghost" type="button" id="rm-back">Back</button>
-          </div>
-        </form>
-      </div>
-    </div>`);
-    document.body.appendChild(modal);
-    const done = () => {
-      localStorage.setItem("vr_restore_gate", "1");
-      state.restoreGateDone = true;
-      modal.remove();
-    };
-    modal.querySelector("#rm-no").onclick = () => { done(); };
-    modal.querySelector("#rm-yes").onclick = () => {
-      modal.querySelector("#rm-step1").classList.add("hidden");
-      modal.querySelector("#rm-pat").classList.remove("hidden");
-    };
-    modal.querySelector("#rm-back").onclick = () => {
-      modal.querySelector("#rm-pat").classList.add("hidden");
-      modal.querySelector("#rm-step1").classList.remove("hidden");
-    };
-    modal.querySelector("#rm-pat").onsubmit = async (e) => {
-      e.preventDefault();
-      const err = modal.querySelector("#rm-err");
-      err.textContent = "";
-      try {
-        const bk = await api("/api/backup/token", {
-          method: "POST",
-          body: JSON.stringify({ token: new FormData(e.target).get("token") }),
-        });
-        state.backupReady = !!bk.configured;
-        done();
-        setView("restore");
-      } catch (ex) {
-        err.textContent = ex.message || "Invalid token";
-      }
-    };
-  }
-
   function parseEnvForm(text) {
     const rows = [];
     String(text || "").split(/\r?\n/).forEach((line) => {
@@ -3919,7 +3254,7 @@ Never DELETE via API. One token = all rooms.`;
           </div>
         </div>
         <p class="muted mono" style="margin-bottom:6px">${esc(envMeta.path || "")}</p>
-        <p class="muted" style="margin:0 0 10px;font-size:0.82rem">Shared secrets for this room (all containers). After save, pause then resume so services reload the values.</p>
+        <p class="muted" style="margin:0 0 10px;font-size:0.82rem">Shared secrets for this room (all containers). Save recreates Docker so new values are loaded.</p>
         <form id="env-form" class="env-form">
           ${rows.map((r) => `<div class="env-row">
             <input name="key" placeholder="KEY" value="${esc(r.key)}" />
@@ -3929,7 +3264,7 @@ Never DELETE via API. One token = all rooms.`;
         </form>
         <textarea class="file-editor hidden" id="env-raw">${esc(envMeta.content || "")}</textarea>
         <p class="error" id="enverr"></p>
-        <p class="ok-text hidden" id="envok">Saved.</p>
+        <p class="ok-text hidden" id="envok">Saved — containers recreated with new env.</p>
       </div>`;
     } else if (tab === "terminal") {
       const pick = state.termCtr || "host";
@@ -4588,17 +3923,14 @@ Never DELETE via API. One token = all rooms.`;
     if (!state.me) await loadMe();
     if (!state.me) { renderUnlock(); return; }
     if (state.me.kind === "owner") {
-      ensureBackupWatch();
       if (state.view === "rooms") return renderRooms();
       if (state.view === "terminal") return renderTerminal();
       if (state.view === "logs") return renderLogs();
       if (state.view === "docs") return renderDocs();
       if (state.view === "settings") return renderSettings();
-      if (state.view === "restore") return renderRestore();
       if (state.view === "tokens") return renderTokens();
       if (state.view === "room") return renderRoom();
       await renderServer();
-      showRestorePrompt();
       return;
     }
     return renderRoom();
@@ -4630,10 +3962,6 @@ Never DELETE via API. One token = all rooms.`;
       await loadMe();
       if (state.me) {
         connectWS();
-        try {
-          const bk = await api("/api/backup/status");
-          state.backupReady = !!bk.configured;
-        } catch {}
       }
     }
     await render();

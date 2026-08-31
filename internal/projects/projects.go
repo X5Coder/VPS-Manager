@@ -819,15 +819,162 @@ func (s *Service) WriteEnv(id, text string) error {
 	if err := s.prepareRoom(p.RoomID); err != nil {
 		return err
 	}
-	path := filepath.Join(s.Rooms.ProjectDir(p.RoomID, p.ID), ".env")
+	pdir := s.Rooms.ProjectDir(p.RoomID, p.ID)
+	path := filepath.Join(pdir, ".env")
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err
 	}
 	if err := writeEnv(path, text); err != nil {
 		return err
 	}
+	s.syncEnvCopies(p.RoomID, pdir, text)
 	s.persistRoom(p.RoomID)
+	// Docker freezes process env at create time — recreate so new values apply.
+	return s.ApplyRoomEnv(p.RoomID)
+}
+
+// SyncAndApplyRoomEnv writes room-level env copies (no project row) then recreates.
+func (s *Service) SyncAndApplyRoomEnv(roomID, text string) error {
+	if err := s.prepareRoom(roomID); err != nil {
+		return err
+	}
+	s.syncEnvCopies(roomID, "", text)
+	return s.ApplyRoomEnv(roomID)
+}
+
+// ApplyRoomEnv recreates every running stack/container in the room after .env changes.
+func (s *Service) ApplyRoomEnv(roomID string) error {
+	if s.Docker == nil || !s.Docker.Available() {
+		return nil
+	}
+	room, err := s.Store.GetRoom(roomID)
+	if err != nil || room == nil {
+		return fmt.Errorf("room not found")
+	}
+	_ = s.prepareRoom(roomID)
+
+	// Prefer compose stacks (multi package under runtime/<room>/stack, or project mounts).
+	composeDone := map[string]bool{}
+	tryCompose := func(dir, proj string) error {
+		dir = strings.TrimSpace(dir)
+		if dir == "" || dockerx.ComposeFile(dir) == "" {
+			return nil
+		}
+		key := filepath.Clean(dir) + "|" + proj
+		if composeDone[key] {
+			return nil
+		}
+		if proj == "" {
+			proj = "vr" + store.ShortRoomID(roomID)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+		defer cancel()
+		out, err := s.Docker.ComposeCmd(ctx, dir, proj, "up", "-d", "--force-recreate", "--remove-orphans", "--pull", "never")
+		composeDone[key] = true
+		if err != nil {
+			msg := strings.TrimSpace(string(out))
+			if msg != "" {
+				return fmt.Errorf("compose recreate for env: %s: %w", msg, err)
+			}
+			return fmt.Errorf("compose recreate for env: %w", err)
+		}
+		return nil
+	}
+
+	stackHandled := false
+	if s.Rooms != nil && s.Rooms.RuntimeDir != "" {
+		stackRoot := filepath.Join(s.Rooms.RuntimeDir, roomID, "stack")
+		if root := findComposeRoot(stackRoot); root != "" {
+			if err := tryCompose(root, "vr"+store.ShortRoomID(roomID)); err != nil {
+				return err
+			}
+			stackHandled = true
+		}
+	}
+
+	list, _ := s.Store.ListProjects(roomID)
+	for i := range list {
+		p := list[i]
+		pdir := s.Rooms.ProjectDir(roomID, p.ID)
+		meta := readMountsMeta(pdir)
+		composeDir := strings.TrimSpace(meta.ComposeDir)
+		if composeDir == "" {
+			composeDir = pdir
+		}
+		if dockerx.ComposeFile(composeDir) != "" {
+			if err := tryCompose(composeDir, meta.ComposeProject); err != nil {
+				return err
+			}
+			continue
+		}
+		if stackHandled {
+			continue
+		}
+		if strings.TrimSpace(p.Image) == "" && strings.TrimSpace(p.ContainerID) == "" {
+			continue
+		}
+		if err := s.recreateKeep(&p, room, p.Image, room.QuotaBytes, io.Discard); err != nil {
+			return fmt.Errorf("recreate for env: %w", err)
+		}
+	}
+	s.SyncRoomFilesVisibility(roomID)
+	s.persistRoom(roomID)
+	s.touchProxy()
 	return nil
+}
+
+func findComposeRoot(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	if dockerx.ComposeFile(dir) != "" {
+		return dir
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range ents {
+		if !e.IsDir() {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
+		if dockerx.ComposeFile(p) != "" {
+			return p
+		}
+	}
+	return ""
+}
+
+// syncEnvCopies mirrors project .env to room / compose / files roots so
+// docker compose substitution and bind mounts all see the same values.
+func (s *Service) syncEnvCopies(roomID, pdir, text string) {
+	if s.Rooms != nil && s.Rooms.RuntimeDir != "" {
+		roomEnv := filepath.Join(s.Rooms.RuntimeDir, roomID, ".env")
+		_ = os.MkdirAll(filepath.Dir(roomEnv), 0o700)
+		_ = writeEnv(roomEnv, text)
+		if root := findComposeRoot(filepath.Join(s.Rooms.RuntimeDir, roomID, "stack")); root != "" {
+			_ = writeEnv(filepath.Join(root, ".env"), text)
+		}
+	}
+	if strings.TrimSpace(pdir) == "" {
+		return
+	}
+	meta := readMountsMeta(pdir)
+	seen := map[string]bool{filepath.Clean(filepath.Join(pdir, ".env")): true}
+	for _, dir := range []string{meta.ComposeDir, meta.FilesRoot} {
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			continue
+		}
+		dest := filepath.Clean(filepath.Join(dir, ".env"))
+		if seen[dest] {
+			continue
+		}
+		seen[dest] = true
+		_ = os.MkdirAll(dir, 0o750)
+		_ = writeEnv(dest, text)
+	}
 }
 
 func containerName(roomID, projectID string) string {
@@ -871,7 +1018,7 @@ func readMountsMeta(pdir string) mountsMeta {
 	return m
 }
 
-// ProjectLayout returns Files UI root + compose metadata for backup/restore.
+// ProjectLayout returns Files UI root + compose metadata.
 func ProjectLayout(pdir string) (filesRoot, composeDir, composeProject string, binds []string) {
 	m := readMountsMeta(pdir)
 	return m.FilesRoot, m.ComposeDir, m.ComposeProject, m.Binds
@@ -1077,7 +1224,7 @@ func pullableImage(image string) bool {
 	return dockerx.RegistryPullable(image)
 }
 
-// Redeploy recreates the container from restored files (full backup restore).
+// Redeploy recreates the container from project files on disk.
 func (s *Service) Redeploy(id string) error {
 	if s.Docker == nil || !s.Docker.Available() {
 		return fmt.Errorf("Docker unavailable")

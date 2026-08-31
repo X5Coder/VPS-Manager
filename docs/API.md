@@ -279,7 +279,3 @@ The Action **builds or packs**, then POSTs to the API. Use **one** workflow:
 
 Copy the matching script from Tokens. Set `ROOM_ID`. Repo **PRIVATE**.  
 Single Action fails if `compose.yml` or `images/*.tar` exist. Multi Action fails if `.yml` or `images/*.tar` is missing.
-
-## Backup
-
-See panel Restore. Layout: images on GitHub Releases, containers repo, volume repos (4GiB cap).

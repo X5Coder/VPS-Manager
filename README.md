@@ -1,6 +1,6 @@
 # VPS Manager
 
-Self-hosted panel for a VPS: rooms, Docker (single image or multi stack), API tokens, GitHub backup.
+Self-hosted panel for a VPS: rooms, Docker (single image or multi stack), API tokens.
 
 **Developer:** [X5Coder](https://github.com/X5Coder)  
 **Source:** [https://github.com/X5Coder/VPS-Manager](https://github.com/X5Coder/VPS-Manager)  

@@ -110,7 +110,7 @@ EOF
   fi
 fi
 
-# git required for GitHub backups
+# git may be used by room deploy workflows
 command -v git >/dev/null 2>&1 || apt-get install -y git >/dev/null 2>&1 || true
 
 sleep 2

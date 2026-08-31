@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/x5coder/vps-rooms/internal/auth"
-	"github.com/x5coder/vps-rooms/internal/backup"
 	"github.com/x5coder/vps-rooms/internal/config"
 	"github.com/x5coder/vps-rooms/internal/dockerx"
 	"github.com/x5coder/vps-rooms/internal/inventory"
@@ -38,7 +37,6 @@ type Server struct {
 	Gate           *telegram.Gate
 	Notify         *telegram.Notifier
 	Proxy          *proxy.Manager
-	Backup         *backup.Service
 	Mux            *http.ServeMux
 	jobsMu         sync.Mutex
 	jobs           map[string]string // projectID → deploy|build
@@ -58,26 +56,17 @@ func New(cfg config.Config, st *store.Store, docker *dockerx.Client, hub *metric
 	ps := &projects.Service{Store: st, Docker: docker, Rooms: rs, VolumesDir: cfg.VolumesDir}
 	sk := &stack.Service{Store: st, Docker: docker, Rooms: rs, RuntimeDir: cfg.RuntimeDir}
 	proxyDir := ensureProxyDir(cfg.DataDir)
-	work := filepath.Join(cfg.DataDir, "backup-work")
-	_ = os.MkdirAll(work, 0o750)
-	bs := &backup.Service{
-		Store: st, Rooms: rs, Projects: ps, Docker: docker,
-		DataDir: cfg.DataDir, RoomsDir: cfg.RoomsDir, RuntimeDir: cfg.RuntimeDir,
-		ProxyDir: proxyDir, DBPath: cfg.DBPath, OwnerPass: cfg.OwnerPass, WorkDir: work,
-	}
 	s := &Server{
 		Cfg: cfg, Store: st, Rooms: rs, Projects: ps, Stack: sk, Docker: docker, Metrics: hub,
 		Gate: telegram.NewGate(cfg.DataDir), Notify: telegram.NewNotifier(cfg.DataDir),
-		Proxy: proxy.New(proxyDir), Backup: bs,
+		Proxy: proxy.New(proxyDir),
 		Mux: http.NewServeMux(),
 	}
 	SweepStaleUploads(2 * time.Hour)
 	inventory.AdoptExisting(st, docker, rs, cfg.RuntimeDir)
 	go ps.AttachMissingDataVolumes()
-	bs.OnAfterRestore = func() error { return s.syncProxy() }
 	s.routes()
 	ps.AfterChange = func() { _ = s.syncProxy() }
-	bs.StartScheduler()
 	_ = s.syncProxy()
 	s.startLiveCache()
 	return s
@@ -118,7 +107,7 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("/api/agent/tool", s.withGate(s.handleAgentTool))
 	s.routesManage()
 	s.routesAPITokens()
-	s.routesBackupDomain()
+	s.routesProxyDomain()
 }
 
 func clientIP(r *http.Request) string {
