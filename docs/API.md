@@ -5,7 +5,6 @@ One token controls **every room**. Tokens → Create token.
 - **Copy API** = `BASE` + `TOKEN`
 - **Copy single script** = GitHub Action: `docker save` then POST `/upload` and **exit** (room updates in the panel)
 - **Copy multi script** = GitHub Action: pack compose + images, POST `/upload` and exit
-- **Copy prompt** = full AI brief (all commands, responses, errors, both YAMLs)
 
 Auth: `Authorization: Bearer YOUR_TOKEN`  
 Errors: `{ "ok": false, "error": "...", "code": "..." }` plus HTTP status.
@@ -69,6 +68,26 @@ curl -fS -H "Authorization: Bearer YOUR_TOKEN" \
 
 The API inspects the archive. Optional `-F container_id=CONTAINER_ID` updates one container in a multi room.
 
+The room **kind is locked at creation** (`single` or `multi`). Uploads that don't match are rejected:
+
+- Send a compose stack to a `single` room → **400** `package_kind_mismatch` («this room is single …»)
+- Send one image to a `multi` room → **400** `package_kind_mismatch` («this room is multi …»)
+
+A `single` update on a `multi` room is allowed only with `-F container_id=CONTAINER_ID` (update one service).
+
+### Secrets / env with the upload
+
+Send the project's secrets together with the package so the app never comes up empty (`${VAR}` in compose, or `os.getenv` inside the container, is filled before start). Add an `env` field — it becomes the room's `.env` (visible in the panel's **Secrets** area):
+
+```bash
+curl -fS -H "Authorization: Bearer YOUR_TOKEN" \
+  -F "env=@.env" \
+  -F "file=@app.tar" \
+  "http://YOUR_VPS_IP:9090/api/v1/projects/ROOM_ID/upload"
+```
+
+`env` accepts either a text form field (`-F "env=BOT_TOKEN=x"`) or a file (`-F "env=@.env"`). Values are stored in the panel secrets area and are **never** echoed in logs or the API — they only reach the container. A GitHub Action (see §11) builds `.env` and sends it, so secrets live in GitHub repo Secrets or a `secrets.env` file and the deploy is fully automated.
+
 **400** `package_empty` · `package_invalid` · `package_kind_mismatch` · `content_type` · `file_required`  
 **404** container not found · **409** deploy already running
 
@@ -109,7 +128,7 @@ POST   /api/v1/projects/ROOM_ID/env   {"variables":[{"key":"A","value":"1"},{"ke
 DELETE /api/v1/projects/ROOM_ID/env?key=API_KEY
 ```
 
-## 7. Images / volumes / compose / terminal / status / agent
+## 7. Images / volumes / compose / terminal / status
 
 ```
 GET  /api/v1/projects/ROOM_ID/images
@@ -130,8 +149,6 @@ POST /api/v1/projects/ROOM_ID/exec   {"command":"ls -la"}
 GET  /api/v1/projects/ROOM_ID/terminal/ws?access_token=TOKEN   interactive websocket
 GET  /api/v1/quota     GET only (POST → 405)
 GET  /api/v1/status   VPS + per-room storage (CPU/RAM per room is not live docker stats)
-POST /api/v1/agent    {"tool":"list_rooms"}
-POST /api/v1/agent/chat  {"messages":[{"role":"user","text":"..."}]}
 ```
 
 Create empty room also accepts `generate_password`, `domain`, `ssl`, `ssh_certificate`.
@@ -274,8 +291,19 @@ The Action **builds or packs**, then POSTs to the API. Use **one** workflow:
 
 | Kind | File | What it sends |
 | --- | --- | --- |
-| Single | `.github/workflows/vps-deploy-single.yml` | `app.tar` |
-| Multi | `.github/workflows/vps-deploy-multi.yml` | `project.vps.tar.gz` |
+| Auto | `.github/workflows/vps-deploy.yml` | detects single/multi, reuses or creates the room, uploads the package + `.env` (secrets) |
 
-Copy the matching script from Tokens. Set `ROOM_ID`. Repo **PRIVATE**.  
-Single Action fails if `compose.yml` or `images/*.tar` exist. Multi Action fails if `.yml` or `images/*.tar` is missing.
+Copy the Auto Action from Tokens. Repo **PRIVATE**. The Action:
+
+1. **Detects the kind itself** — `compose.yml` **+** `images/*.tar` → `multi`; otherwise builds a Dockerfile → `single` (`app.tar`).
+2. **Picks the room** — uses `ROOM_ID` (input or the `ROOM_ID` variable) when given, else **creates a new room** of the matching kind (from `name` + `quota_gb`) and uploads to it. A `single` room never receives a compose stack and vice-versa.
+3. **Ships all secrets** with the project (see below).
+
+### Secrets are deployed by the Action
+
+A GitHub Action is the single place that uploads **all** secrets with the project, whichever source they come from:
+
+- **GitHub repo Secrets** (`repo → Settings → Secrets and variables → Actions`) — add a line in the generated workflow's `env:` block, e.g. `BOT_TOKEN: \${{ secrets.BOT_TOKEN }}`. Unset keys are skipped, so it is safe to keep a shared template.
+- **Available in the repo** — commit a plain file named `secrets.env` (or reference your own `.env`); the Action copies it verbatim into `.env`.
+
+The Action merges both into `.env` and sends it as `-F "env=@.env"`. Never commit real secrets to git; prefer GitHub Secrets, or keep `secrets.env` out of `git` and generate it in the Action from `.env.example` + Secrets.

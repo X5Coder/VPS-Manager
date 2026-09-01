@@ -96,16 +96,9 @@ func (s *Server) routes() {
 
 	s.Mux.HandleFunc("/api/host", s.withGate(s.handleHostInfo))
 	s.Mux.HandleFunc("/api/host/exec", s.withGate(s.handleHostExec))
-	s.Mux.HandleFunc("/api/host/ai", s.withGate(s.handleHostAI))
 	s.Mux.HandleFunc("/api/deploy/pull", s.withGate(s.handleDeployPull))
-	s.Mux.HandleFunc("/api/deploy/ai", s.withGate(s.handleDeployAI))
 	s.Mux.HandleFunc("/api/deploy/exec", s.withGate(s.handleDeployExec))
 	s.Mux.HandleFunc("/api/deploy", s.withGate(s.autoDeploy))
-	s.Mux.HandleFunc("/api/tokens/ai", s.withGate(s.handleTokensAI))
-	s.Mux.HandleFunc("/api/logs/ai", s.withGate(s.handleLogsAI))
-	s.Mux.HandleFunc("/api/usage/ai", s.withGate(s.handleUsageAI))
-	s.Mux.HandleFunc("/api/agent/chat", s.withGate(s.handlePanelAgent))
-	s.Mux.HandleFunc("/api/agent/tool", s.withGate(s.handleAgentTool))
 	s.routesManage()
 	s.routesAPITokens()
 	s.routesProxyDomain()
@@ -704,6 +697,7 @@ func (s *Server) handleRooms(w http.ResponseWriter, r *http.Request) {
 		for _, rm := range list {
 			usage := s.cachedDisk(rm.ID)
 			projs, _ := s.Projects.List(rm.ID)
+			cts, _ := s.Store.ListContainers(rm.ID)
 			st := "empty"
 			hostPort := 0
 			cPort := 0
@@ -723,8 +717,34 @@ func (s *Server) handleRooms(w http.ResponseWriter, r *http.Request) {
 						break
 					}
 				}
+				if st == "stopped" && s.Docker != nil && projs[0].ContainerID != "" {
+					if x, err := s.Docker.InspectStatus(projs[0].ContainerID); err == nil && (x == "restarting" || x == "exited" || x == "dead") {
+						st = "error"
+					}
+				}
 			}
-			cts, _ := s.Store.ListContainers(rm.ID)
+			// A room can hold a compose stack / Docker repo with containers but no
+			// project rows (adopted or stack-deployed). It is NOT empty then.
+			if st == "empty" && len(cts) > 0 {
+				st = "stopped"
+				if s.Docker != nil {
+					for _, c := range cts {
+						ref := c.DockerID
+						if ref == "" {
+							ref = c.Name
+						}
+						if x, err := s.Docker.InspectStatus(ref); err == nil && x == "running" {
+							st = "running"
+							break
+						} else if c.Status == "running" {
+							st = "running"
+							break
+						} else if err == nil && (x == "restarting" || x == "exited" || x == "dead") {
+							st = "error"
+						}
+					}
+				}
+			}
 			imgs, _ := s.Store.ListImages(rm.ID)
 			vols, _ := s.Store.ListVolumes(rm.ID)
 			nC := len(cts)
@@ -875,9 +895,6 @@ func (s *Server) handleRoomByID(w http.ResponseWriter, r *http.Request) {
 		case "exec":
 			s.handleRoomExec(w, r, id)
 			return
-		case "ai":
-			s.handleRoomAI(w, r, id)
-			return
 		case "logs":
 			s.handleRoomLogs(w, r, id)
 			return
@@ -986,6 +1003,7 @@ func (s *Server) handleRoomByID(w http.ResponseWriter, r *http.Request) {
 		if projs == nil {
 			projs = []store.Project{}
 		}
+		cts, _ := s.Store.ListContainers(id)
 		usage := s.cachedDisk(id)
 		st := s.storageInfo()
 		avail := asInt64(st["quota_available"]) + room.QuotaBytes // can grow into free disk + reclaim current
@@ -1027,12 +1045,20 @@ func (s *Server) handleRoomByID(w http.ResponseWriter, r *http.Request) {
 		}
 		if busy != "" && roomStatus == "empty" {
 			roomStatus = "deploying"
-		} else if busy == "" && len(projs) > 0 {
+		} else if busy == "" && (len(projs) > 0 || len(cts) > 0) {
 			roomStatus = "stopped"
 			for _, p := range projs {
 				if p.Status == "running" {
 					roomStatus = "running"
 					break
+				}
+			}
+			if roomStatus != "running" {
+				for _, c := range cts {
+					if c.Status == "running" {
+						roomStatus = "running"
+						break
+					}
 				}
 			}
 		}

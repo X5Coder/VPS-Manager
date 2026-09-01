@@ -37,8 +37,8 @@ func TestCheckUploadMismatch(t *testing.T) {
 	tw.Close()
 	f.Close()
 	err = CheckUpload("app.tar", tarPath, "single", "", true)
-	if err != nil {
-		t.Fatalf("empty room accepts compose archive regardless of .tar name: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "package_kind_mismatch") {
+		t.Fatalf("single room (even empty) rejects a compose stack: got %v", err)
 	}
 	err = CheckUpload("app.tar", tarPath, "single", "", false)
 	if err == nil || !strings.Contains(err.Error(), "package_kind_mismatch") {

@@ -70,8 +70,6 @@ The panel creates the room, loads the image, and starts it.
 
 You can also pull a public image on the VPS (`docker pull nginx:alpine`) and set quota the same way.
 
-In a room **Ai Agent | Terminal** you can ask the assistant to inspect this project, run commands, and explain files after it reads them in the terminal.
-
 ## Change the Telegram owner id
 
 SSH into the VPS (that is the VPS/root password). Then run:

@@ -82,7 +82,7 @@ func (s *Server) portsPayload() map[string]any {
 }
 
 func (s *Server) tokenPublic(base string, t store.APIToken) map[string]any {
-	prompt, sheet, script, scriptMulti := s.tokenCopyFields(base, t.TokenPlain)
+	sheet, script, scriptMulti := s.tokenCopyFields(base, t.TokenPlain)
 	return map[string]any{
 		"id":            t.ID,
 		"name":          t.Name,
@@ -93,7 +93,6 @@ func (s *Server) tokenPublic(base string, t store.APIToken) map[string]any {
 		"created_at":    t.CreatedAt,
 		"last_used_at":  t.LastUsedAt,
 		"secret":        t.TokenPlain,
-		"prompt":        prompt,
 		"api":           sheet,
 		"script":        script,
 		"script_single": script,
@@ -140,7 +139,6 @@ func (s *Server) handleAPITokens(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{
 			"token":         tok,
 			"secret":        plain,
-			"prompt":        pub["prompt"],
 			"api":           pub["api"],
 			"script":        pub["script"],
 			"script_single": pub["script_single"],
@@ -282,8 +280,6 @@ func (s *Server) handleAPIV1(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.apiVPSLogs(w, r)
-	case "agent":
-		s.handleAPIV1Agent(w, r, parts[1:])
 	case "images":
 		s.handleAPIV1Images(w, r, parts[1:])
 	default:
@@ -446,6 +442,17 @@ func (s *Server) projectView(room *store.Room, p *store.Project) map[string]any 
 	if len(cts) > 1 {
 		out["kind"] = store.KindMulti
 	}
+	// A compose stack / Docker repo with containers (no project rows) is NOT empty.
+	if st == "empty" && len(cts) > 0 {
+		st = "stopped"
+		for _, c := range cts {
+			if c["status"] == "running" {
+				st = "running"
+				break
+			}
+		}
+		out["status"] = st
+	}
 	out["deployment_type"] = out["kind"]
 	out["containers"] = cts
 	out["images"] = s.roomImagesJSON(room.ID)
@@ -506,8 +513,8 @@ func (s *Server) projectView(room *store.Room, p *store.Project) map[string]any 
 					st = live
 				}
 			}
-			if st == "exited" {
-				st = "stopped"
+			if st == "exited" || st == "restarting" || st == "dead" {
+				st = "error"
 			}
 			staleMeta := meta.Status == "deploying" || meta.Status == "building"
 			staleProj := p.Status == "deploying" || p.Status == "building"
@@ -971,6 +978,25 @@ func (s *Server) apiDoRedeploy(p *store.Project, image string, pull, recreate bo
 	})
 }
 
+// readUploadEnv returns the env/secrets text shipped with a project upload.
+// It accepts either a text form field ("env") or an uploaded file ("env=@.env"),
+// so GitHub Actions can send a tracked or generated secrets file verbatim.
+func readUploadEnv(r *http.Request) string {
+	if env := strings.TrimSpace(r.FormValue("env")); env != "" {
+		return env
+	}
+	f, _, err := r.FormFile("env")
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, 2<<20))
+	if err != nil || len(b) == 0 {
+		return ""
+	}
+	return string(b)
+}
+
 func (s *Server) apiUploadProject(w http.ResponseWriter, r *http.Request, id string) {
 	room, p, err := s.resolveRoomProject(id)
 	if err != nil || room == nil {
@@ -992,6 +1018,11 @@ func (s *Server) apiUploadProject(w http.ResponseWriter, r *http.Request, id str
 	}
 	if r.MultipartForm != nil {
 		defer r.MultipartForm.RemoveAll()
+	}
+	// Secrets/env shipped with the project (GitHub Action or UI). Applied before
+	// the deploy so compose ${VAR} substitution / container env never come up empty.
+	if envText := readUploadEnv(r); envText != "" {
+		s.saveDeployEnv(room.ID, envText)
 	}
 	file, hdr, err := r.FormFile("file")
 	if err != nil {
@@ -1050,7 +1081,11 @@ func (s *Server) apiUploadProject(w http.ResponseWriter, r *http.Request, id str
 		}
 		go func() {
 			defer os.RemoveAll(tmp)
-			_ = s.applyImageTarOneContainer(room, ct, dest, io.Discard)
+			if err := s.applyImageTarOneContainer(room, ct, dest, io.Discard); err != nil {
+				_ = appendLog(s.Cfg.DataDir, "deploy", "FAIL room="+room.ID+" container="+ct.Name+" err="+err.Error())
+			} else {
+				_ = appendLog(s.Cfg.DataDir, "deploy", "UPLOAD-ONE room="+room.ID+" file="+fname+" container="+ct.Name)
+			}
 		}()
 		s.acceptedProject(w, room.ID, map[string]any{
 			"status": "deploying", "bytes": n, "container_id": ct.ID,
@@ -1060,7 +1095,11 @@ func (s *Server) apiUploadProject(w http.ResponseWriter, r *http.Request, id str
 	if s.Stack != nil && stack.ArchiveHasCompose(dest) {
 		go func() {
 			defer os.RemoveAll(tmp)
-			_ = s.Stack.DeployMulti(room, dest, io.Discard)
+			if err := s.Stack.DeployMulti(room, dest, io.Discard); err != nil {
+				_ = appendLog(s.Cfg.DataDir, "deploy", "FAIL room="+room.ID+" file="+fname+" multi err="+err.Error())
+			} else {
+				_ = appendLog(s.Cfg.DataDir, "deploy", "UPLOAD room="+room.ID+" file="+fname+" multi")
+			}
 		}()
 		s.acceptedProject(w, room.ID, map[string]any{
 			"status": "deploying",

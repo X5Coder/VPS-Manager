@@ -93,15 +93,16 @@ func CheckUpload(fname, path, roomKind, containerID string, emptyRoom bool) erro
 	if content == "" {
 		return fmt.Errorf("package_invalid: not a docker save image and not a compose stack. One image: docker save -o app.tar IMAGE. Multi: compose.yml + images/*.tar inside a .tar.gz")
 	}
-	if emptyRoom {
+	rk := strings.ToLower(strings.TrimSpace(roomKind))
+	if rk == "" {
+		// Kind not locked yet — accept; the deploy pins the room kind to content.
 		return nil
 	}
-	rk := strings.ToLower(strings.TrimSpace(roomKind))
 	if rk == "multi" && content == "single" && strings.TrimSpace(containerID) == "" {
-		return fmt.Errorf("package_kind_mismatch: this room is multi. Send a compose stack, or send one image with container_id")
+		return fmt.Errorf("package_kind_mismatch: this room is multi. Send a compose stack (.tar.gz), or send one image with container_id to update a single service")
 	}
 	if rk == "single" && content == "multi" {
-		return fmt.Errorf("package_kind_mismatch: this room is single. Send one docker-save image, not a compose stack")
+		return fmt.Errorf("package_kind_mismatch: this room is single. Send one docker-save image (.tar), not a compose stack (.tar.gz)")
 	}
 	if content == "multi" && strings.TrimSpace(containerID) != "" {
 		return fmt.Errorf("package_kind_mismatch: container_id is for one image, not a compose stack")

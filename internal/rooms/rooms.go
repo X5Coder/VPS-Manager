@@ -200,6 +200,25 @@ func (s *Service) Delete(id string) error {
 				ids[cid] = struct{}{}
 			}
 		}
+		// A compose/stack deploy names its project "vr<id8>" and attaches every
+		// container to the room network. Catch those so nothing is left behind.
+		proj := "vr" + store.ShortRoomID(id)
+		for _, cid := range s.Docker.IDsByFilter("label=com.docker.compose.project=" + proj) {
+			ids[cid] = struct{}{}
+		}
+		for _, cid := range s.Docker.IDsByFilter("network=" + r.NetworkName) {
+			ids[cid] = struct{}{}
+		}
+		// Containers recorded in the DB (panel or stack) must also be stopped/removed.
+		cts, _ := s.Store.ListContainers(id)
+		for _, c := range cts {
+			if c.DockerID != "" {
+				ids[c.DockerID] = struct{}{}
+			}
+			if c.Name != "" {
+				_ = s.Docker.RemoveByName(c.Name)
+			}
+		}
 		for _, p := range projects {
 			if p.ContainerID != "" {
 				ids[p.ContainerID] = struct{}{}

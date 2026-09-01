@@ -486,6 +486,13 @@ func (s *Store) DeleteSessionsByRoom(roomID string) error {
 	return err
 }
 
+// DeleteAllSessions revokes every session on every device. Used when the admin
+// panel password changes so all clients must re-authenticate.
+func (s *Store) DeleteAllSessions() error {
+	_, err := s.DB.Exec(`DELETE FROM sessions`)
+	return err
+}
+
 func (s *Store) CleanupSessions() error {
 	_, err := s.DB.Exec(`DELETE FROM sessions WHERE expires_at < ?`, time.Now().UTC().Format(time.RFC3339))
 	return err

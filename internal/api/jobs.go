@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/x5coder/vps-rooms/internal/projects"
@@ -201,9 +202,13 @@ func (s *Server) applyImageTarRoom(room *store.Room, p *store.Project, tarPath s
 		return want, nil
 	}
 	cPort, hPort := s.readRoomPending(room.ID)
+	envText := ""
+	if b, err := os.ReadFile(filepath.Join(s.Cfg.RuntimeDir, room.ID, ".env")); err == nil {
+		envText = string(b)
+	}
 	created, err := s.Projects.DeployImage(projects.DeployImageInput{
 		RoomID: room.ID, Name: room.Name, Image: want,
-		HostPort: hPort, ContainerPort: cPort, Log: logw,
+		HostPort: hPort, ContainerPort: cPort, EnvText: envText, Log: logw,
 	})
 	if err != nil {
 		s.Projects.MarkDeployResult(room.ID, room.ID, want, "", false, err.Error())

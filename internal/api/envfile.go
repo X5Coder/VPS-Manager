@@ -83,6 +83,30 @@ func (s *Server) writeRoomEnv(roomID, text string) error {
 	return s.Projects.SyncAndApplyRoomEnv(roomID, text)
 }
 
+// saveDeployEnv persists secrets/env sent with a project upload (GitHub Action
+// or UI) into the room and per-project .env files. It never forces a recreate —
+// the deploy path that follows (compose up / docker run) reads it and applies
+// ${VAR} substitution, so a project that needs secrets never comes up empty.
+func (s *Server) saveDeployEnv(roomID, text string) {
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	_ = s.Rooms.EnsureUnlocked(roomID)
+	// Room-level .env: docker compose reads this for ${VAR} substitution.
+	envPath := s.roomEnvPath(roomID)
+	_ = os.MkdirAll(filepath.Dir(envPath), 0o700)
+	_ = os.WriteFile(envPath, []byte(text), 0o600)
+	// Mirror into each existing project dir (covers single-image + one-container
+	// paths that read env pairs from the project .env).
+	projs, _ := s.Store.ListProjects(roomID)
+	for _, p := range projs {
+		pdir := s.Rooms.ProjectDir(roomID, p.ID)
+		_ = os.MkdirAll(pdir, 0o700)
+		_ = os.WriteFile(filepath.Join(pdir, ".env"), []byte(text), 0o600)
+	}
+}
+
 func (s *Server) envSetKeys(roomID string, pairs [][2]string, replace bool) error {
 	text, err := s.readRoomEnv(roomID)
 	if err != nil {

@@ -55,10 +55,30 @@ func (s *Service) DeployMulti(room *store.Room, archive string, log io.Writer) e
 	}
 	_ = s.Rooms.EnsureUnlocked(room.ID)
 	dir := filepath.Join(s.RuntimeDir, room.ID, "stack")
+	// Preserve persistent bind sources (data/volumes) across re-extraction. A
+	// compose app mounts ./data (and ./volumes) here; removing the dir would wipe
+	// the project's stored data on every re-deploy. Move them out, rebuild the
+	// packaging dir, then move them back.
+	saved := filepath.Join(s.RuntimeDir, room.ID, ".stack-preserve")
+	_ = os.RemoveAll(saved)
+	_ = os.MkdirAll(saved, 0o750)
+	for _, name := range []string{"data", "volumes", "__volumes"} {
+		src := filepath.Join(dir, name)
+		if st, err := os.Stat(src); err == nil && st.IsDir() {
+			_ = os.Rename(src, filepath.Join(saved, name))
+		}
+	}
 	_ = os.RemoveAll(dir)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
+	for _, name := range []string{"data", "volumes", "__volumes"} {
+		from := filepath.Join(saved, name)
+		if st, err := os.Stat(from); err == nil && st.IsDir() {
+			_ = os.Rename(from, filepath.Join(dir, name))
+		}
+	}
+	_ = os.RemoveAll(saved)
 	fmt.Fprintf(log, "Extracting package...\n")
 	if err := extractArchive(archive, dir); err != nil {
 		return err

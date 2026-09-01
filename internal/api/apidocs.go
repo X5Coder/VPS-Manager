@@ -45,7 +45,6 @@ Docs page: Tokens sidebar → Docs. Copy page copies this API brief (no install)
 2) Copy API = BASE + TOKEN.
 3) Copy single script → .github/workflows/vps-deploy-single.yml
    Copy multi script → .github/workflows/vps-deploy-multi.yml
-4) Copy prompt = full AI brief (this documentation + both YAMLs).
 
 401 unauthorized if the token is missing or wrong.`,
 
@@ -157,7 +156,6 @@ VOLUMES: GET/POST {{BASE}}/api/v1/projects/ROOM_ID/volumes
 IMAGES: GET {{BASE}}/api/v1/projects/ROOM_ID/images  POST .../images/load
 COMPOSE: GET .../compose  GET .../compose/validate  POST .../stack/start|stop|restart|remove
 STATUS: GET {{BASE}}/api/v1/status  (includes per-room cpu/ram/storage)
-AGENT: POST {{BASE}}/api/v1/agent  {"tool":"list_rooms"}
 EXEC waits until the command ends. stdout, stderr, exit_code. No 2-minute cap.
 Create room: generate_password, domain, ssl, ssh_certificate optional.
 

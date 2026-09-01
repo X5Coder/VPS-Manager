@@ -21,7 +21,6 @@
     shellBuilt: false,
     busy: false,
     showNetPanel: false,
-    aiByRoom: {},
     _gen: 0,
     cache: {},
   };
@@ -199,94 +198,6 @@
     return icons[k] || "";
   }
 
-  function roomAIState(id) {
-    if (!state.aiByRoom[id]) state.aiByRoom[id] = { messages: [], bubbles: [], busy: false, run: 0, rtl: false };
-    return state.aiByRoom[id];
-  }
-
-  function isRTLText(s) {
-    let ar = 0, lat = 0;
-    for (const ch of String(s || "")) {
-      const c = ch.codePointAt(0);
-      if (c >= 0x0600 && c <= 0x06FF) ar++;
-      else if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122)) lat++;
-    }
-    if (!ar && !lat) return false;
-    return ar >= lat;
-  }
-
-  function agentStatus(_pack, key) {
-    const en = {
-      think: "typing now…",
-      read: "typing now…",
-      quota: "Setting disk quota…",
-      type: "Typing in the terminal…",
-      run: "Running…",
-      start: "Starting the room…",
-    };
-    return en[key] || en.think;
-  }
-
-  const AGENT_HELLO = "Hello — you are already on this VPS. Write a command and I’ll run it in the terminal here. I will not SSH.";
-  const TOKEN_HELLO = "Hello — I explain the full API. Ask how to create a token, update a room, GitHub, or an empty room — I’ll pull that docs section and walk you through it.";
-  const ROOM_HELLO = "Hello — I’m inside this room on the VPS. Commands run in this terminal (room files by default). I can clone from GitHub, build Docker, and explain each command in chat. I won’t SSH and I won’t delete the room.";
-  const LOGS_HELLO = "Hello — I analyze panel logs. Ask me to analyze, then pick which log.";
-  const USAGE_HELLO = "Hello — I report real VPS numbers. 72 GB is the whole disk, not project quota. Room quota is DATA only (files/volumes), not Docker images.";
-  const AGENT_PAGE_HELLO = "Hello — I am the VPS Agent with a live root terminal. Ask me to clone a repo, create a room, check Docker, or run any task. I loop until it is done.";
-  const HOST_HELLO = "Hello — this is a real root shell on the VPS. Type a command or ask me; I will type it here and explain it in chat. I will not SSH.";
-
-  function sendIconHTML() {
-    return `<button class="ai-send" id="ai-send" type="submit" aria-label="Send">${planeIconSVG()}</button>
-            <button class="ai-stop" id="ai-stop" type="button" hidden>Stop</button>`;
-  }
-  function planeIconSVG() {
-    return `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3.4 20.6 21 12 3.4 3.4 3 10.2 15 12 3 13.8z"/></svg>`;
-  }
-  function stopIconSVG() {
-    return `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="7.5" y="7.5" width="9" height="9" rx="2"/></svg>`;
-  }
-
-  function agentDeskHTML({
-    title = "Agent",
-    prompt = "root@vps-manager:~#",
-    termLines = "ready\n",
-    showTerm = true,
-    placeholder = "Message…",
-    hints = "",
-    hiddenQuotaId = "",
-  } = {}) {
-    const p = String(prompt || "root@vps-manager:~#").replace(/\s+$/, "");
-    const hiddenQ = hiddenQuotaId
-      ? `<input type="hidden" id="${esc(hiddenQuotaId)}" name="quota_gb" value="0" data-quota-input />`
-      : "";
-    const term = showTerm
-      ? `<div class="agent-term">
-          <div class="agent-term-head"><span class="agent-dot" aria-hidden="true"></span><span class="mono">${esc(p)}</span></div>
-          <div class="term-out" id="term-out">${esc(termLines)}</div>
-          <form class="term-in" id="term-form">
-            <span class="prompt">${esc(p)}</span>
-            <input id="term-cmd" autocomplete="off" spellcheck="false" placeholder="command" />
-          </form>
-          ${hints ? `<div class="cmd-hints">${hints}</div>` : ""}
-        </div>`
-      : "";
-    return `<div class="agent-desk${showTerm ? "" : " agent-desk-chat"}" dir="ltr">
-      ${term}
-      <section class="ai-sheet ai-sheet-embed" id="ai-chat">
-        <header class="ai-sheet-bar"><span class="ai-live"></span>${esc(title)}</header>
-        ${hiddenQ}
-        <div class="ai-chat-log" id="ai-log"></div>
-        <form class="ai-compose" id="ai-form" dir="ltr">
-          <div class="ai-compose-box">
-            <textarea id="ai-q" rows="1" maxlength="8000" dir="auto" placeholder="${esc(placeholder)}"></textarea>
-            ${sendIconHTML()}
-          </div>
-        </form>
-      </section>
-    </div>`;
-  }
-
-
   function realTermHTML({ prompt = "root@vps:~#", termLines = "", hints = "" } = {}) {
     const p = String(prompt || "root@vps:~#").replace(/\s+$/, "");
     return `<div class="real-term" dir="ltr">
@@ -299,1169 +210,7 @@
     </div>`;
   }
 
-  function syncAgentComposer(pack) {
-    const form = document.querySelector("#ai-form");
-    const inp = document.querySelector("#ai-q");
-    const btn = document.querySelector("#ai-send");
-    const stopBtn = document.querySelector("#ai-stop");
-    if (inp) {
-      inp.setAttribute("dir", "auto");
-      if (inp.tagName === "TEXTAREA") {
-        inp.style.height = "auto";
-        inp.style.height = Math.min(140, Math.max(24, inp.scrollHeight)) + "px";
-      }
-    }
-    const stop = !!pack.busy;
-    if (btn) {
-      btn.disabled = false;
-      btn.hidden = stop;
-      btn.classList.toggle("is-busy", stop);
-      btn.classList.remove("is-stop");
-      btn.setAttribute("aria-label", "Send");
-      btn.innerHTML = planeIconSVG();
-    }
-    if (stopBtn) {
-      stopBtn.hidden = !stop;
-      stopBtn.disabled = false;
-    }
-    form?.classList.toggle("is-busy", !!pack.busy);
-  }
-
-  function paintAIChat(box, pack) {
-    if (!box) return;
-    syncAgentComposer(pack);
-    const bits = [];
-    (pack.bubbles || []).forEach((b, idx) => {
-      const enter = b.enter ? (b.role === "user" ? " ai-in ai-send-in" : " ai-in ai-recv-in") : "";
-      if (b.enter) b.enter = false;
-      const display = b.role === "bot" || b.role === "think" ? normalizeBotText(b.text) : unescapeChatEscapes(String(b.text || ""));
-      const hasCode = b.role === "bot" && /```/.test(display);
-      const dir = isRTLText(display) ? "rtl" : "ltr";
-      const copy = b.role === "bot" && !hasCode && String(display).length > 90
-        ? `<button type="button" class="ai-copy" data-copy-bubble="${idx}" aria-label="Copy message">Copy</button>`
-        : "";
-      bits.push(`<div class="ai-bubble-wrap ${esc(b.role)}" data-bubble-idx="${idx}">
-        <div class="ai-bubble ${esc(b.role)}${enter}${hasCode ? " has-code" : ""}" dir="${dir}">${b.role === "think" ? `<span class="ai-think-lab">Working</span> ` : ""}${formatChat(display, idx)}</div>
-        ${copy}
-      </div>`);
-    });
-    if (pack.busy && pack.typing !== false && !(pack.pendingAsk && pack.pendingAsk.length)) {
-      bits.push(`<div class="ai-bubble bot status ai-typing${pack.typingOut ? " is-leaving" : ""}" dir="ltr"><span class="ai-dots" aria-hidden="true"></span><span>typing now…</span></div>`);
-    }
-    if (!pack.busy && pack.pendingAsk && pack.pendingAsk.length) {
-      const q = pack.pendingAsk[0];
-      const qdir = isRTLText(q) ? "rtl" : "ltr";
-      const picked = new Set(pack.pendingPicked || []);
-      const chips = (pack.pendingChoices || []).map((c) =>
-        `<button type="button" class="ai-choice${picked.has(c) ? " is-on" : ""}" data-ai-choice="${esc(c)}" aria-pressed="${picked.has(c) ? "true" : "false"}">${esc(c)}</button>`
-      ).join("");
-      bits.push(`<div class="ai-qcard" dir="${qdir}">
-        <div class="ai-qcard-label">Question</div>
-        <div class="ai-qcard-q">${esc(q)}</div>
-        ${chips ? `<div class="ai-choices" dir="auto">${chips}</div>` : `<p class="ai-qcard-hint">Type your answer below</p>`}
-        ${chips ? `<div class="ai-qcard-actions"><button type="button" class="btn primary sm" data-ai-choose-go ${picked.size ? "" : "disabled"}>Continue</button></div>` : ""}
-      </div>`);
-    } else if (!pack.busy && pack.pendingChoices && pack.pendingChoices.length) {
-      const picked = new Set(pack.pendingPicked || []);
-      bits.push(`<div class="ai-qcard" dir="auto">
-        <div class="ai-qcard-label">Choose</div>
-        <div class="ai-choices" dir="auto">${pack.pendingChoices.map((c) =>
-          `<button type="button" class="ai-choice${picked.has(c) ? " is-on" : ""}" data-ai-choice="${esc(c)}" aria-pressed="${picked.has(c) ? "true" : "false"}">${esc(c)}</button>`
-        ).join("")}</div>
-        <p class="ai-qcard-hint">Select one or more, then continue.</p>
-        <div class="ai-qcard-actions">
-          <button type="button" class="btn primary sm" data-ai-choose-go ${picked.size ? "" : "disabled"}>Continue</button>
-        </div>
-      </div>`);
-    }
-    box.innerHTML = bits.join("");
-    colorCodeBlocks(box);
-    box.scrollTop = box.scrollHeight;
-  }
-
-  function colorCodeBlocks(root) {
-    root.querySelectorAll("pre.ai-codeblock code").forEach((el) => {
-      if (el.querySelector("[class^='tok-']")) return;
-      const lang = el.closest(".ai-codewrap")?.getAttribute("data-lang")
-        || el.closest(".ai-codewrap")?.querySelector(".ai-codelang")?.textContent
-        || "";
-      el.innerHTML = highlightCode(lang, el.textContent || "");
-    });
-  }
-
-  function extractSayFromRaw(text) {
-    const s = String(text || "").trim();
-    if (!s.includes('"say"')) return "";
-    const m = s.match(/"say"\s*:\s*"/);
-    if (!m) {
-      const i = s.search(/"say"\s*:\s*/);
-      if (i < 0) return "";
-      let rest = s.slice(i).replace(/^"say"\s*:\s*/, "");
-      if (rest.startsWith('"')) rest = rest.slice(1);
-      const stop = rest.search(/"\s*,\s*"(?:ask|says|command|choices|done|create_token|token_name|quota_gb|action|log_kind|image|start)"/);
-      let val = stop >= 0 ? rest.slice(0, stop) : rest;
-      val = val.replace(/"\s*}\s*$/, "").trim();
-      return unescapeChatEscapes(val);
-    }
-    let i = m.index + m[0].length;
-    let out = "";
-    let esc = false;
-    for (; i < s.length; i++) {
-      const c = s[i];
-      if (esc) {
-        if (c === "n") out += "\n";
-        else if (c === "t") out += "\t";
-        else if (c === "r") out += "\r";
-        else out += c;
-        esc = false;
-        continue;
-      }
-      if (c === "\\") { esc = true; continue; }
-      if (c === '"') break;
-      out += c;
-    }
-    return unescapeChatEscapes(out.trim());
-  }
-
-  function unescapeChatEscapes(text) {
-    let s = String(text || "");
-    s = s.replace(/\\r\\n/g, "\n").replace(/\\r/g, "\n");
-    s = s.replace(/\\n/g, "\n").replace(/\\t/g, "\t");
-    s = s.replace(/\\"/g, '"');
-    return s;
-  }
-
-  function looksLikeCode(text) {
-    const t = String(text || "").trim();
-    if (!t || t.length < 24) return false;
-    const lines = t.split(/\n/).filter((l) => l.trim());
-    if (lines.length < 2) return false;
-    const hits = [
-      /^(import |from |def |class |with |async |await |function |const |let |var |#include|package |fn |pub )/m,
-      /:\s*$/m,
-      /[{};]\s*$/m,
-      /^(print|console\.|curl |docker |git )/m,
-      /^\s{2,}\S/m,
-    ].filter((re) => re.test(t)).length;
-    return hits >= 2;
-  }
-
-  function guessCodeLang(text) {
-    const t = String(text || "");
-    if (/^\s*(import |from |def |with open|print\()/m.test(t)) return "python";
-    if (/^\s*(const |let |var |function |import |export )/m.test(t)) return "javascript";
-    if (/^\s*(package |func |fmt\.)/m.test(t)) return "go";
-    if (/^\s*(#!\/bin\/|curl |docker |git |apt |sudo )/m.test(t)) return "bash";
-    return "";
-  }
-
-  function normalizeBotText(text) {
-    let t = String(text || "").trim();
-    const extracted = extractSayFromRaw(t);
-    if (extracted) t = extracted;
-    t = unescapeChatEscapes(t);
-    t = t.replace(/\r\n/g, "\n");
-    if (t.startsWith("{") && /"say"\s*:/.test(t)) {
-      const again = extractSayFromRaw(t);
-      if (again) t = unescapeChatEscapes(again);
-    }
-    if (!/```/.test(t) && looksLikeCode(t)) {
-      const lang = guessCodeLang(t);
-      t = "```" + lang + "\n" + t.trim() + "\n```";
-    } else if (!/```/.test(t)) {
-      const parts = t.split(/\n\n+/);
-      if (parts.length >= 2) {
-        const last = parts[parts.length - 1];
-        if (looksLikeCode(last) || (/^(with open|import |def |function |curl )/m.test(last) && last.includes("\n"))) {
-          const head = parts.slice(0, -1).join("\n\n").trim();
-          const lang = guessCodeLang(last);
-          t = head + "\n\n```" + lang + "\n" + last.trim() + "\n```";
-        }
-      }
-    }
-    return t.trim();
-  }
-
-  function splitBotBubbles(text) {
-    const t = normalizeBotText(text);
-    if (!t) return [];
-    if (/```/.test(t)) return [t];
-    const parts = t.split(/\n{2,}/).map((s) => s.trim()).filter(Boolean);
-    if (parts.length <= 1) return [t];
-    return parts.slice(0, 6);
-  }
-
-  function collectBotMessages(res) {
-    const out = [];
-    const seen = [];
-    const similar = (a, b) => {
-      if (!a || !b) return false;
-      if (a === b) return true;
-      if (a.includes(b) || b.includes(a)) return true;
-      const n = Math.min(28, a.length, b.length);
-      return n >= 16 && a.slice(0, n) === b.slice(0, n);
-    };
-    const addOne = (raw) => {
-      const t = normalizeBotText(raw);
-      if (!t) return;
-      if (seen.some((x) => similar(x, t))) return;
-      seen.push(t);
-      out.push(t);
-    };
-    addOne(res?.say || "");
-    const says = Array.isArray(res?.says) ? res.says : [];
-    for (const s of says) {
-      addOne(s);
-      if (out.length >= 2) break;
-    }
-    return out;
-  }
-
-  const HL_KW = {
-    python: "and as assert async await break class continue def del elif else except False finally for from global if import in is lambda None nonlocal not or pass raise return True try while with yield self cls".split(" "),
-    javascript: "async await break case catch class const continue debugger default delete do else export extends false finally for from function if import in instanceof let new null of return static super switch this throw true try typeof var void while with yield".split(" "),
-    typescript: "async await break case catch class const continue debugger default delete do else export extends false finally for from function if import in instanceof let new null of return static super switch this throw true try typeof var void while with yield type interface enum implements readonly public private protected abstract as satisfies namespace declare any never unknown".split(" "),
-    go: "break case chan const continue default defer else fallthrough for func go goto if import interface map package range return select struct switch type var true false nil iota".split(" "),
-    bash: "if then else elif fi for in do done while until case esac function return exit export local declare set unset test true false echo cd pwd source alias".split(" "),
-    sql: "select from where and or not insert into values update set delete join left right inner outer on group by order limit as create table index distinct having union all null is like in exists".split(" "),
-    rust: "as async await break const continue crate dyn else enum extern false fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait true type unsafe use where while".split(" "),
-    java: "abstract assert boolean break byte case catch char class const continue default do double else enum extends final finally float for goto if implements import instanceof int interface long native new package private protected public return short static strictfp super switch synchronized this throw throws transient try void volatile while true false null".split(" "),
-    php: "and or xor array as break case continue declare default die do echo else elseif empty enddeclare endfor endforeach endif endswitch endwhile eval exit extends for foreach function global if include include_once isset list new print require require_once return static switch unset use var while trait interface implements public protected private abstract final class namespace".split(" "),
-    ruby: "BEGIN END alias and begin break case class def defined do else elsif end ensure false for if in module next nil not or redo rescue retry return self super then true undef unless until when while yield".split(" "),
-    c: "auto break case char const continue default do double else enum extern float for goto if inline int long register restrict return short signed sizeof static struct switch typedef union unsigned void volatile while".split(" "),
-    cpp: "alignas alignof and and_eq asm auto bitand bitor bool break case catch char class compl concept const consteval constexpr constinit continue co_await co_return co_yield decltype default delete do double else enum explicit export extern false float for friend goto if inline int long mutable namespace new noexcept not nullptr operator or private protected public register reinterpret_cast return short signed sizeof static static_assert static_cast struct switch template this thread_local throw true try typedef typeid typename union unsigned using virtual void volatile while xor".split(" "),
-    csharp: "abstract as base bool break byte case catch char checked class const continue decimal default delegate do double else enum event explicit extern false finally fixed float for foreach goto if implicit in int interface internal is lock long namespace new null object operator out override params private protected public readonly ref return sbyte sealed short sizeof stackalloc static string struct switch this throw true try typeof uint ulong unchecked unsafe ushort using virtual void volatile while".split(" "),
-    kotlin: "as break class continue do else false for fun if in interface is null object package return super this throw true try typealias typeof val var when while by catch constructor delegate dynamic field file finally get import init param property receiver set setparam where actual abstract annotation companion const crossinline data enum expect external final infix inline inner internal lateinit noinline open operator out override private protected public reified sealed suspend tailrec vararg".split(" "),
-    swift: "associatedtype class deinit enum extension fileprivate func import init inout internal let open operator private protocol public rethrows static struct subscript typealias var break case continue default defer do else fallthrough for guard if in repeat return switch where while as Any catch false is nil super self Self throw throws true try".split(" "),
-    html: "html head body div span script style link meta title h1 h2 h3 h4 h5 h6 p a ul ol li img table tr td th form input button label section article nav header footer main".split(" "),
-    css: "important media charset import supports from to".split(" "),
-    docker: "FROM RUN CMD LABEL MAINTAINER EXPOSE ENV ADD COPY ENTRYPOINT VOLUME USER WORKDIR ARG ONBUILD STOPSIGNAL HEALTHCHECK SHELL AS".split(" "),
-    yaml: "true false null yes no on off".split(" "),
-    json: "true false null".split(" "),
-  };
-  Object.keys(HL_KW).forEach((k) => { HL_KW[k] = new Set(HL_KW[k]); });
-
-  function normLang(lang) {
-    const l = String(lang || "").toLowerCase();
-    const map = {
-      js: "javascript", jsx: "javascript", mjs: "javascript", cjs: "javascript",
-      ts: "typescript", tsx: "typescript",
-      py: "python", python3: "python",
-      sh: "bash", shell: "bash", zsh: "bash", bash: "bash",
-      golang: "go",
-      yml: "yaml",
-      dockerfile: "docker",
-      "c++": "cpp", cc: "cpp", cxx: "cpp", hpp: "cpp",
-      cs: "csharp", "c#": "csharp",
-      rs: "rust", rb: "ruby", kt: "kotlin",
-      htm: "html", xml: "html",
-      text: "code", txt: "code",
-    };
-    return map[l] || l || "code";
-  }
-
-  function highlightCode(lang, src) {
-    const code = String(src || "");
-    const L = normLang(lang) || guessCodeLang(code) || "python";
-    try {
-      if (L === "json") return hlJSON(code);
-      if (L === "html") return hlMarkup(code);
-      if (L === "css") return hlCSS(code);
-      if (L === "yaml") return hlYAML(code);
-      if (L === "docker") return hlDocker(code);
-      return hlGeneric(code, L === "code" ? (guessCodeLang(code) || "python") : L);
-    } catch {
-      return esc(code);
-    }
-  }
-
-  function hlJSON(src) {
-    let out = "";
-    let i = 0;
-    while (i < src.length) {
-      const c = src[i];
-      if (c === '"' ) {
-        let j = i + 1, escb = false;
-        while (j < src.length) {
-          if (escb) { escb = false; j++; continue; }
-          if (src[j] === "\\") { escb = true; j++; continue; }
-          if (src[j] === '"') { j++; break; }
-          j++;
-        }
-        const chunk = src.slice(i, j);
-        let k = j;
-        while (k < src.length && /\s/.test(src[k])) k++;
-        const isKey = src[k] === ":";
-        out += `<span class="${isKey ? "tok-key" : "tok-str"}">${esc(chunk)}</span>`;
-        i = j;
-        continue;
-      }
-      if (c === "/" && src[i + 1] === "/") {
-        const end = src.indexOf("\n", i);
-        const j = end < 0 ? src.length : end;
-        out += `<span class="tok-cmt">${esc(src.slice(i, j))}</span>`;
-        i = j;
-        continue;
-      }
-      if (/[0-9\-]/.test(c) && (c !== "-" || /[0-9]/.test(src[i + 1] || ""))) {
-        let j = i + 1;
-        while (j < src.length && /[0-9.eE+\-]/.test(src[j])) j++;
-        out += `<span class="tok-num">${esc(src.slice(i, j))}</span>`;
-        i = j;
-        continue;
-      }
-      const word = src.slice(i).match(/^(true|false|null)\b/);
-      if (word) {
-        out += `<span class="tok-kw">${word[0]}</span>`;
-        i += word[0].length;
-        continue;
-      }
-      out += esc(c);
-      i++;
-    }
-    return out;
-  }
-
-  function hlGeneric(src, lang) {
-    const kw = HL_KW[lang] || new Set();
-    const hashCmt = lang === "python" || lang === "bash" || lang === "ruby" || lang === "yaml";
-    const slashCmt = lang !== "python" && lang !== "bash" && lang !== "ruby";
-    const types = lang === "go"
-      ? new Set("string int int64 int32 uint uint64 float64 bool byte error any".split(" "))
-      : new Set();
-    let out = "";
-    let i = 0;
-    while (i < src.length) {
-      const c = src[i];
-      if (c === "#" && hashCmt) {
-        const j = src.indexOf("\n", i);
-        const end = j < 0 ? src.length : j;
-        out += `<span class="tok-cmt">${esc(src.slice(i, end))}</span>`;
-        i = end;
-        continue;
-      }
-      if (slashCmt && c === "/" && src[i + 1] === "/") {
-        const j = src.indexOf("\n", i);
-        const end = j < 0 ? src.length : j;
-        out += `<span class="tok-cmt">${esc(src.slice(i, end))}</span>`;
-        i = end;
-        continue;
-      }
-      if (slashCmt && c === "/" && src[i + 1] === "*") {
-        const j = src.indexOf("*/", i + 2);
-        const end = j < 0 ? src.length : j + 2;
-        out += `<span class="tok-cmt">${esc(src.slice(i, end))}</span>`;
-        i = end;
-        continue;
-      }
-      if ((c === '"' || c === "'" || c === "`") && !(lang === "python" && false)) {
-        const q = c;
-        let j = i + 1, escb = false;
-        if (lang === "python" && src.slice(i, i + 3) === q + q + q) {
-          const close = src.indexOf(q + q + q, i + 3);
-          const end = close < 0 ? src.length : close + 3;
-          out += `<span class="tok-str">${esc(src.slice(i, end))}</span>`;
-          i = end;
-          continue;
-        }
-        while (j < src.length) {
-          if (escb) { escb = false; j++; continue; }
-          if (src[j] === "\\") { escb = true; j++; continue; }
-          if (src[j] === q) { j++; break; }
-          if (q !== "`" && src[j] === "\n") break;
-          j++;
-        }
-        out += `<span class="tok-str">${esc(src.slice(i, j))}</span>`;
-        i = j;
-        continue;
-      }
-      if (c === "/" && (lang === "javascript" || lang === "typescript")) {
-        // regex after = ( [ , : ! & |
-        const prev = out.replace(/<[^>]+>/g, "").slice(-1);
-        if ("=([,:!&|;?".includes(prev) || prev === "") {
-          let j = i + 1, escb = false;
-          while (j < src.length) {
-            if (escb) { escb = false; j++; continue; }
-            if (src[j] === "\\") { escb = true; j++; continue; }
-            if (src[j] === "\n") break;
-            if (src[j] === "/") { j++; while (j < src.length && /[gimsuy]/.test(src[j])) j++; break; }
-            j++;
-          }
-          out += `<span class="tok-str">${esc(src.slice(i, j))}</span>`;
-          i = j;
-          continue;
-        }
-      }
-      if (/[0-9]/.test(c)) {
-        let j = i + 1;
-        while (j < src.length && /[0-9xa-fA-F_.]/.test(src[j])) j++;
-        out += `<span class="tok-num">${esc(src.slice(i, j))}</span>`;
-        i = j;
-        continue;
-      }
-      if (/[A-Za-z_$@]/.test(c)) {
-        let j = i + 1;
-        while (j < src.length && /[A-Za-z0-9_$@]/.test(src[j])) j++;
-        const w = src.slice(i, j);
-        let k = j;
-        while (k < src.length && /\s/.test(src[k])) k++;
-        const call = src[k] === "(";
-        if (kw.has(w)) out += `<span class="tok-kw">${esc(w)}</span>`;
-        else if (types.has(w) || (/^[A-Z]/.test(w) && lang !== "bash")) out += `<span class="tok-type">${esc(w)}</span>`;
-        else if (call) out += `<span class="tok-fn">${esc(w)}</span>`;
-        else out += esc(w);
-        i = j;
-        continue;
-      }
-      out += esc(c);
-      i++;
-    }
-    return out;
-  }
-
-  function hlMarkup(src) {
-    let out = "";
-    let i = 0;
-    while (i < src.length) {
-      if (src.startsWith("<!--", i)) {
-        const j = src.indexOf("-->", i + 4);
-        const end = j < 0 ? src.length : j + 3;
-        out += `<span class="tok-cmt">${esc(src.slice(i, end))}</span>`;
-        i = end;
-        continue;
-      }
-      if (src[i] === "<") {
-        const gt = src.indexOf(">", i + 1);
-        if (gt < 0) { out += esc(src.slice(i)); break; }
-        const inner = src.slice(i + 1, gt);
-        const close = inner.startsWith("/");
-        const bang = inner.startsWith("!");
-        const body = close ? inner.slice(1) : inner;
-        const nm = body.match(/^[A-Za-z][\w:-]*/);
-        const name = nm ? nm[0] : "";
-        let attrs = name ? body.slice(name.length) : body;
-        let aout = "";
-        for (let k = 0; k < attrs.length; k++) {
-          if (attrs[k] === '"' || attrs[k] === "'") {
-            const q = attrs[k];
-            let j = k + 1;
-            while (j < attrs.length && attrs[j] !== q) j++;
-            aout += `<span class="tok-str">${esc(attrs.slice(k, Math.min(attrs.length, j + 1)))}</span>`;
-            k = j;
-            continue;
-          }
-          if (attrs[k] === "=") { aout += `<span class="tok-op">=</span>`; continue; }
-          aout += esc(attrs[k]);
-        }
-        const open = close ? "&lt;/" : "&lt;";
-        if (bang) out += `<span class="tok-cmt">${esc(src.slice(i, gt + 1))}</span>`;
-        else out += `${open}<span class="tok-kw">${esc(name)}</span>${aout}&gt;`;
-        i = gt + 1;
-        continue;
-      }
-      out += esc(src[i]);
-      i++;
-    }
-    return out;
-  }
-
-  function hlCSS(src) {
-    return hlGeneric(src, "css");
-  }
-
-  function hlYAML(src) {
-    return src.split("\n").map((line) => {
-      const cmt = line.match(/^(\s*)(#.*)$/);
-      if (cmt) return esc(cmt[1]) + `<span class="tok-cmt">${esc(cmt[2])}</span>`;
-      const kv = line.match(/^(\s*)([^:#\n][^:]*)(:)(\s*)(.*)$/);
-      if (kv) {
-        const rest = kv[5];
-        const val = /^(true|false|null|yes|no)\b/i.test(rest)
-          ? `<span class="tok-kw">${esc(rest)}</span>`
-          : /^["']/.test(rest) ? `<span class="tok-str">${esc(rest)}</span>`
-          : /^-?\d/.test(rest) ? `<span class="tok-num">${esc(rest)}</span>`
-          : esc(rest);
-        return `${esc(kv[1])}<span class="tok-key">${esc(kv[2])}</span><span class="tok-op">${kv[3]}</span>${esc(kv[4])}${val}`;
-      }
-      return esc(line);
-    }).join("\n");
-  }
-
-  function hlDocker(src) {
-    return src.split("\n").map((line) => {
-      if (/^\s*#/.test(line)) return `<span class="tok-cmt">${esc(line)}</span>`;
-      const m = line.match(/^(\s*)([A-Z]+)(\s*)([\s\S]*)$/);
-      if (m && HL_KW.docker.has(m[2])) {
-        return `${esc(m[1])}<span class="tok-kw">${m[2]}</span>${esc(m[3])}<span class="tok-str">${esc(m[4])}</span>`;
-      }
-      return esc(line);
-    }).join("\n");
-  }
-
-  function formatChat(text, bubbleIdx = 0) {
-    const raw = String(text || "");
-    const parts = [];
-    const fence = /```([a-zA-Z0-9_+-]*)\n?([\s\S]*?)```/g;
-    let last = 0;
-    let m;
-    let codeN = 0;
-    while ((m = fence.exec(raw))) {
-      if (m.index > last) parts.push({ type: "text", value: raw.slice(last, m.index).replace(/\s+$/, "") });
-      parts.push({ type: "code", lang: m[1] || "", value: m[2].replace(/\n$/, ""), id: codeN++ });
-      last = m.index + m[0].length;
-    }
-    if (last < raw.length) parts.push({ type: "text", value: raw.slice(last) });
-    if (!parts.length) parts.push({ type: "text", value: raw });
-    return parts.map((p) => {
-      if (p.type === "code") {
-        const lang = (p.lang || guessCodeLang(p.value) || "code").toLowerCase();
-        const label = lang && lang !== "code" ? lang : (guessCodeLang(p.value) || "code");
-        const hl = highlightCode(label, p.value);
-        return `<div class="ai-codewrap" data-lang="${esc(label)}" data-code-bubble="${bubbleIdx}" data-code-id="${p.id}">
-          <div class="ai-codehead">
-            <span class="ai-code-dots" aria-hidden="true"><i></i><i></i><i></i></span>
-            <span class="ai-codelang">${esc(label)}</span>
-            <button type="button" class="ai-codecopy" data-copy-code="${bubbleIdx}:${p.id}" aria-label="Copy code">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-              <span class="ai-codecopy-lab">Copy</span>
-            </button>
-          </div>
-          <pre class="ai-codeblock"><code class="language-${esc(label)}">${hl}</code></pre>
-        </div>`;
-      }
-      let s = esc(p.value);
-      s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-      s = s.replace(/`([^`\n]+)`/g, "<code class=\"ai-code\">$1</code>");
-      s = s.replace(/^[-•] (.+)$/gm, "<span class=\"ai-li\">$1</span>");
-      s = s.replace(/\n{3,}/g, "\n\n");
-      return `<div class="ai-md">${s}</div>`;
-    }).join("");
-  }
-
-  function codeFromBubble(pack, bubbleIdx, codeId) {
-    const b = pack.bubbles?.[bubbleIdx];
-    if (!b) return "";
-    const display = normalizeBotText(b.text);
-    const fence = /```([a-zA-Z0-9_+-]*)\n?([\s\S]*?)```/g;
-    let m;
-    let n = 0;
-    while ((m = fence.exec(display))) {
-      if (n === Number(codeId)) return m[2].replace(/\n$/, "");
-      n++;
-    }
-    return "";
-  }
-
-  function parseQuotaAnswer(text) {
-    const s = String(text || "").trim().toLowerCase().replace(",", ".");
-    const m = s.match(/(\d+(?:\.\d+)?)\s*(gb|g)?\b/);
-    if (!m) return 0;
-    const n = Number(m[1]);
-    return n > 0 ? n : 0;
-  }
-
-  async function releaseTyping(pack, aiLog) {
-    if (pack.typing === false && !pack.typingOut) return;
-    pack.typing = true;
-    pack.typingOut = true;
-    if (aiLog) paintAIChat(aiLog, pack);
-    await sleep(320);
-    pack.typing = false;
-    pack.typingOut = false;
-    if (aiLog) paintAIChat(aiLog, pack);
-    await sleep(1000);
-  }
-
-  async function pushBot(pack, text, aiLog) {
-    const parts = splitBotBubbles(text);
-    await releaseTyping(pack, aiLog);
-    for (const t of parts) {
-      if (!t) continue;
-      pack.bubbles.push({ role: "bot", text: t, enter: true });
-      if (aiLog) paintAIChat(aiLog, pack);
-      await sleep(220);
-    }
-  }
-
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-  function explainCommand(cmd) {
-    const c = String(cmd || "").trim();
-    if (!c) return "";
-    const low = c.toLowerCase();
-    if (/^git\s+clone/.test(low)) return `Cloning the repository in the terminal:\n\`${c}\``;
-    if (/^docker\s+compose/.test(low) || /^docker-compose/.test(low)) return `Running Compose in the terminal:\n\`${c}\``;
-    if (/^docker\s+build/.test(low)) return `Building the Docker image:\n\`${c}\``;
-    if (/^docker\s+pull/.test(low)) return `Pulling the image:\n\`${c}\``;
-    if (/^docker\s+ps/.test(low)) return `Listing containers:\n\`${c}\``;
-    if (/^ls\b/.test(low)) return `Listing files:\n\`${c}\``;
-    if (/^cd\b/.test(low)) return `Changing directory:\n\`${c}\``;
-    if (/^cat\b|^head\b|^tail\b/.test(low)) return `Reading a file:\n\`${c}\``;
-    return `Running in the terminal:\n\`${c}\``;
-  }
-
-  async function typeCommand(tout, prompt, cmd) {
-    if (!tout) return;
-    tout.textContent += prompt;
-    tout.scrollTop = tout.scrollHeight;
-    await sleep(320);
-    const s = String(cmd);
-    const base = s.length > 140 ? 7 : 18;
-    for (let i = 0; i < s.length; i++) {
-      tout.textContent += s[i];
-      tout.scrollTop = tout.scrollHeight;
-      let d = base + Math.random() * (base + 8);
-      if (s[i] === " ") d += 40;
-      if ("/;|&".includes(s[i])) d += 55;
-      await sleep(d);
-    }
-    await sleep(220);
-    tout.textContent += "\n";
-    tout.scrollTop = tout.scrollHeight;
-  }
-
-  async function typeDraftCommand(cmd, alive) {
-    const inp = document.querySelector("#term-cmd");
-    if (!inp) return;
-    inp.value = "";
-    inp.focus();
-    const s = String(cmd || "");
-    const base = s.length > 80 ? 8 : 16;
-    for (let i = 0; i < s.length; i++) {
-      if (alive && !alive()) return;
-      inp.value += s[i];
-      let d = base + Math.random() * (base + 6);
-      if (s[i] === " ") d += 30;
-      await sleep(d);
-    }
-  }
-
-  function bindAgentChat({ key, stillHere, aiPath, execFn, quotaRoot, termOut, prompt, onImage, onStart, onToken, onQuota, onTermLine, onAction, hello, logMode, seedContext, toolScope, roomId }) {
-    const pack = roomAIState(key);
-    state._aiKey = key;
-    if (!pack.welcomed) {
-      pack.welcomed = true;
-      if (!(pack.bubbles || []).length) {
-        pack.bubbles.push({ role: "bot", text: hello || AGENT_HELLO, enter: true });
-      }
-    }
-    if (seedContext && !pack.contextSeeded) {
-      pack.contextSeeded = true;
-      pack.messages.push({ role: "user", text: seedContext });
-    }
-    const aiLog = document.querySelector("#ai-log");
-    const mapLogKind = (text) => {
-      const t = String(text || "").trim().toLowerCase();
-      if (t === "panel" || t === "panel events") return "panel";
-      if (t === "api") return "api";
-      if (t === "deploy") return "deploy";
-      if (t === "host" || t === "host events") return "host";
-      return "";
-    };
-    const applyQuotaValue = async (gb) => {
-      const n = Number(gb);
-      if (!(n > 0)) return 0;
-      pack.quotaGB = n;
-      const hidden = document.querySelector("#pull-quota") || document.querySelector("[data-quota-input]");
-      if (hidden) hidden.value = String(n);
-      if (quotaRoot?.matches?.("[data-quota-input]")) quotaRoot.value = String(n);
-      else if (quotaRoot?.querySelector) {
-        const el = quotaRoot.querySelector("[data-quota-input]");
-        if (el) el.value = String(n);
-      }
-      if (onQuota) await onQuota(n);
-      return n;
-    };
-    const looksLikeFilename = (s) => {
-      const t = String(s || "").trim();
-      if (!t || t.length > 120 || /\n/.test(t)) return false;
-      if (/^(yes|no|ok|read|write|panel|api|deploy|host)$/i.test(t)) return false;
-      return /(\.|\/|Dockerfile|Makefile|README|package\.json|requirements|compose|\.py$|\.js$|\.go$|\.env$|\.yml$|\.yaml$|\.json$|\.md$)/i.test(t);
-    };
-    const wantsFiles = (s) => /اقرا الملفات|اقرأ الملفات|اعرض الملفات|list files|read files|show files|inspect files|الملفات|اقرأ ملف|اقرا ملف/i.test(s)
-      || (/(file|files|ملف|ملفات|كود)/i.test(s) && /(list|read|show|inspect|اقرا|اقرأ|اعرض)/i.test(s));
-    const sendUserText = async (text) => {
-      const t = String(text || "").trim();
-      if (!t || pack.busy) return;
-      pack.rtl = isRTLText(t);
-      const answering = !!(pack.pendingAsk && pack.pendingAsk.length);
-      pack.pendingAsk = null;
-      pack.pendingChoices = null;
-      pack.pendingPicked = [];
-      const maybeQ = parseQuotaAnswer(t);
-      if (maybeQ > 0) await applyQuotaValue(maybeQ);
-      if (logMode) {
-        const lk = mapLogKind(t);
-        if (lk) pack.attachLogKind = lk;
-      }
-      if (execFn && answering && looksLikeFilename(t)) pack.awaitFile = t;
-      if (execFn && wantsFiles(t)) pack.nudgedLs = false;
-      pack.bubbles.push({ role: "user", text: t, enter: true });
-      pack.messages.push({ role: answering ? "answers" : "user", text: t });
-      paintAIChat(aiLog, pack);
-      await runAILoop();
-    };
-    paintAIChat(aiLog, pack);
-    const draftBox = document.querySelector("#ai-q");
-    if (draftBox && pack.draft) {
-      draftBox.value = pack.draft;
-      syncAgentComposer(pack);
-    }
-    const looksLikeRead = (cmd) => /\b(cat|head|tail|sed\s+-n|awk)\b/.test(String(cmd || ""));
-    const runExec = async (cmd, typed) => {
-      const head = (prompt || "") + cmd + "\n";
-      if (!typed && termOut) {
-        termOut.textContent += head;
-        termOut.scrollTop = termOut.scrollHeight;
-      }
-      if (onTermLine) onTermLine(head);
-      let lastEx;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          if (attempt > 0) await sleep(350 * attempt);
-          const res = await execFn(cmd);
-          const where = res.where ? `[${res.where}] ` : "";
-          let out = where + (res.output || "") + (res.error ? `\n${res.error}` : "");
-          const empty = !String(res.output || "").trim() && !String(res.error || "").trim();
-          if (empty && looksLikeRead(cmd)) {
-            out = `FILE EMPTY: the file has no content at all.`;
-          }
-          const line = out + (out.endsWith("\n") ? "" : "\n");
-          if (termOut) {
-            termOut.textContent += (attempt ? `(retry ${attempt}) ` : "") + line;
-            termOut.scrollTop = termOut.scrollHeight;
-          }
-          if (onTermLine) onTermLine(line);
-          return { exit: empty && looksLikeRead(cmd) ? 0 : (res.exit ?? (res.error ? 1 : 0)), output: out, empty: empty && looksLikeRead(cmd) };
-        } catch (ex) {
-          lastEx = ex;
-          const msg = String(ex.message || ex);
-          if (!/Failed to fetch|NetworkError|network|timeout|502|503|504/i.test(msg) || attempt === 2) {
-            break;
-          }
-        }
-      }
-      const err = (lastEx?.message || lastEx || "exec failed") + "\n";
-      if (termOut) termOut.textContent += err;
-      if (onTermLine) onTermLine(err);
-      return { exit: 1, output: String(lastEx?.message || lastEx || "exec failed") };
-    };
-    const stopLoop = async () => {
-      if (!pack.busy) return;
-      try { pack.abort?.abort(); } catch {}
-      pack.run += 1;
-      pack.busy = false;
-      pack.typing = false;
-      pack.typingOut = false;
-      pack.status = "";
-      pack.abort = null;
-      pack.bubbles.push({ role: "bot", text: "Stopped.", enter: true });
-      paintAIChat(aiLog, pack);
-    };
-    const runAILoop = async () => {
-      if (pack.busy) return;
-      pack.busy = true;
-      pack.typing = true;
-      pack.pendingAsk = null;
-      pack.pendingChoices = null;
-      pack.status = agentStatus(pack, "think");
-      const run = ++pack.run;
-      pack.abort = typeof AbortController !== "undefined" ? new AbortController() : null;
-      const alive = () => pack.run === run && pack.busy;
-      paintAIChat(aiLog, pack);
-      try {
-        for (let i = 0; i < 40; i++) {
-          if (!alive() || (stillHere && !stillHere())) return;
-          if (pack.messages.length > 40) pack.messages = pack.messages.slice(-40);
-          pack.typing = true;
-          pack.status = agentStatus(pack, i === 0 ? "think" : "read");
-          paintAIChat(aiLog, pack);
-          const payload = { messages: pack.messages };
-          if (logMode && pack.attachLogKind) payload.log_kind = pack.attachLogKind;
-          const res = await api(aiPath, {
-            method: "POST",
-            body: JSON.stringify(payload),
-            signal: pack.abort?.signal,
-          });
-          if (!alive()) return;
-          const say = String(res.say || "").trim();
-          const cmd = String(res.command || "").trim();
-          const tool = String(res.tool || "").trim();
-          const toolArg = String(res.tool_arg || "").trim();
-          const img = String(res.image || "").trim();
-          const ask = Array.isArray(res.ask) ? res.ask.map((x) => String(x || "").trim()).filter(Boolean).slice(0, 1) : [];
-          let choices = Array.isArray(res.choices) ? res.choices.map((x) => String(x || "").trim()).filter(Boolean).slice(0, 8) : [];
-          const action = String(res.action || "").trim().toLowerCase();
-          const logKind = String(res.log_kind || "").trim().toLowerCase();
-          pack.messages.push({
-            role: "assistant",
-            text: JSON.stringify({
-              say, says: res.says || [], command: cmd, type_only: !!res.type_only, tool, tool_arg: toolArg, ask, choices, quota_gb: Number(res.quota_gb || 0),
-              image: img, update_id: String(res.update_id || "").trim(), start: !!res.start, action, log_kind: logKind, done: !!res.done,
-            }),
-          });
-          pack.status = "";
-          if (execFn && pack.awaitFile && !cmd) {
-            const f = pack.awaitFile;
-            pack.awaitFile = "";
-            pack.messages.push({
-              role: "terminal",
-              text: `SYSTEM: User chose file ${f}. You MUST set command to print it with the terminal tool, e.g. head -n 200 -- ${f}   Empty ask. Do not invent contents.`,
-            });
-            pack.typing = true;
-            paintAIChat(aiLog, pack);
-            continue;
-          }
-          if (execFn && !cmd && !ask.length && !choices.length && !pack.nudgedLs) {
-            const lastU = [...pack.messages].reverse().find((m) => m.role === "user" || m.role === "answers");
-            if (lastU && wantsFiles(lastU.text)) {
-              pack.nudgedLs = true;
-              pack.messages.push({
-                role: "terminal",
-                text: "SYSTEM: Use the terminal tool. Set command to list files (ls -la or find . -maxdepth 2 -type f). Next turn put names in choices. Do not invent names or contents.",
-              });
-              pack.typing = true;
-              paintAIChat(aiLog, pack);
-              continue;
-            }
-          }
-          if (cmd) pack.awaitFile = "";
-          const msgs = collectBotMessages(res).filter((m) => {
-            if (!ask.length) return true;
-            const q = ask[0].toLowerCase();
-            const t = String(m || "").toLowerCase();
-            if (!t || t === q) return false;
-            const n = Math.min(22, q.length, t.length);
-            return n < 12 || !(t.includes(q.slice(0, n)) || q.includes(t.slice(0, n)));
-          });
-          if (tool) {
-            const think = say || `Using ${tool}…`;
-            pack.bubbles.push({ role: "think", text: think, enter: true });
-            pack.status = think;
-            pack.typing = true;
-            paintAIChat(aiLog, pack);
-            const sig = `${tool}|${toolArg}`;
-            pack._toolHits = pack._toolHits || [];
-            pack._toolHits.push(sig);
-            if (pack._toolHits.filter((x) => x === sig).length > 2) {
-              pack.messages.push({
-                role: "terminal",
-                text: "SYSTEM: You already ran this tool. Answer from the TOOL results. Empty tool. done true. Do not mention Terminal.",
-              });
-              continue;
-            }
-            try {
-              const tr = await api("/api/agent/tool", {
-                method: "POST",
-                body: JSON.stringify({
-                  tool,
-                  arg: toolArg,
-                  scope: toolScope || key,
-                  room_id: roomId || state.roomId || "",
-                }),
-                signal: pack.abort?.signal,
-              });
-              pack.messages.push({
-                role: "terminal",
-                text: String(tr.text || "(empty tool result)"),
-              });
-            } catch (ex) {
-              pack.messages.push({ role: "terminal", text: `TOOL ${tool} failed: ${ex.message || ex}` });
-            }
-            if (!alive()) return;
-            pack.typing = true;
-            continue;
-          }
-          if (msgs.length || say) await pushBot(pack, msgs.length ? msgs.join("\n\n") : say, aiLog);
-          else await releaseTyping(pack, aiLog);
-          if (ask.length) {
-            const q = ask[0];
-            const nameQ = /name|اسم|سمي|سمّ/i.test(q);
-            if (nameQ && choices.length && choices.every((c) => /^(read|write|both)$/i.test(c))) {
-              choices = [];
-            }
-            if (!choices.length && logMode && !nameQ) {
-              choices = ["Panel", "API", "Deploy", "Host events"];
-            }
-            pack.pendingAsk = [q];
-            pack.pendingChoices = choices.length ? choices : null;
-            pack.pendingPicked = [];
-            paintAIChat(aiLog, pack);
-            break;
-          }
-          if (!ask.length && choices.length) {
-            pack.pendingAsk = [say || "Choose:"];
-            pack.pendingChoices = choices;
-            pack.pendingPicked = [];
-            paintAIChat(aiLog, pack);
-            break;
-          }
-          paintAIChat(aiLog, pack);
-          if (logMode && logKind && pack.attachLogKind !== logKind) {
-            pack.attachLogKind = logKind;
-            pack.messages.push({ role: "answers", text: logKind });
-            pack.typing = true;
-            continue;
-          }
-          if (logMode) pack.attachLogKind = "";
-          const wantQ = Number(res.quota_gb || 0);
-          if (wantQ > 0) {
-            pack.status = agentStatus(pack, "quota");
-            pack.typing = true;
-            paintAIChat(aiLog, pack);
-            try {
-              const saved = await applyQuotaValue(wantQ);
-              pack.messages.push({ role: "terminal", text: `QUOTA set: ${saved.toFixed(1)} GB` });
-            } catch (ex) {
-              pack.messages.push({ role: "terminal", text: `QUOTA save failed: ${ex.message}` });
-              await pushBot(pack, "Could not save disk quota: " + (ex.message || ""), aiLog);
-            }
-            pack.status = "";
-            pack.typing = false;
-            paintAIChat(aiLog, pack);
-          }
-          if ((action === "pause" || action === "resume") && onAction) {
-            if (action === "pause") {
-              const ok = await confirmAction({
-                title: "Pause this project?",
-                body: "The container will stop. You can resume it later. The room is not deleted.",
-                ok: "Pause",
-                danger: true,
-              });
-              if (!ok) {
-                pack.status = "";
-                pack.typing = false;
-                await pushBot(pack, "Pause cancelled.", aiLog);
-                paintAIChat(aiLog, pack);
-                continue;
-              }
-            }
-            try {
-              pack.status = action === "pause" ? "Pausing…" : "Starting…";
-              pack.typing = true;
-              paintAIChat(aiLog, pack);
-              await onAction(action);
-              pack.messages.push({ role: "terminal", text: `ACTION ${action} ok` });
-              pack.status = "";
-              pack.typing = false;
-              await pushBot(pack, action === "pause" ? "Paused." : "Running again.", aiLog);
-              paintAIChat(aiLog, pack);
-            } catch (ex) {
-              pack.status = "";
-              pack.typing = false;
-              await pushBot(pack, ex.message || "Action failed", aiLog);
-              pack.messages.push({ role: "terminal", text: `ACTION failed: ${ex.message || ex}` });
-              paintAIChat(aiLog, pack);
-              continue;
-            }
-          }
-          if (img && onImage) onImage(img);
-          if (res.token && onToken) {
-            onToken(res);
-            break;
-          }
-          if (res.create_room && res.room_id) {
-            pack.messages.push({
-              role: "terminal",
-              text: `ROOM_CREATED id=${res.room_id} name=${res.room_name || ""} path=${res.room_path || ""} quota_gb=${res.quota_gb || 0}`,
-            });
-            pack.typing = true;
-            paintAIChat(aiLog, pack);
-            if (!res.done) continue;
-          }
-          const typeOnly = !!(res.type_only || res.draft);
-          const draftCmd = cmd || String(res.draft || "").trim();
-          if (typeOnly && draftCmd && execFn) {
-            pack.status = agentStatus(pack, "type");
-            pack.typing = false;
-            paintAIChat(aiLog, pack);
-            await typeDraftCommand(draftCmd, alive);
-            if (!alive()) return;
-            pack.messages.push({ role: "terminal", text: `TYPED (not sent): ${draftCmd}` });
-            await pushBot(pack, "Typed in the terminal — send it yourself when you want.", aiLog);
-            break;
-          }
-          if (draftCmd && execFn) {
-            const explained = String(say || "").trim();
-            if (!explained) await pushBot(pack, explainCommand(draftCmd), aiLog);
-            else if (!explained.includes(draftCmd.slice(0, Math.min(24, draftCmd.length)))) {
-              pack.bubbles.push({ role: "bot", text: `Command: \`${draftCmd}\``, enter: true });
-              paintAIChat(aiLog, pack);
-            }
-            pack.status = agentStatus(pack, "type");
-            pack.typing = false;
-            paintAIChat(aiLog, pack);
-            await typeCommand(termOut, prompt, draftCmd);
-            if (!alive()) return;
-            pack.status = agentStatus(pack, "run");
-            paintAIChat(aiLog, pack);
-            const execRes = await runExec(draftCmd, true);
-            if (!alive()) return;
-            let termText = `exit ${execRes.exit}\n${execRes.output}`.slice(0, 12000);
-            if (execRes.empty) {
-              termText = `FILE EMPTY: the file has no content at all.\nCommand: ${draftCmd}`;
-            }
-            pack.messages.push({
-              role: "terminal",
-              text: termText,
-            });
-            if (onStart && /docker\s+(pull|build)|git\s+clone/i.test(draftCmd) && !(pack.quotaGB > 0)) {
-              pack.messages.push({
-                role: "terminal",
-                text: "SYSTEM: Install command finished. You MUST now ask how many GB for this project using ask + choices (0.5 GB, 1 GB, 2 GB, 5 GB, 10 GB). Empty command. Do not start until quota_gb is set.",
-              });
-            }
-            if (res.done) break;
-            pack.typing = true;
-            continue;
-          }
-          if (res.start && onStart) {
-            const imgUse = img || String(document.querySelector("#pull-image")?.value || "").trim();
-            const updateId = String(res.update_id || "").trim();
-            const q = Number(pack.quotaGB || document.querySelector("#pull-quota")?.value || 0);
-            if (!updateId && !(q > 0)) {
-              pack.messages.push({
-                role: "terminal",
-                text: "SYSTEM: start blocked — quota_gb is missing. Ask the user disk size with ask+choices, wait, then set quota_gb. Do not start yet.",
-              });
-              pack.typing = true;
-              continue;
-            }
-            if (imgUse) {
-              try {
-                pack.status = agentStatus(pack, "start");
-                pack.typing = true;
-                paintAIChat(aiLog, pack);
-                await onStart(imgUse, q, updateId);
-                pack.status = "";
-                pack.messages.push({ role: "terminal", text: updateId ? `UPDATE ${updateId} image=${imgUse}` : `START requested for ${imgUse}` });
-              } catch (ex) {
-                pack.status = "";
-                pack.typing = false;
-                await pushBot(pack, ex.message || "Start failed", aiLog);
-                pack.messages.push({ role: "terminal", text: `START failed: ${ex.message || ex}` });
-                paintAIChat(aiLog, pack);
-                continue;
-              }
-            }
-            if (!res.done) {
-              pack.typing = true;
-              continue;
-            }
-          }
-          if (wantQ > 0 && !res.done) {
-            pack.typing = true;
-            continue;
-          }
-          if ((action === "pause" || action === "resume") && onAction && !res.done) {
-            pack.typing = true;
-            continue;
-          }
-          break;
-        }
-      } catch (ex) {
-        if (!(ex?.name === "AbortError" || /abort/i.test(String(ex.message || "")))) {
-          pack.typing = false;
-          await pushBot(pack, ex.message || "Agent failed", aiLog);
-        }
-      } finally {
-        if (pack.run === run) {
-          pack.busy = false;
-          pack.typing = false;
-          pack.status = "";
-        }
-        paintAIChat(aiLog, pack);
-      }
-    };
-    document.querySelector("#ai-form")?.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      if (pack.busy) {
-        await stopLoop();
-        return;
-      }
-      const inp = document.querySelector("#ai-q");
-      const text = String(inp?.value || "").trim();
-      if (!text) return;
-      pack.draft = "";
-      inp.value = "";
-      if (inp.tagName === "TEXTAREA") {
-        inp.style.height = "auto";
-      }
-      const btn = document.querySelector("#ai-send");
-      btn?.classList.add("is-press");
-      setTimeout(() => btn?.classList.remove("is-press"), 180);
-      await sendUserText(text);
-    });
-    document.querySelector("#ai-stop")?.addEventListener("click", async (e) => {
-      e.preventDefault();
-      await stopLoop();
-    });
-    const aiInp = document.querySelector("#ai-q");
-    aiInp?.addEventListener("input", () => {
-      pack.draft = aiInp.value;
-      syncAgentComposer(pack);
-    });
-    aiInp?.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        document.querySelector("#ai-form")?.requestSubmit();
-      }
-    });
-    aiLog?.addEventListener("click", async (e) => {
-      const codeBtn = e.target.closest("[data-copy-code]");
-      if (codeBtn) {
-        const [bi, ci] = String(codeBtn.dataset.copyCode || "").split(":");
-        const code = codeFromBubble(pack, Number(bi), Number(ci));
-        if (code) {
-          await copyText(code);
-          codeBtn.querySelector(".ai-codecopy-lab")?.replaceChildren(document.createTextNode("Copied"));
-          if (!codeBtn.querySelector(".ai-codecopy-lab")) codeBtn.textContent = "Copied";
-          codeBtn.classList.add("is-copied");
-          setTimeout(() => {
-            const lab = codeBtn.querySelector(".ai-codecopy-lab");
-            if (lab) lab.textContent = "Copy";
-            else codeBtn.textContent = "Copy";
-            codeBtn.classList.remove("is-copied");
-          }, 1200);
-        }
-        return;
-      }
-      const copyBtn = e.target.closest("[data-copy-bubble]");
-      if (copyBtn) {
-        const idx = Number(copyBtn.dataset.copyBubble);
-        const bubble = pack.bubbles[idx];
-        if (bubble?.text) {
-          await copyText(normalizeBotText(bubble.text));
-          copyBtn.textContent = "Copied";
-          setTimeout(() => { copyBtn.textContent = "Copy"; }, 1200);
-        }
-        return;
-      }
-      const choice = e.target.closest("[data-ai-choice]");
-      if (choice && !pack.busy) {
-        const val = choice.dataset.aiChoice;
-        const cur = new Set(pack.pendingPicked || []);
-        if (cur.has(val)) cur.delete(val);
-        else cur.add(val);
-        pack.pendingPicked = [...cur];
-        paintAIChat(aiLog, pack);
-        return;
-      }
-      const go = e.target.closest("[data-ai-choose-go]");
-      if (go && !pack.busy) {
-        const picked = pack.pendingPicked || [];
-        if (!picked.length) return;
-        let answer = picked.join(", ");
-        const low = picked.map((x) => String(x).toLowerCase());
-        if (low.includes("both") || (low.includes("read") && low.includes("write"))) {
-          answer = "both";
-        }
-        pack.pendingPicked = [];
-        await sendUserText(answer);
-      }
-    });
-    return { run: runAILoop, pack, send: sendUserText, stop: stopLoop };
-  }
 
   async function api(path, opts = {}) {
     const tries = 3;
@@ -1617,7 +366,6 @@
         }
         return "/projects";
       case "server": return "/server";
-      case "agent": return "/agent";
       case "terminal": return "/terminal";
       case "tokens": return "/tokens";
       case "logs": return "/logs";
@@ -1641,7 +389,6 @@
     if (p === "/docs" || p === "/guide") return { view: "docs" };
     if (p === "/tokens" || p === "/api") return { view: "tokens" };
     if (p === "/deploy") return { view: "rooms" };
-    if (p === "/agent") return { view: "agent" };
     if (p === "/terminal") return { view: "terminal" };
     if (p === "/logs") return { view: "logs" };
     if (p === "/settings") return { view: "settings" };
@@ -1651,10 +398,6 @@
   }
 
   function saveChatDraft() {
-    const inp = document.querySelector("#ai-q");
-    const key = state._aiKey;
-    if (!inp || !key) return;
-    roomAIState(key).draft = inp.value;
   }
 
   function setView(view, extra = {}) {
@@ -2080,7 +823,7 @@
 
     const nav = root.querySelector("#nav");
     const items = isOwner
-      ? [["server", "Server"], ["rooms", "Rooms"], ["agent", "Agent"], ["terminal", "Terminal"], ["logs", "Logs"], ["tokens", "Tokens"], ["docs", "Docs"], ["settings", "Settings"]]
+      ? [["server", "Server"], ["rooms", "Rooms"], ["terminal", "Terminal"], ["logs", "Logs"], ["tokens", "Tokens"], ["docs", "Docs"], ["settings", "Settings"]]
       : [["room", "Room"], ["rooms", "All rooms"]];
     const highlight = navHighlight(active || state.view);
     nav.innerHTML = items.map(([k, label]) => {
@@ -2241,12 +984,22 @@
       imgSum += imgN;
       quotaSum += quotaN;
       const over = quotaN > 0 && usedN > quotaN;
-      return `<tr${over ? ` class="hot"` : ""}>
-        <td>${esc(r.name)}</td>
-        <td class="mono">${esc(fmtBytes(usedN))}${volN ? ` <span class="muted">(vol ${fmtBytes(volN)})</span>` : ""}${over ? ` <span class="muted">over quota</span>` : ""}</td>
-        <td class="mono">${quotaN ? esc(fmtBytes(quotaN)) : "—"}</td>
-        <td class="mono">${esc(fmtBytes(imgN))}</td>
-      </tr>`;
+      const fill = quotaN > 0 ? Math.min(100, Math.round((usedN / quotaN) * 100)) : 0;
+      const heat = fill >= 90 ? "hot" : fill >= 70 ? "warm" : "";
+      const kind = r.kind === "multi" ? "multi" : "single";
+      return `<div class="disk-row${over ? " hot" : ""}">
+        <div class="disk-head">
+          <strong>${esc(r.name)}</strong>
+          <span class="badge ${over ? "warn" : "ok"}">${esc(kind)}</span>
+        </div>
+        <div class="disk-line muted">Data ${esc(fmtBytes(usedN))}${volN ? ` · vol ${esc(fmtBytes(volN))}` : ""}${over ? ` <strong>over quota</strong>` : ""}</div>
+        <div class="disk-body">
+          <span class="muted">quota</span>
+          <div class="room-disk ${heat}"><div class="room-disk-bar"><i style="width:${fill}%"></i></div></div>
+          <strong class="mono">${esc(fmtBytes(usedN))}${quotaN ? ` / ${esc(fmtBytes(quotaN))}` : ""}</strong>
+        </div>
+        <div class="disk-line muted">own image ${esc(fmtBytes(imgN))}</div>
+      </div>`;
     }).join("");
     const imgHost = Number(host?.docker_images_bytes) || 0;
     const cacheB = Number(host?.docker_buildcache_bytes) || 0;
@@ -2254,13 +1007,14 @@
     const dataHost = Number(host?.project_data_bytes) || dataSum;
     return `<div class="panel" style="margin-top:12px">
       <h3>How each project uses disk</h3>
-      <p class="muted"><strong>Quota = Data only</strong> (files + volumes + container writable layer). Docker images are shared on the host and are not compared to the 2–8 GB cap. Two Supabase rooms share one image set on disk — do not add the Image column.</p>
-      <table class="disk-table">
-        <thead><tr><th>Project</th><th>Data (quota)</th><th>Quota</th><th>Own image</th></tr></thead>
-        <tbody>${rows}
-          <tr><td><strong>All rooms</strong></td><td class="mono"><strong>${esc(fmtBytes(dataSum))}</strong></td><td class="mono">${esc(fmtBytes(quotaSum))} reserved</td><td class="mono muted">${esc(fmtBytes(imgSum))} listed (not unique)</td></tr>
-        </tbody>
-      </table>
+      <p class="muted"><strong>Quota = Data only</strong> (files + volumes + container writable layer). Docker images are shared on the host and are not compared to the cap. Two Supabase rooms share one image set on disk — do not add the Image column.</p>
+      <div class="disk-list">
+        ${rows}
+        <div class="disk-row total">
+          <div class="disk-head"><strong>All rooms</strong></div>
+          <div class="disk-line muted">Data ${esc(fmtBytes(dataSum))} · quota ${esc(fmtBytes(quotaSum))} reserved · own images ${esc(fmtBytes(imgSum))} listed (not unique)</div>
+        </div>
+      </div>
       <p class="muted" style="margin-top:10px">
         VPS disk ${esc(fmtDisk(host?.disk_total))} · <strong>${esc(fmtDisk(host?.disk_used))} used</strong> · ${esc(fmtDisk(host?.disk_free))} free.
         That used number is the whole disk: Docker images ${esc(fmtBytes(imgHost))}${cacheB ? ` · build cache ${esc(fmtBytes(cacheB))}` : ""}${rwB ? ` · container RW ${esc(fmtBytes(rwB))}` : ""} · project data ${esc(fmtBytes(dataHost))} · OS and the rest.
@@ -2340,7 +1094,7 @@
         return;
       }
       const cards = (rooms || []).map((r) => {
-        const st = r.status === "running" ? "ok" : r.status === "empty" ? "empty" : r.status === "stopped" ? "stop" : "miss";
+        const st = r.status === "running" ? "ok" : r.status === "empty" ? "empty" : r.status === "restarting" ? "warn" : r.status === "error" ? "stop" : r.status === "stopped" ? "stop" : "miss";
         const usedN = Number(r.usage_bytes) || 0;
         const quotaN = Number(r.quota_bytes) || 0;
         const imgN = Number(r.image_bytes) || 0;
@@ -2364,6 +1118,7 @@
             <div class="proj-titleline">
               <h4>${esc(r.name)}</h4>
               <span class="badge ${st}" data-badge>${esc(r.status)}</span>
+              ${r.kind === "multi" ? `<span class="badge info">${esc(r.kind)}</span>` : `<span class="badge muted-badge">single</span>`}
               ${nC > 1 ? `<span class="badge warn">${nC} containers</span>` : ""}
             </div>
             <p class="proj-meta"><span class="mono">${esc(stack)}</span>${port ? `<span class="proj-dot"></span><span class="mono">:${port}</span>` : ""}</p>
@@ -2585,13 +1340,18 @@
     }).join("");
   }
 
-  function roomUpdateHelpHTML(roomId) {
+  function roomUpdateHelpHTML(roomId, isMulti) {
     const origin = (typeof location !== "undefined" && location.origin) ? location.origin : "http://YOUR_VPS_IP:9090";
-    const curl = `curl -fS -H "Authorization: Bearer YOUR_TOKEN" \\\n  -F "file=@app.tar" \\\n  ${origin}/api/v1/projects/${roomId}/upload`;
+    const fileArg = isMulti ? "@stack.tar.gz" : "@app.tar";
+    const upload = isMulti
+      ? `tar -czf stack.tar.gz compose.yml images` + (isMulti ? ` && curl -fS -H "Authorization: Bearer YOUR_TOKEN" -F "file=@stack.tar.gz" ${origin}/api/v1/projects/${roomId}/upload` : "")
+      : `docker save -o app.tar IMAGE:TAG && curl -fS -H "Authorization: Bearer YOUR_TOKEN" \\\n  -F "file=@app.tar" \\\n  ${origin}/api/v1/projects/${roomId}/upload`;
     return `<div class="panel"><h3>How to update</h3>
-      <p class="muted" style="margin:0 0 10px">Same call for the first image and later updates. Send the tar. <strong>200 = received</strong> — this room updates here. GitHub should POST and exit (do not wait for docker load).</p>
-      ${cmdCard("POST /upload", curl)}
-      <p class="muted" style="margin:10px 0 0">One image: <code>docker save -o app.tar IMAGE</code>. Several containers: <code>tar -czf stack.tar.gz compose.yml images</code> then <code>-F file=@stack.tar.gz</code>.</p>
+      <p class="muted" style="margin:0 0 10px">Same call for the first image and later updates. ${isMulti ? "Send the compose stack" : "Send the image tar"}. <strong>200 = received</strong> — this room updates here. GitHub should POST and exit (do not wait for docker load).</p>
+      ${cmdCard("POST /upload", upload)}
+      ${isMulti
+        ? `<p class="muted" style="margin:10px 0 0">Compose stack: <code>compose.yml</code> at the root plus <code>images/*.tar</code>, packed as <code>stack.tar.gz</code>. The panel runs <code>docker compose up -d</code> for every service.</p>`
+        : `<p class="muted" style="margin:10px 0 0">One image: <code>docker save -o app.tar IMAGE:TAG</code>. This replaces/creates the single container of the room.</p>`}
     </div>`;
   }
 
@@ -2650,12 +1410,6 @@
         top.innerHTML = freshTok ? tokenCardHTML(freshTok, { secret: fresh.secret || freshTok.secret, prompt: fresh.prompt || freshTok.prompt, api: fresh.api || freshTok.api, script: fresh.script || freshTok.script, fresh: true }) : "";
       }
       bindCopyables();
-      document.querySelectorAll("[data-copy-prompt]").forEach((b) => {
-        b.onclick = async () => {
-          const pre = b.closest(".tok-card")?.querySelector(".tok-prompt");
-          await copyText(pre ? pre.value || pre.textContent : "");
-        };
-      });
       document.querySelectorAll("[data-copy-api]").forEach((b) => {
         b.onclick = async () => {
           const pre = b.closest(".tok-card")?.querySelector(".tok-api");
@@ -2706,7 +1460,6 @@
           <span class="badge ok">${esc(roomLabel)}</span>
         </div>
         <div class="row-actions">
-          <button class="btn sm action" type="button" data-copy-prompt ${prompt ? "" : "disabled"} title="Full AI prompt">Copy prompt</button>
           <button class="btn sm action" type="button" data-copy-api ${apiSheet ? "" : "disabled"} title="BASE and TOKEN only">Copy API</button>
           <button class="btn sm action" type="button" data-copy-script ${script ? "" : "disabled"} title="GitHub Action — single .tar">Copy single script</button>
           <button class="btn sm action" type="button" data-copy-script-multi ${scriptMulti ? "" : "disabled"} title="GitHub Action — multi .tar.gz">Copy multi script</button>
@@ -2716,7 +1469,6 @@
       <div class="secret-row tok-secret-row">
         <span class="secret-mask">${copyVal ? "••••••••••••••••••••" : (esc(t.token_prefix || "••••") + "…")}</span>
       </div>
-      ${prompt ? `<textarea class="hidden tok-prompt" readonly>${esc(prompt)}</textarea>` : ""}
       ${apiSheet ? `<textarea class="hidden tok-api" readonly>${esc(apiSheet)}</textarea>` : ""}
       ${script ? `<textarea class="hidden tok-script" readonly>${esc(script)}</textarea>` : ""}
       ${scriptMulti ? `<textarea class="hidden tok-script-multi" readonly>${esc(scriptMulti)}</textarea>` : ""}
@@ -2726,7 +1478,7 @@
 
   async function renderTokens() {
     const gen = state._gen;
-    shell(`<div class="topbar"><div><h2>Tokens</h2><div class="sub">API keys · agent helps you create and use them</div></div></div>${skel(3)}`, "tokens");
+    shell(`<div class="topbar"><div><h2>Tokens</h2><div class="sub">API keys for all rooms</div></div></div>${skel(3)}`, "tokens");
     let tokens = [];
     try {
       tokens = await api("/api/settings/tokens");
@@ -2743,10 +1495,6 @@
         <p class="muted">One API for all rooms. Create by name only — then set ROOM_ID in GitHub.</p>
         <button class="btn primary action" id="tok-hero-new" type="button">Create API</button>
       </div>` : "";
-    const agentBlock = agentDeskHTML({
-      title: "Tokens agent",
-      showTerm: false,
-    });
 
     shell(`
       <div class="topbar"><div>
@@ -2756,8 +1504,7 @@
         ${`<button class="btn primary action" id="tok-new" type="button">Create token</button>`}
       </div>
       <div id="tok-fresh"></div>
-      <div id="tok-list" class="tok-list">${cards}${hero}</div>
-      ${agentBlock}`, "tokens");
+      <div id="tok-list" class="tok-list">${cards}${hero}</div>`, "tokens");
 
     const paintList = (items, fresh) => {
       const box = document.querySelector("#tok-list");
@@ -2771,12 +1518,6 @@
         top.innerHTML = freshTok ? tokenCardHTML(freshTok, { secret: fresh.secret || freshTok.secret, prompt: fresh.prompt || freshTok.prompt, api: fresh.api || freshTok.api, script: fresh.script || freshTok.script, fresh: true }) : "";
       }
       bindCopyables();
-      document.querySelectorAll("[data-copy-prompt]").forEach((b) => {
-        b.onclick = async () => {
-          const pre = b.closest(".tok-card")?.querySelector(".tok-prompt");
-          await copyText(pre ? pre.value || pre.textContent : "");
-        };
-      });
       document.querySelectorAll("[data-copy-api]").forEach((b) => {
         b.onclick = async () => {
           const pre = b.closest(".tok-card")?.querySelector(".tok-api");
@@ -2809,20 +1550,6 @@
     });
     paintList(list);
     document.querySelector("#tok-new")?.addEventListener("click", openCreate);
-
-    bindAgentChat({
-        key: "tokens",
-        stillHere: () => state.view === "tokens",
-        aiPath: "/api/tokens/ai",
-        hello: TOKEN_HELLO,
-        toolScope: "tokens",
-        onToken: (res) => {
-          const tok = Object.assign({}, res.token || {}, { secret: res.secret, prompt: res.prompt, api: res.api, script: res.script, script_multi: res.script_multi });
-          if (!tok.id) return;
-          list = [tok, ...list.filter((t) => t.id !== tok.id && String(t.name || "").toLowerCase() !== String(tok.name || "").toLowerCase())];
-          paintList(list, { token: tok, secret: tok.secret, prompt: res.prompt || tok.prompt, api: res.api || tok.api, script: res.script || tok.script, scriptMulti: res.script_multi || tok.script_multi });
-        },
-      });
   }
 
 
@@ -2843,7 +1570,7 @@
         </div>
         <div id="tok-create-done" class="hidden">
           <h3>API created</h3>
-          <p class="muted" id="tok-create-done-note">Copy prompt = AI brief. Copy API = BASE and TOKEN. Copy script = GitHub YAML that POSTs the tar and exits.</p>
+          <p class="muted" id="tok-create-done-note">Copy API = BASE and TOKEN. Copy script = GitHub YAML that POSTs the tar and exits.</p>
           <div class="secret-row" style="margin-top:12px">
             <code class="tok-plain" id="tok-create-secret"></code>
           </div>
@@ -2851,7 +1578,6 @@
             <button class="btn primary action" type="button" data-copy-script>Copy single script</button>
             <button class="btn action" type="button" data-copy-script-multi>Copy multi script</button>
             <button class="btn action" type="button" data-copy-api>Copy API</button>
-            <button class="btn action" type="button" data-copy-prompt>Copy prompt</button>
             <button class="btn ghost" type="button" data-close>Done</button>
           </div>
         </div>
@@ -2882,11 +1608,9 @@
         done.classList.remove("hidden");
         done.classList.add("tok-in");
         modal.querySelector("#tok-create-secret").textContent = secret;
-        const promptText = res.prompt || tok.prompt || "";
         const apiText = res.api || tok.api || "";
         const scriptText = res.script || tok.script || "";
         const scriptMultiText = res.script_multi || tok.script_multi || "";
-        modal.querySelector("[data-copy-prompt]").onclick = async () => { await copyText(promptText); };
         modal.querySelector("[data-copy-api]").onclick = async () => { await copyText(apiText); };
         modal.querySelector("[data-copy-script]").onclick = async () => { await copyText(scriptText); };
         modal.querySelector("[data-copy-script-multi]").onclick = async () => { await copyText(scriptMultiText); };
@@ -3046,7 +1770,7 @@
       <textarea class="hidden" id="docs-copy-src" readonly></textarea>
 
       <h3 class="docs-h">1. Create an API</h3>
-      ${step("A", "Tokens page", "Create the key, then Copy API (BASE + TOKEN). Copy single script or Copy multi script into the matching GitHub workflow. Copy prompt = this whole brief for an AI.", "", "")}
+      ${step("A", "Tokens page", "Create the key, then Copy API (BASE + TOKEN). Copy single script or Copy multi script into the matching GitHub workflow.", "", "")}
 
       <h3 class="docs-h">2. Available disk (required before create)</h3>
       ${step("B", "GET /api/v1/quota", "Returns quota_available_gb. POST /api/v1/projects quota_gb must be &gt; 0 and ≤ this number.", errBox(`200 { quota_available_gb, quota_available, disk_total, disk_used, disk_free, quota_reserved, hint }
@@ -3328,7 +2052,17 @@ Never DELETE via API. One token = all rooms.`;
     const roomJob = room.job || room.status === "deploying" || room.status === "building";
     const emptyRoom = !mainProj && !containers.length && !roomJob;
     const deploying = !!roomJob && (!mainProj || room.status === "deploying" || room.status === "building");
-    const anyRun = containers.some((c) => c.status === "running") || (mainProj && mainProj.status === "running");
+    const isMulti = room.kind === "multi";
+    const cs = containers.map((c) => c.status || "");
+    const anyRun = cs.includes("running") || (mainProj && mainProj.status === "running");
+    const anyRestart = cs.includes("restarting");
+    const anyCrashed = cs.includes("exited") || cs.includes("dead");
+    const roomState = emptyRoom ? "empty" : anyRun ? "running" : anyRestart ? "restarting" : anyCrashed ? "crashed" : (cs.length ? "stopped" : "empty");
+    const stateCls = { empty: "warn", running: "ok", restarting: "warn", crashed: "stop", stopped: "stop" };
+    const stateTxt = { empty: "empty", running: "running", restarting: "restarting", crashed: "crashed", stopped: "stopped" };
+    const upAccept = isMulti ? ".tar.gz,.tgz,.vps.tar.gz" : ".tar,.docker-image";
+    const upTitle = isMulti ? "Drop the compose stack (.tar.gz)" : "Drop the image (.tar)";
+    const upSub = isMulti ? "compose.yml + images/*.tar → several containers, docker compose up -d" : "docker save -o app.tar IMAGE:TAG → replaces this single container";
     let st = null;
     try { st = await api("/api/storage"); } catch {}
 
@@ -3342,14 +2076,14 @@ Never DELETE via API. One token = all rooms.`;
       </div>`;
     } else if (emptyRoom) {
       body = `<div class="panel"><h3>Empty room</h3>
-        <p class="muted" style="margin:0 0 12px">Isolated and empty. Drop a file here, or POST it to the API (same update call later).</p>
-        ${roomUpdateHelpHTML(id)}
+        <p class="muted" style="margin:0 0 12px">Isolated and empty. Drop a file here, or POST it to the API (same update call later). Kind: <strong>${esc(isMulti ? "multi (compose / several containers)" : "single (one container)")}</strong>.</p>
+        ${roomUpdateHelpHTML(id, isMulti)}
         <form id="tar-update-form">
           <label class="dropzone" id="tar-dz">
-            <input type="file" name="file" accept=".tar,.tar.gz,.tgz,.vps.tar.gz" />
+            <input type="file" name="file" accept="${upAccept}" />
             <div class="dz-icon">▣</div>
-            <div class="dz-title">Drop the tar here</div>
-            <div class="dz-sub">One image or a compose stack — the panel reads the archive</div>
+            <div class="dz-title">${upTitle}</div>
+            <div class="dz-sub">${upSub}</div>
             <div class="dz-file" id="tar-fname"></div>
           </label>
           <div class="row-actions" style="margin-top:12px">
@@ -3373,10 +2107,14 @@ Never DELETE via API. One token = all rooms.`;
                 <code>${esc(id)}</code>
               </button>
             </div>
-            <span class="badge ${anyRun ? "ok" : (emptyRoom ? "warn" : "stop")}">${esc(emptyRoom ? "empty" : anyRun ? "running" : "stopped")}</span>
+            <span class="badge ${stateCls[roomState] || "stop"}">${esc(stateTxt[roomState] || roomState)}</span>
+            <span class="badge ${isMulti ? "info" : "muted-badge"}">${esc(isMulti ? "multi · compose" : "single")}</span>
           </div>
         </div>
-        <div class="grid grid-2">
+        ${(roomState === "restarting" || roomState === "crashed")
+          ? `<p class="error" style="margin:10px 0 0">This container is ${esc(roomState)} — it keeps exiting. Open <strong>Container → Logs</strong> to see the error. Most apps crash because an env value (like a token) is missing.</p>`
+          : ""}
+        <div class="stat-chips">
           <div class="stat"><div class="label">Containers</div><div class="value">${containers.length}</div><div class="muted">${images.length} images · ${volumes.length} volumes</div></div>
           <div class="stat"><div class="label">Quota used</div><div class="value">${fmtBytes(room.usage_bytes)}</div><div class="muted">cap ${room.quota_bytes ? fmtBytes(room.quota_bytes) : "not set"} · files + volumes + RW</div></div>
           <div class="stat"><div class="label">Project size</div><div class="value">${fmtBytes(Number(room.footprint_bytes) || ((Number(room.usage_bytes)||0)+(Number(room.image_bytes)||0)))}</div><div class="muted">image ${fmtBytes(room.image_bytes)} · volumes ${fmtBytes(room.volume_bytes)}</div></div>
@@ -3384,7 +2122,7 @@ Never DELETE via API. One token = all rooms.`;
             ? `<div class="secret-row"><span class="secret-mask">••••••••</span><button type="button" class="btn sm action" data-copy="${esc(room.password)}">Copy</button></div>`
             : `<span class="muted">hidden until unlock</span>`}</div></div>
         </div>
-        <div class="grid" style="margin-top:12px">
+        <div class="live-grid">
           <div class="stat"><div class="label">CPU</div><div class="value" data-metric="cpu">—</div><div class="bar"><span data-bar="cpu"></span></div></div>
           <div class="stat"><div class="label">Memory</div><div class="value" data-metric="mem">—</div><div class="bar"><span data-bar="mem"></span></div></div>
           <div class="stat"><div class="label">Disk</div><div class="value" data-metric="disk">—</div><div class="bar"><span data-bar="disk"></span></div></div>
@@ -3436,17 +2174,17 @@ Never DELETE via API. One token = all rooms.`;
         })()}
         <div class="panel"><h3>Containers</h3>
           <table class="table"><thead><tr><th>#</th><th>Container</th><th>Docker</th><th>Status</th><th>Port</th><th>Image</th></tr></thead>
-          <tbody id="containers-live">${containers.map((p) => `<tr data-cid="${esc(p.id)}" class="ctr-row" style="cursor:pointer"><td class="mono">${ctrNum(p)}</td><td>${esc(ctrLabel(p))}<div class="muted" style="font-size:0.75rem">${esc(p.name || "")}</div></td><td><code class="copyable" data-copy="${esc(p.docker_id || p.id)}">${esc(shortDocker(p.docker_id || p.id))}</code></td><td><span class="badge ${p.status === "running" ? "ok" : "stop"}" data-cstatus>${esc(p.status)}</span></td><td data-cport>${p.host_port || "—"}</td><td class="mono muted">${esc(p.image)}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">No containers</td></tr>`}</tbody></table>
+          <tbody id="containers-live">${containers.map((p) => `<tr data-cid="${esc(p.id)}" class="ctr-row" style="cursor:pointer"><td class="mono">${ctrNum(p)}</td><td>${esc(ctrLabel(p))}<div class="muted" style="font-size:0.75rem">${esc(p.name || "")}</div></td><td><code class="copyable" data-copy="${esc(p.docker_id || p.id)}">${esc(shortDocker(p.docker_id || p.id))}</code></td><td><span class="badge ${p.status === "running" ? "ok" : (p.status === "restarting" ? "warn" : "stop")}" data-cstatus>${esc(p.status)}</span></td><td data-cport>${p.host_port || "—"}</td><td class="mono muted">${esc(p.image)}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">No containers</td></tr>`}</tbody></table>
         </div>
         <div class="panel"><h3>Update</h3>
-          <p class="muted" style="margin:0 0 10px">Send a new tar to this room. Same as the first upload. Watch the log below — the API returns as soon as the file arrives.</p>
-          ${roomUpdateHelpHTML(id)}
+          <p class="muted" style="margin:0 0 10px">Send a new ${esc(isMulti ? "compose stack (.tar.gz with compose.yml + images)" : "image (.tar from docker save)")} to this room. Same as the first upload. Watch the log below — the API returns as soon as the file arrives.</p>
+          ${roomUpdateHelpHTML(id, isMulti)}
           <form id="tar-update-form">
             <label class="dropzone" id="tar-dz">
-              <input type="file" name="file" accept=".tar,.tar.gz,.tgz" />
+              <input type="file" name="file" accept="${upAccept}" />
               <div class="dz-icon">▣</div>
-              <div class="dz-title">Drop the tar here</div>
-              <div class="dz-sub">docker save -o app.tar IMAGE  ·  or compose.yml + images in a .tar.gz</div>
+              <div class="dz-title">${upTitle}</div>
+              <div class="dz-sub">${upSub}</div>
               <div class="dz-file" id="tar-fname"></div>
             </label>
             <div class="row-actions" style="margin-top:12px">
@@ -3649,10 +2387,12 @@ Never DELETE via API. One token = all rooms.`;
     }
 
     shell(`
-      <div class="topbar"><div>
-        <h2>${esc(room.name)}</h2>
-        <div class="sub"><span class="mono">${esc(id)}</span></div>
-      </div>
+      <div class="room-view">
+      <div class="topbar">
+        <div class="topbar-main">
+          <h2>${esc(room.name)}</h2>
+          <div class="sub"><span class="mono">${esc(id)}</span><button type="button" class="id-copy copyable" data-copy="${esc(id)}" title="Copy id">copy</button></div>
+        </div>
         <div class="row-actions">
           ${emptyRoom ? "" : powerToggleHTML(id, anyRun ? "running" : ((projs[0] && projs[0].status) || "stopped"))}
           <button class="btn sm danger action" data-act="delete">Delete</button>
@@ -3667,7 +2407,8 @@ Never DELETE via API. One token = all rooms.`;
         <button data-tab="logs" class="${tab === "logs" ? "active" : ""}">Logs</button>
         <button data-tab="terminal" class="${tab === "terminal" ? "active" : ""}">Terminal</button>
       </div>
-      ${body}`, "room");
+      ${body}
+      </div>`, "room");
 
     bindCmdCopies();
     document.querySelectorAll("[data-tab]").forEach((b) => b.onclick = () => setView("room", { roomTab: b.dataset.tab, filePath: b.dataset.tab === "files" ? (state.filePath || ".") : state.filePath }));
@@ -4154,57 +2895,6 @@ Never DELETE via API. One token = all rooms.`;
     });
   }
 
-  async function renderAgent() {
-    const gen = state._gen;
-    const prompt = "root@vps:~#";
-    const lines = (state.agentTermLines || []).join("") || "";
-    shell(`
-      <div class="topbar"><div>
-        <h2>Agent</h2>
-        <div class="sub">Full VPS operator · root terminal + tools</div>
-      </div></div>
-      <div class="agent-workbench">
-        ${realTermHTML({ prompt, termLines: lines })}
-        <section class="ai-sheet ai-sheet-embed agent-panel" id="ai-chat">
-          <header class="ai-sheet-bar"><span class="ai-live"></span>Agent</header>
-          <div class="ai-chat-log" id="ai-log"></div>
-          <form class="ai-compose" id="ai-form" dir="ltr">
-            <div class="ai-compose-box">
-              <textarea id="ai-q" rows="1" maxlength="8000" dir="auto" placeholder="Ask the agent to do something…"></textarea>
-              ${sendIconHTML()}
-            </div>
-          </form>
-        </section>
-      </div>`, "agent");
-    if (!alive("agent", gen)) return;
-    const termOut = document.querySelector("#term-out");
-    const persist = (line) => {
-      state.agentTermLines = state.agentTermLines || [];
-      state.agentTermLines.push(line);
-    };
-    bindAgentChat({
-      key: "panel-agent",
-      stillHere: () => state.view === "agent",
-      aiPath: "/api/agent/chat",
-      execFn: (cmd) => api("/api/host/exec", {
-        method: "POST",
-        body: JSON.stringify({ command: cmd, timeout_sec: 600 }),
-      }),
-      termOut,
-      prompt: prompt + " ",
-      hello: AGENT_PAGE_HELLO,
-      toolScope: "agent",
-      seedContext: "SYSTEM: You are the single VPS Agent with root shell. Use tools for inventory. Use command for real work. Create rooms when needed. Loop until done.",
-      onTermLine: persist,
-    });
-    bindPlainTerminal({
-      persistKey: "agentTermLines",
-      prompt,
-      execPath: "/api/host/exec",
-      alsoNotifyAgent: true,
-    });
-  }
-
   function bindPlainTerminal({ persistKey, prompt, execPath, alsoNotifyAgent, bodyExtra }) {
     const termOut = document.querySelector("#term-out");
     const persist = (line) => {
@@ -4234,14 +2924,6 @@ Never DELETE via API. One token = all rooms.`;
           termOut.scrollTop = termOut.scrollHeight;
         }
         persist(line);
-        if (alsoNotifyAgent) {
-          const pack = roomAIState("panel-agent");
-          pack.messages.push({ role: "user", text: "I ran this in the terminal: " + cmd });
-          pack.messages.push({
-            role: "terminal",
-            text: `exit ${res.exit ?? (res.error ? 1 : 0)}\n${out}`.slice(0, 12000),
-          });
-        }
       } catch (ex) {
         const err = (ex.message || ex) + "\n";
         if (termOut) termOut.textContent += err;
@@ -4257,7 +2939,6 @@ Never DELETE via API. One token = all rooms.`;
     if (!state.me) { renderUnlock(); return; }
     if (state.me.kind === "owner") {
       if (state.view === "rooms") return renderRooms();
-      if (state.view === "agent") return renderAgent();
       if (state.view === "terminal") return renderTerminal();
       if (state.view === "logs") return renderLogs();
       if (state.view === "docs") return renderDocs();

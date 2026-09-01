@@ -16,7 +16,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/x5coder/vps-rooms/internal/ai"
 	"github.com/x5coder/vps-rooms/internal/auth"
 	"github.com/x5coder/vps-rooms/internal/projects"
 	"github.com/x5coder/vps-rooms/internal/rooms"
@@ -196,8 +195,13 @@ func (s *Server) handleOwnerPasswordChange(w http.ResponseWriter, r *http.Reques
 	_ = os.MkdirAll(filepath.Dir(drop), 0o755)
 	_ = os.WriteFile(drop, []byte("[Service]\nEnvironment=VPS_ROOMS_OWNER_PASS="+body.New+"\n"), 0o600)
 	s.Cfg.OwnerPass = body.New
-	_ = appendLog(s.Cfg.DataDir, "panel", "admin password changed")
-	writeJSON(w, 200, map[string]string{"ok": "1"})
+	// Admin password changed -> sign out every device automatically.
+	_ = s.Store.DeleteAllSessions()
+	s.clearSessionCookie(w)
+	s.clearAdminCookie(w)
+	s.clearGateCookie(w)
+	_ = appendLog(s.Cfg.DataDir, "panel", "admin password changed — all sessions revoked")
+	writeJSON(w, 200, map[string]string{"ok": "1", "logout_all": "1"})
 }
 
 func (s *Server) handlePanelPort(w http.ResponseWriter, r *http.Request) {
@@ -754,7 +758,7 @@ func (s *Server) handleRoomExec(w http.ResponseWriter, r *http.Request, roomID s
 		writeErr(w, 400, "command required")
 		return
 	}
-	if ai.Dangerous(body.Command) {
+	if commandDangerous(body.Command) {
 		writeErr(w, 400, "command not allowed")
 		return
 	}
@@ -1203,6 +1207,9 @@ func (s *Server) handleRoomImageTar(w http.ResponseWriter, r *http.Request, room
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		fmt.Fprintf(logw, "error: could not read upload (%v)\n", err)
 		return
+	}
+	if envText := readUploadEnv(r); envText != "" {
+		s.saveDeployEnv(room.ID, envText)
 	}
 	file, hdr, err := r.FormFile("file")
 	if err != nil {

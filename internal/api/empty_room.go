@@ -56,6 +56,10 @@ func (s *Server) createEmptyRoom(name string, quotaGB float64, cPort, hPort int,
 	if err := emptyRoomErr(quotaGB); err != nil {
 		return nil, "", err
 	}
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	if kind != "" && kind != store.KindSingle && kind != store.KindMulti {
+		return nil, "", fmt.Errorf("kind must be %q or %q", store.KindSingle, store.KindMulti)
+	}
 	roomName := sanitizeRoomName(name)
 	if existing, _ := s.Store.GetRoomByName(roomName); existing != nil {
 		return nil, "", fmt.Errorf("room name already in use")

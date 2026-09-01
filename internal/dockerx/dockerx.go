@@ -643,14 +643,39 @@ func (c *Client) InspectStatus(id string) (string, error) {
 	if id == "" {
 		return "missing", nil
 	}
-	out, err := c.output("inspect", "-f", "{{.State.Running}}", id)
+	out, err := c.output("inspect", "-f", "{{.State.Status}}|{{.State.ExitCode}}", id)
 	if err != nil {
 		return "missing", nil
 	}
-	if strings.TrimSpace(out) == "true" {
-		return "running", nil
+	parts := strings.SplitN(out, "|", 2)
+	st := strings.ToLower(strings.TrimSpace(parts[0]))
+	if st == "" {
+		return "missing", nil
 	}
-	return "stopped", nil
+	switch st {
+	case "running":
+		return "running", nil
+	case "restarting":
+		// Docker keeps State.Running=true while a crash loop retries. Report the truth.
+		return "restarting", nil
+	case "paused":
+		return "paused", nil
+	case "exited":
+		code := "0"
+		if len(parts) > 1 {
+			code = strings.TrimSpace(parts[1])
+		}
+		if code == "0" {
+			return "stopped", nil
+		}
+		return "exited", nil // crashed / exited with error
+	case "dead":
+		return "dead", nil
+	case "created":
+		return "created", nil
+	default:
+		return st, nil
+	}
 }
 
 // InspectBinds returns HostConfig.Binds for a container (host:dest[:mode]).

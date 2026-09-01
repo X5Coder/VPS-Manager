@@ -138,6 +138,9 @@ func (s *Server) handleContainerImageTar(w http.ResponseWriter, r *http.Request,
 		fmt.Fprintf(logw, "error: %v\n", err)
 		return
 	}
+	if envText := readUploadEnv(r); envText != "" {
+		s.saveDeployEnv(roomID, envText)
+	}
 	file, hdr, err := r.FormFile("file")
 	if err != nil {
 		fmt.Fprintf(logw, "error: upload a docker save .tar for this container\n")

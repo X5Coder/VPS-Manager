@@ -87,7 +87,7 @@ func main() {
 		}
 	}()
 
-	// Periodic log trim so AI / UI never ingest unbounded text.
+	// Periodic log trim so the UI never ingests unbounded text.
 	go func() {
 		api.PruneLogsDir(cfg.DataDir, 256*1024)
 		t := time.NewTicker(30 * time.Minute)

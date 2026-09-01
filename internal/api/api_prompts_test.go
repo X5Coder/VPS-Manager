@@ -19,37 +19,15 @@ func TestAPIDocSection(t *testing.T) {
 	}
 }
 
-func TestBuildAPIPromptModes(t *testing.T) {
+func TestAPIDocsCopies(t *testing.T) {
 	s := &Server{}
 	base := "http://127.0.0.1:9090"
 	secret := "vm_testhook"
-	prompt := s.buildAPIPrompt(base, secret, "", "")
 	sheet := s.buildAPISheet(base, secret)
 	script := buildGitHubWorkflowSingle(base, secret)
 	multi := buildGitHubWorkflowMulti(base, secret)
-	if !strings.Contains(prompt, "vps-deploy-single.yml") || !strings.Contains(prompt, secret) {
-		t.Fatalf("prompt missing yaml or credentials")
-	}
-	if !strings.Contains(prompt, "vps-deploy-multi.yml") || !strings.Contains(prompt, "/api/v1/quota") {
-		t.Fatalf("prompt must document multi script and quota endpoint")
-	}
-	if !strings.Contains(prompt, "quota_exceeds_available") || !strings.Contains(prompt, "package_kind_mismatch") {
-		t.Fatalf("prompt must list error codes")
-	}
-	if !strings.Contains(prompt, "curl -sS") || !strings.Contains(prompt, "ROOM_ID=PASTE_ROOM_ID_HERE") {
-		t.Fatalf("prompt must be a full operator brief with curl and ROOM_ID variable")
-	}
-	if strings.Contains(prompt, "{{BASE}}") || strings.Contains(prompt, "{{TOKEN}}") {
-		t.Fatal("prompt placeholders not replaced")
-	}
 	if strings.Contains(script, "You are the VPS Manager") {
 		t.Fatal("script must be GitHub YAML only")
-	}
-	if !strings.Contains(prompt, "/upload") || !strings.Contains(prompt, "status=empty") {
-		t.Fatalf("prompt must document tar upload and empty rooms")
-	}
-	if !strings.Contains(prompt, "/api/v1/logs") || !strings.Contains(prompt, "logs?name=") || !strings.Contains(prompt, "logs_target_required") {
-		t.Fatalf("prompt must document container and VPS log commands")
 	}
 	if !strings.Contains(script, "timeout-minutes: 30") || !strings.Contains(script, "ACCEPTED") {
 		t.Fatalf("script timeout/log")
@@ -75,7 +53,7 @@ func TestBuildAPIPromptModes(t *testing.T) {
 	if strings.Contains(script, "ghcr.io") {
 		t.Fatalf("script must not use GHCR")
 	}
-	if prompt == sheet || sheet == script || script == multi {
+	if sheet == script || script == multi {
 		t.Fatal("copies must differ")
 	}
 }
