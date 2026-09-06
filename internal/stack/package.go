@@ -22,30 +22,35 @@ type Service struct {
 	Store      *store.Store
 	Docker     *dockerx.Client
 	Rooms      *rooms.Service
-	RuntimeDir string
+	BaseDir    string
+	RuntimeDir string // legacy (migration)
 }
 
-func LooksLikeArchive(name string) bool {
-	n := strings.ToLower(name)
-	return strings.HasSuffix(n, ".tar") || strings.HasSuffix(n, ".tar.gz") || strings.HasSuffix(n, ".tgz")
+func (s *Service) stackDir(roomID string) string {
+	if s.Rooms != nil {
+		return s.Rooms.RoomWorkDir(roomID)
+	}
+	base := s.BaseDir
+	if base == "" {
+		base = s.RuntimeDir
+	}
+	if base == "" {
+		base = "/vps-manager"
+	}
+	return filepath.Join(base, "multi", roomID, "stack")
 }
 
-func ArchiveHasCompose(src string) bool {
-	return withTarEntries(src, 400, func(n string) bool {
-		base := strings.ToLower(filepath.Base(n))
-		if strings.Contains(base, "override") {
-			return false
-		}
-		if strings.HasSuffix(base, ".yml") || strings.HasSuffix(base, ".yaml") {
-			dir := strings.Trim(filepath.ToSlash(filepath.Dir(n)), ".")
-			return dir == "" || dir == "."
-		}
-		return false
-	})
+func (s *Service) roomEnvPath(roomID string) string {
+	if s.Rooms != nil {
+		return s.Rooms.RoomEnvPath(roomID)
+	}
+	return filepath.Join(s.stackDir(roomID), ".env")
 }
 
-// DeployMulti extracts project.vps.tar.gz (compose.yml + images/*.tar) and
-// starts the stack on the existing room network. It does not delete other rooms.
+// DeployMulti starts the stack already present in the room work dir
+// (/vps-manager/multi/<room_id>/stack with docker-compose.yml + .env)
+// on the existing room network. It does not delete other rooms.
+// (Manual .tar upload was removed — the stack files are managed via SSH/panel files UI.)
 func (s *Service) DeployMulti(room *store.Room, archive string, log io.Writer) error {
 	if s.Docker == nil || !s.Docker.Available() {
 		return fmt.Errorf("Docker unavailable")
@@ -54,12 +59,12 @@ func (s *Service) DeployMulti(room *store.Room, archive string, log io.Writer) e
 		log = io.Discard
 	}
 	_ = s.Rooms.EnsureUnlocked(room.ID)
-	dir := filepath.Join(s.RuntimeDir, room.ID, "stack")
+	dir := s.stackDir(room.ID)
 	// Preserve persistent bind sources (data/volumes) across re-extraction. A
 	// compose app mounts ./data (and ./volumes) here; removing the dir would wipe
 	// the project's stored data on every re-deploy. Move them out, rebuild the
 	// packaging dir, then move them back.
-	saved := filepath.Join(s.RuntimeDir, room.ID, ".stack-preserve")
+	saved := filepath.Join(filepath.Dir(s.stackDir(room.ID)), ".stack-preserve")
 	_ = os.RemoveAll(saved)
 	_ = os.MkdirAll(saved, 0o750)
 	for _, name := range []string{"data", "volumes", "__volumes"} {
@@ -124,7 +129,7 @@ func (s *Service) DeployMulti(room *store.Room, archive string, log io.Writer) e
 	if loaded == 0 {
 		return fmt.Errorf("no image tars loaded")
 	}
-	envPath := filepath.Join(s.RuntimeDir, room.ID, ".env")
+	envPath := s.roomEnvPath(room.ID)
 	_ = os.MkdirAll(filepath.Dir(envPath), 0o700)
 	if _, err := os.Stat(envPath); err != nil {
 		_ = os.WriteFile(envPath, []byte{}, 0o600)

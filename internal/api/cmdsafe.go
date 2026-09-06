@@ -25,7 +25,7 @@ func commandDangerous(cmd string) bool {
 	if strings.Count(c, "controlmaster") > 1 || strings.Count(c, "controlpath") > 1 {
 		return true
 	}
-	if strings.Contains(c, "rm ") && strings.Contains(c, " /opt/vps-rooms") && !strings.Contains(c, "runtime") {
+	if strings.Contains(c, "rm ") && strings.Contains(c, " /vps-manager") {
 		return true
 	}
 	for _, r := range c {

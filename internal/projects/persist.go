@@ -227,6 +227,15 @@ func (s *Service) dataVolumeDir(projectID string) string {
 	return filepath.Join(s.volumesDir(), projectID)
 }
 
+// dataVolumeDirFor is the canonical per-room volume dir:
+// /vps-manager/single/<room>/volumes/<project> (or multi/<room>/volumes/<project}).
+func (s *Service) dataVolumeDirFor(roomID, projectID string) string {
+	if s.Rooms != nil && roomID != "" {
+		return filepath.Join(s.Rooms.RoomVolumesDir(roomID), projectID)
+	}
+	return s.dataVolumeDir(projectID)
+}
+
 func (s *Service) persistDests(p *store.Project) []string {
 	pdir := s.Rooms.ProjectDir(p.RoomID, p.ID)
 	return persistDestsFromEnv(filepath.Join(pdir, ".env"), nil)
@@ -236,7 +245,7 @@ func (s *Service) ensurePersistentBinds(p *store.Project, pdir, envPath string, 
 	if s.skipMandatoryVolume(p) {
 		return binds
 	}
-	vol := s.dataVolumeDir(p.ID)
+	vol := s.dataVolumeDirFor(p.RoomID, p.ID)
 	_ = os.MkdirAll(vol, 0o755)
 	out := mergePersistentBinds(binds, envPath, vol, persistDestsFromEnv(envPath, nil))
 	meta := readMountsMeta(pdir)
@@ -256,7 +265,7 @@ func (s *Service) seedDataVolume(p *store.Project) {
 	if s.skipMandatoryVolume(p) || s.Docker == nil || p.ContainerID == "" {
 		return
 	}
-	vol := s.dataVolumeDir(p.ID)
+	vol := s.dataVolumeDirFor(p.RoomID, p.ID)
 	_ = os.MkdirAll(vol, 0o755)
 	migrateLegacyAppDataRoot(vol)
 	live, _ := s.Docker.InspectBinds(p.ContainerID)
@@ -304,7 +313,7 @@ func (s *Service) liveHasPersistentBinds(p *store.Project) bool {
 	if err != nil {
 		return false
 	}
-	vol := s.dataVolumeDir(p.ID)
+	vol := s.dataVolumeDirFor(p.RoomID, p.ID)
 	if len(dropLegacyVolumeRootBind(binds, vol)) != len(binds) {
 		return false
 	}
@@ -347,13 +356,16 @@ func (s *Service) WipeDataVolume(p *store.Project) error {
 	if s.skipMandatoryVolume(p) {
 		return fmt.Errorf("compose stack: wipe data not supported")
 	}
-	vol := s.dataVolumeDir(p.ID)
+	vol := s.dataVolumeDirFor(p.RoomID, p.ID)
 	if st, err := os.Stat(vol); err == nil && st.IsDir() {
 		ents, err := os.ReadDir(vol)
 		if err != nil {
 			return err
 		}
 		for _, e := range ents {
+			if e.Name() == ".env" || strings.HasSuffix(e.Name(), ".env") {
+				continue // NEVER delete .env
+			}
 			if err := os.RemoveAll(filepath.Join(vol, e.Name())); err != nil {
 				return fmt.Errorf("wipe %s: %w", e.Name(), err)
 			}

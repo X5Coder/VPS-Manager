@@ -231,10 +231,10 @@ func (s *Service) markDeployResult(roomID, projectID, image, digest string, ok b
 }
 
 func (s *Service) roomJobPath(roomID string) string {
-	if s.Rooms == nil || s.Rooms.RuntimeDir == "" || roomID == "" {
+	if s.Rooms == nil || roomID == "" {
 		return ""
 	}
-	return filepath.Join(s.Rooms.RuntimeDir, roomID, "__job.json")
+	return filepath.Join(s.Rooms.Dir(roomID), "__job.json")
 }
 
 func (s *Service) WriteRoomJob(roomID string, m DeployMeta) {

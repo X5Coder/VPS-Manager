@@ -16,16 +16,25 @@ import (
 )
 
 func main() {
-	roomsDir := env("VPS_ROOMS_ROOMS", "/opt/vps-rooms/rooms")
+	baseDir := env("VPS_MANAGER_BASE", env("VPS_ROOMS_BASE", "/vps-manager"))
+	singleDir := env("VPS_MANAGER_SINGLE", baseDir+"/single")
+	multiDir := env("VPS_MANAGER_MULTI", baseDir+"/multi")
+	roomsDir := singleDir
+	_ = multiDir
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
 	}
 	switch os.Args[1] {
 	case "list", "ls":
-		names, err := isolate.ListRoomNames(roomsDir)
-		if err != nil {
-			fail(err)
+		names, _ := isolate.ListRoomNames(singleDir)
+		mnames, _ := isolate.ListRoomNames(multiDir)
+		seen := map[string]bool{}
+		for _, n := range mnames {
+			if !seen[n] {
+				seen[n] = true
+				names = append(names, n+" [multi]")
+			}
 		}
 		if len(names) == 0 {
 			fmt.Println("(no rooms)")
@@ -72,7 +81,14 @@ The web panel remains available for admins.`)
 func openRoom(roomsDir, name string) {
 	id, err := isolate.FindRoomIDByName(roomsDir, name)
 	if err != nil {
-		fail(fmt.Errorf("access denied: room password required"))
+		baseDir := env("VPS_MANAGER_BASE", env("VPS_ROOMS_BASE", "/vps-manager"))
+		multiDir := env("VPS_MANAGER_MULTI", baseDir+"/multi")
+		id2, err2 := isolate.FindRoomIDByName(multiDir, name)
+		if err2 != nil {
+			fail(fmt.Errorf("access denied: room password required"))
+		}
+		id = id2
+		roomsDir = multiDir
 	}
 	p := isolate.Paths(roomsDir, "/tmp/vr-open", id)
 	hashb, err := os.ReadFile(p.Hash)
@@ -116,7 +132,8 @@ func statusRoom(roomsDir, name string) {
 	if err != nil {
 		fail(fmt.Errorf("room not found"))
 	}
-	p := isolate.Paths(roomsDir, "/opt/vps-rooms/runtime", id)
+	baseDir := env("VPS_MANAGER_BASE", env("VPS_ROOMS_BASE", "/vps-manager"))
+	p := isolate.PathsForKind(baseDir, id, "single")
 	fmt.Printf("room: %s\n", name)
 	if _, err := os.Stat(p.Vault); err == nil {
 		fmt.Println("vault: locked (vault.bin present)")
@@ -127,12 +144,16 @@ func statusRoom(roomsDir, name string) {
 }
 
 func sealRoom(roomsDir, name, password string) {
-	runtimeDir := env("VPS_ROOMS_RUNTIME", "/opt/vps-rooms/runtime")
+	baseDir := env("VPS_MANAGER_BASE", env("VPS_ROOMS_BASE", "/vps-manager"))
 	id, err := isolate.FindRoomIDByName(roomsDir, name)
 	if err != nil {
 		fail(err)
 	}
-	p := isolate.Paths(roomsDir, runtimeDir, id)
+	// try single then multi
+	p := isolate.PathsForKind(baseDir, id, "single")
+	if _, err := os.Stat(p.Root); err != nil {
+		p = isolate.PathsForKind(baseDir, id, "multi")
+	}
 	hashb, err := os.ReadFile(p.Hash)
 	if err != nil {
 		fail(err)

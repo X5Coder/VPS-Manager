@@ -1,12 +1,8 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -38,25 +34,17 @@ func (s *Server) handleDeployExec(w http.ResponseWriter, r *http.Request) {
 	if timeout > 10*time.Minute {
 		timeout = 10 * time.Minute
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), timeout)
-	defer cancel()
-	dir := filepath.Join(s.Cfg.RuntimeDir, "_deploy")
-	_ = os.MkdirAll(dir, 0o750)
-	cmd := exec.CommandContext(ctx, "sh", "-lc", body.Command)
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	res := map[string]any{"output": string(out), "where": "deploy"}
-	if err != nil {
-		res["error"] = err.Error()
-		res["exit"] = 1
-	} else {
-		res["exit"] = 0
-	}
-	writeJSON(w, 200, res)
+	j := s.startDeployExecJob(body.Command, timeout)
+	writeJSON(w, 200, map[string]any{"ok": true, "job_id": j.ID, "status": j.Status, "scope": "deploy"})
 }
 
 func (s *Server) handleHostExec(w http.ResponseWriter, r *http.Request) {
 	if s.requireOwner(w, r) == nil {
+		return
+	}
+	// GET polls latest job for host (so refresh keeps spinner)
+	if r.Method == http.MethodGet {
+		s.handleExecLatest(w, r)
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -82,22 +70,6 @@ func (s *Server) handleHostExec(w http.ResponseWriter, r *http.Request) {
 	if timeout > 10*time.Minute {
 		timeout = 10 * time.Minute
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), timeout)
-	defer cancel()
-	dir := "/root"
-	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
-		dir = s.Cfg.DataDir
-	}
-	cmd := exec.CommandContext(ctx, "sh", "-lc", body.Command)
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	res := map[string]any{"output": string(out), "where": "vps-host"}
-	if err != nil {
-		res["error"] = err.Error()
-		res["exit"] = 1
-	} else {
-		res["exit"] = 0
-	}
-	_ = appendLog(s.Cfg.DataDir, "host", "$ "+body.Command+"\n"+string(out))
-	writeJSON(w, 200, res)
+	j := s.startHostExecJob(body.Command, timeout)
+	writeJSON(w, 200, map[string]any{"ok": true, "job_id": j.ID, "status": j.Status, "scope": "host"})
 }

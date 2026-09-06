@@ -1,6 +1,6 @@
 # VPS Manager
 
-Self-hosted panel for a VPS: rooms, Docker (single image or multi stack), API tokens.
+Self-hosted panel for a VPS: rooms, Docker (single image or multi stack), full SSH integration. No public API, no manual .tar upload.
 
 **Developer:** [X5Coder](https://github.com/X5Coder)  
 **Source:** [https://github.com/X5Coder/VPS-Manager](https://github.com/X5Coder/VPS-Manager)  
@@ -38,12 +38,34 @@ Panel URL:  http://YOUR_VPS_IP:9090
 
 Open that URL. Unlock with a **Telegram bot token** (a short code is sent to your Telegram). Then sign in with the **panel password** you typed.
 
-Service: `vps-rooms.service` · files: `/opt/vps-rooms` · port **9090**.
+Service: `vps-rooms.service` · files: `/vps-manager` · port **9090**.
+
+Layout (only this shape):
+
+```text
+/vps-manager/
+├── bin/                        ← VPS Manager binary
+├── data/                       ← DB, logs, settings
+├── proxy/                      ← proxy settings (nginx/caddy)
+├── x5coder-agent/              ← x5coder agent
+├── single/                     ← single-container projects
+│   └── <room_id>/
+│       ├── project/            ← code + .env (single file)
+│       ├── volumes/            ← persistent data (app-data/, app-uploads/, ...)
+│       └── config/             ← extra settings (optional)
+└── multi/                      ← multi-container projects
+    └── <room_id>/
+        ├── stack/              ← docker-compose.yml + .env (single file)
+        ├── volumes/            ← service data (db/, storage/, functions/, ...)
+        └── config/             ← extra settings (optional)
+```
+
+Every web page shows the VPS path breadcrumb on top (where you are in the VPS) + the SSH connect chip.
 
 Change the Telegram owner later (SSH, then panel password, then new id):
 
 ```bash
-/opt/vps-rooms/bin/vps-rooms set-telegram-id
+/vps-manager/bin/vps-rooms set-telegram-id
 ```
 
-API usage (quota, create room, single `.tar` vs multi `.tar.gz`, GitHub Actions) is in the panel **Docs** page, or [docs/API.md](docs/API.md).
+SSH (fully integrated): see the **SSH** page in the panel — connect string, port, root login, authorized keys, VPS layout. Deploy via image name or compose text; manual Docker `.tar` upload was removed.

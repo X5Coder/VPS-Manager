@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -52,10 +51,13 @@ type Server struct {
 }
 
 func New(cfg config.Config, st *store.Store, docker *dockerx.Client, hub *metrics.Hub) *Server {
-	rs := &rooms.Service{Store: st, Docker: docker, RoomsDir: cfg.RoomsDir, RuntimeDir: cfg.RuntimeDir, VolumesDir: cfg.VolumesDir}
-	ps := &projects.Service{Store: st, Docker: docker, Rooms: rs, VolumesDir: cfg.VolumesDir}
-	sk := &stack.Service{Store: st, Docker: docker, Rooms: rs, RuntimeDir: cfg.RuntimeDir}
-	proxyDir := ensureProxyDir(cfg.DataDir)
+	rs := &rooms.Service{Store: st, Docker: docker, BaseDir: cfg.BaseDir, SingleDir: cfg.SingleDir, MultiDir: cfg.MultiDir, RoomsDir: cfg.RoomsDir, RuntimeDir: cfg.RuntimeDir, VolumesDir: cfg.VolumesDir}
+	ps := &projects.Service{Store: st, Docker: docker, Rooms: rs, VolumesDir: ""}
+	sk := &stack.Service{Store: st, Docker: docker, Rooms: rs, BaseDir: cfg.BaseDir, RuntimeDir: cfg.RuntimeDir}
+	proxyDir := cfg.ProxyDir
+	if proxyDir == "" {
+		proxyDir = ensureProxyDir(cfg.DataDir)
+	}
 	s := &Server{
 		Cfg: cfg, Store: st, Rooms: rs, Projects: ps, Stack: sk, Docker: docker, Metrics: hub,
 		Gate: telegram.NewGate(cfg.DataDir), Notify: telegram.NewNotifier(cfg.DataDir),
@@ -63,7 +65,7 @@ func New(cfg config.Config, st *store.Store, docker *dockerx.Client, hub *metric
 		Mux: http.NewServeMux(),
 	}
 	SweepStaleUploads(2 * time.Hour)
-	inventory.AdoptExisting(st, docker, rs, cfg.RuntimeDir)
+	inventory.AdoptExisting(st, docker, rs, cfg.SingleDir)
 	go ps.AttachMissingDataVolumes()
 	s.routes()
 	ps.AfterChange = func() { _ = s.syncProxy() }
@@ -100,7 +102,7 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("/api/deploy/exec", s.withGate(s.handleDeployExec))
 	s.Mux.HandleFunc("/api/deploy", s.withGate(s.autoDeploy))
 	s.routesManage()
-	s.routesAPITokens()
+	s.routesSSH()
 	s.routesProxyDomain()
 }
 
@@ -197,15 +199,6 @@ func (s *Server) withGate(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if s.hasGateSession(r) {
 			next(w, r)
-			return
-		}
-		if tok, _ := s.apiTokenFromRequest(r); tok != nil {
-			next(w, r)
-			return
-		}
-		h := r.Header.Get("Authorization")
-		if strings.HasPrefix(strings.ToLower(h), "bearer ") || strings.TrimSpace(r.Header.Get("X-API-Token")) != "" {
-			writeErr(w, 401, "invalid api token")
 			return
 		}
 		writeErr(w, 401, telegram.DeniedMsg)
@@ -913,9 +906,6 @@ func (s *Server) handleRoomByID(w http.ResponseWriter, r *http.Request) {
 		case "update":
 			s.handleRoomUpdate(w, r, id)
 			return
-		case "image-tar":
-			s.handleRoomImageTar(w, r, id)
-			return
 		case "pause":
 			if r.Method != http.MethodPost {
 				writeErr(w, 405, "method")
@@ -998,7 +988,7 @@ func (s *Server) handleRoomByID(w http.ResponseWriter, r *http.Request) {
 		if room == nil {
 			return
 		}
-		inventory.RefreshRoom(s.Store, s.Docker, s.Rooms, s.Cfg.RuntimeDir, *room)
+		inventory.RefreshRoom(s.Store, s.Docker, s.Rooms, s.Cfg.SingleDir, *room)
 		projs, _ := s.Projects.List(id)
 		if projs == nil {
 			projs = []store.Project{}
@@ -1064,6 +1054,12 @@ func (s *Server) handleRoomByID(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, 200, map[string]any{
 			"id": room.ID, "name": room.Name,
+			"vps_path":   s.Rooms.VPSPath(room.ID),
+			"work_dir":   s.Rooms.RoomWorkDir(room.ID),
+			"volumes_dir": s.Rooms.RoomVolumesDir(room.ID),
+			"config_dir": s.Rooms.RoomConfigDir(room.ID),
+			"env_path":   s.Rooms.RoomEnvPath(room.ID),
+			"connect":    s.sshConnection(r),
 			"kind":        room.Kind,
 			"password":    roomPasswordForSession(sess, room),
 			"quota_bytes": room.QuotaBytes, "usage_bytes": usage.Usage,
@@ -1188,7 +1184,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		ct := r.Header.Get("Content-Type")
 		if strings.Contains(ct, "multipart/form-data") {
-			s.handleUploadDeploy(w, r, sess.RoomID)
+			writeErr(w, 410, "manual upload removed — use image name or compose file text")
 			return
 		}
 		var body struct {
@@ -1236,61 +1232,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUploadDeploy(w http.ResponseWriter, r *http.Request, roomID string) {
-	if err := r.ParseMultipartForm(64 << 20); err != nil {
-		writeErr(w, 400, "فشل قراءة الملف")
-		return
-	}
-	name := r.FormValue("name")
-	envText := r.FormValue("env")
-	hostPort := projects.ParsePort(r.FormValue("host_port"))
-	cPort := projects.ParsePort(r.FormValue("container_port"))
-	file, hdr, err := r.FormFile("file")
-	if err != nil {
-		writeErr(w, 400, "الملف مطلوب")
-		return
-	}
-	defer file.Close()
-	tmp, err := os.MkdirTemp("", "vps-rooms-upload-*")
-	if err != nil {
-		writeErr(w, 500, err.Error())
-		return
-	}
-	defer os.RemoveAll(tmp)
-	destName := filepath.Base(hdr.Filename)
-	if destName == "" {
-		destName = "Dockerfile"
-	}
-	dest := filepath.Join(tmp, destName)
-	out, err := os.Create(dest)
-	if err != nil {
-		writeErr(w, 500, err.Error())
-		return
-	}
-	if _, err := io.Copy(out, file); err != nil {
-		out.Close()
-		writeErr(w, 500, err.Error())
-		return
-	}
-	out.Close()
-	// If uploaded Dockerfile, ensure name
-	if strings.ToLower(destName) != "dockerfile" {
-		// wrap: if compose-like skip for now; treat as Dockerfile content if no Dockerfile
-		_ = os.Rename(dest, filepath.Join(tmp, "Dockerfile"))
-	}
-	if name == "" {
-		name = "upload-" + time.Now().Format("150405")
-	}
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	flusher, _ := w.(http.Flusher)
-	log := &flushWriter{w: w, f: flusher}
-	p, err := s.Projects.DeployBuild(projects.DeployBuildInput{
-		RoomID: roomID, Name: name, HostPort: hostPort, ContainerPort: cPort, EnvText: envText, SourceDir: tmp, Log: log,
-	})
-	if err != nil {
-		fmt.Fprintf(log, "خطأ: %v\n", err)
-		return
-	}
-	fmt.Fprintf(log, "OK %s\n", p.ID)
+	writeErr(w, 410, "manual upload removed — use image name or compose file text")
 }
 
 func (s *Server) handleProjectByID(w http.ResponseWriter, r *http.Request) {
@@ -1403,7 +1345,7 @@ func (s *Server) handleProjectByID(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, err.Error())
 			return
 		}
-		s.domainBindJSON(w, r, p)
+		writeJSON(w, 200, map[string]any{"ok": "1", "domain": p.Domain, "links": s.projectLinks(r, p)})
 	case "wipe-data":
 		if r.Method != http.MethodPost {
 			writeErr(w, 405, "method")
@@ -1465,7 +1407,8 @@ func (s *Server) handleProjectByID(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 200, map[string]any{
 				"editable": true,
 				"content":  text,
-				"path":     filepath.Join(s.Cfg.RuntimeDir, p.RoomID, "projects", p.ID, ".env"),
+				"path":     s.roomEnvPath(p.RoomID),
+			"vps_path":   s.Rooms.VPSPath(p.RoomID),
 			})
 			return
 		}

@@ -303,7 +303,7 @@ func adoptMounts(st *store.Store, docker *dockerx.Client, roomID, dockerID strin
 }
 
 func copyRoomEnv(rs *rooms.Service, runtimeDir, roomID, projectID string) {
-	dest := filepath.Join(runtimeDir, roomID, ".env")
+	dest := rs.RoomEnvPath(roomID)
 	if st, err := os.Stat(dest); err == nil && st.Size() > 0 {
 		return
 	}

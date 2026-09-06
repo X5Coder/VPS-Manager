@@ -2,11 +2,8 @@ package api
 
 import (
 	"fmt"
-	"io"
 	"log"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/x5coder/vps-rooms/internal/projects"
@@ -141,130 +138,6 @@ func (s *Server) localProjectTag(p *store.Project) string {
 		return img
 	}
 	return projects.DefaultVpsroomsTag(p.Name)
-}
-
-func (s *Server) applyImageTar(p *store.Project, tarPath string, logw io.Writer) (string, error) {
-	if p == nil {
-		return "", fmt.Errorf("project has no container")
-	}
-	room, err := s.Store.GetRoom(p.RoomID)
-	if err != nil || room == nil {
-		return "", fmt.Errorf("room not found")
-	}
-	return s.applyImageTarRoom(room, p, tarPath, logw)
-}
-
-func (s *Server) applyImageTarRoom(room *store.Room, p *store.Project, tarPath string, logw io.Writer) (string, error) {
-	if room == nil {
-		return "", fmt.Errorf("room not found")
-	}
-	if s.Docker == nil || !s.Docker.Available() {
-		return "", fmt.Errorf("Docker unavailable")
-	}
-	if logw == nil {
-		logw = io.Discard
-	}
-	want := projects.DefaultVpsroomsTag(room.Name)
-	if p != nil {
-		want = s.localProjectTag(p)
-	}
-	loaded, err := s.Docker.LoadImageTag(tarPath)
-	if err != nil {
-		if p != nil {
-			s.Projects.MarkDeployResult(p.RoomID, p.ID, p.Image, "", false, err.Error())
-		} else {
-			s.Projects.MarkDeployResult(room.ID, room.ID, want, "", false, err.Error())
-		}
-		return "", err
-	}
-	fmt.Fprintf(logw, "Loaded %s\n", loaded)
-	tagSrc := loaded
-	if id := s.Docker.ImageID(loaded); id != "" {
-		tagSrc = id
-	}
-	if err := s.Docker.Tag(tagSrc, want); err != nil {
-		if p != nil {
-			s.Projects.MarkDeployResult(p.RoomID, p.ID, p.Image, "", false, err.Error())
-		}
-		return "", err
-	}
-	fmt.Fprintf(logw, "Tagged %s → %s\nRecreating container (same id, ports, env)...\n", loaded, want)
-	if p != nil {
-		if err := s.Projects.RedeployImage(projects.RedeployInput{
-			ID: p.ID, Image: want, Pull: false, Recreate: true, Log: logw,
-		}); err != nil {
-			s.Projects.MarkDeployResult(p.RoomID, p.ID, want, "", false, err.Error())
-			return want, err
-		}
-		digest := s.dockerDigest(want)
-		s.Projects.MarkDeployResult(p.RoomID, p.ID, want, digest, true, "")
-		s.Docker.PruneUnusedLocalImages()
-		return want, nil
-	}
-	cPort, hPort := s.readRoomPending(room.ID)
-	envText := ""
-	if b, err := os.ReadFile(filepath.Join(s.Cfg.RuntimeDir, room.ID, ".env")); err == nil {
-		envText = string(b)
-	}
-	created, err := s.Projects.DeployImage(projects.DeployImageInput{
-		RoomID: room.ID, Name: room.Name, Image: want,
-		HostPort: hPort, ContainerPort: cPort, EnvText: envText, Log: logw,
-	})
-	if err != nil {
-		s.Projects.MarkDeployResult(room.ID, room.ID, want, "", false, err.Error())
-		return want, err
-	}
-	digest := s.dockerDigest(want)
-	s.Projects.MarkDeployResult(room.ID, created.ID, want, digest, true, "")
-	s.Docker.PruneUnusedLocalImages()
-	fmt.Fprintf(logw, "Updated. Project is running automatically. project=%s image=%s\n", created.ID, want)
-	return want, nil
-}
-
-func (s *Server) startTarDeployAsync(room *store.Room, p *store.Project, tarPath, tmpDir string) error {
-	if room == nil {
-		_ = os.RemoveAll(tmpDir)
-		return fmt.Errorf("room not found")
-	}
-	key := room.ID
-	if err := s.tryBeginJob(room.ID, "deploy"); err != nil {
-		_ = os.RemoveAll(tmpDir)
-		return err
-	}
-	if p != nil && p.ID != room.ID {
-		if err := s.tryBeginJob(p.ID, "deploy"); err != nil {
-			s.endJob(room.ID)
-			_ = os.RemoveAll(tmpDir)
-			return err
-		}
-	}
-	want := projects.DefaultVpsroomsTag(room.Name)
-	if p != nil {
-		want = s.localProjectTag(p)
-		s.Projects.MarkDeploying(p.RoomID, p.ID, want, "deploy")
-	} else {
-		s.Projects.WriteRoomJob(room.ID, projects.DeployMeta{Status: "deploying", Job: "deploy", Image: want})
-	}
-	var pCopy *store.Project
-	if p != nil {
-		cp := *p
-		pCopy = &cp
-	}
-	roomCopy := *room
-	go func(room store.Room, p *store.Project, tarPath, tmpDir, key string) {
-		defer s.endJob(room.ID)
-		if p != nil && p.ID != room.ID {
-			defer s.endJob(p.ID)
-		}
-		defer os.RemoveAll(tmpDir)
-		if _, err := s.applyImageTarRoom(&room, p, tarPath, io.Discard); err != nil {
-			log.Printf("upload %s: %v", key, err)
-			s.Projects.WriteRoomJob(room.ID, projects.DeployMeta{Status: "error", Job: "", LastDeployError: err.Error(), LastDeployOK: false})
-		} else {
-			s.Projects.ClearRoomJob(room.ID)
-		}
-	}(roomCopy, pCopy, tarPath, tmpDir, key)
-	return nil
 }
 
 func (s *Server) dockerDigest(image string) string {

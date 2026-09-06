@@ -18,11 +18,11 @@ import (
 
 func runSetTelegramID() int {
 	cfg := config.Load()
-	prod := strings.HasPrefix(cfg.DataDir, "/opt/vps-rooms")
+	prod := strings.HasPrefix(cfg.BaseDir, "/vps-manager")
 	if prod && os.Geteuid() != 0 {
 		fmt.Fprintln(os.Stderr, "Run as root on the VPS (SSH with the VPS password first).")
 		fmt.Fprintln(os.Stderr, "  ssh root@YOUR_VPS_IP")
-		fmt.Fprintln(os.Stderr, "  /opt/vps-rooms/bin/vps-rooms set-telegram-id")
+		fmt.Fprintln(os.Stderr, "  /vps-manager/bin/vps-rooms set-telegram-id")
 		return 1
 	}
 	fmt.Print("Panel admin password: ")
@@ -52,8 +52,8 @@ func runSetTelegramID() int {
 		return 1
 	}
 	fmt.Println("Owner Telegram id updated.")
-	if !strings.HasPrefix(cfg.DataDir, "/opt/vps-rooms") {
-		fmt.Println("Data dir is not /opt/vps-rooms — skip systemd restart.")
+	if !strings.HasPrefix(cfg.BaseDir, "/vps-manager") {
+		fmt.Println("Base dir is not /vps-manager — skip systemd restart.")
 		return 0
 	}
 	if err := exec.Command("systemctl", "restart", "vps-rooms.service").Run(); err != nil {

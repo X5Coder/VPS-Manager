@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
 
-SOCK = os.environ.get("VPS_ROOMS_AGENT_SOCK", "/opt/vps-rooms/data/agent.sock")
+SOCK = os.environ.get("VPS_ROOMS_AGENT_SOCK", "/vps-manager/data/agent.sock")
 HTTP_PORT = int(os.environ.get("VPS_ROOMS_AGENT_HTTP", "0"))
 
 

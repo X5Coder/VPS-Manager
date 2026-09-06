@@ -53,6 +53,9 @@ func wipeHostDirContents(dir string) error {
 		return err
 	}
 	for _, e := range ents {
+		if e.Name() == ".env" || strings.HasSuffix(e.Name(), ".env") {
+			continue // NEVER delete .env files
+		}
 		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
 			return err
 		}

@@ -2,7 +2,7 @@
 # Fast host install: prebuilt binary only. Does NOT touch other projects/containers.
 set -euo pipefail
 
-PANEL_DIR="${PANEL_DIR:-/opt/vps-rooms}"
+PANEL_DIR="${PANEL_DIR:-/vps-manager}"
 BIN_SRC="${1:-/tmp/vps-rooms-linux}"
 AGENT_SRC="${2:-/tmp/vps-rooms-agent.py}"
 
@@ -13,7 +13,7 @@ if [[ ! -f "$BIN_SRC" ]]; then
   echo "missing binary: $BIN_SRC"; exit 1
 fi
 
-mkdir -p "$PANEL_DIR/bin" "$PANEL_DIR/data/secrets" "$PANEL_DIR/rooms"
+mkdir -p "$PANEL_DIR/bin" "$PANEL_DIR/data/secrets" "$PANEL_DIR/proxy" "$PANEL_DIR/x5coder-agent" "$PANEL_DIR/single" "$PANEL_DIR/multi"
 chmod 700 "$PANEL_DIR/data/secrets"
 
 install -m 0755 "$BIN_SRC" "$PANEL_DIR/bin/vps-rooms"
@@ -34,12 +34,14 @@ Wants=docker.service
 [Service]
 Type=simple
 Environment=VPS_ROOMS_ADDR=:9090
-Environment=VPS_ROOMS_DATA=$PANEL_DIR/data
-Environment=VPS_ROOMS_ROOMS=$PANEL_DIR/rooms
-Environment=VPS_ROOMS_RUNTIME=$PANEL_DIR/runtime
+Environment=VPS_MANAGER_BASE=$PANEL_DIR
+Environment=VPS_MANAGER_DATA=$PANEL_DIR/data
+Environment=VPS_MANAGER_SINGLE=$PANEL_DIR/single
+Environment=VPS_MANAGER_MULTI=$PANEL_DIR/multi
+Environment=VPS_MANAGER_PROXY=$PANEL_DIR/proxy
 Environment=VPS_ROOMS_AGENT_SOCK=$PANEL_DIR/data/agent.sock
 WorkingDirectory=$PANEL_DIR
-ExecStartPre=/bin/mkdir -p $PANEL_DIR/data/secrets $PANEL_DIR/rooms $PANEL_DIR/runtime
+ExecStartPre=/bin/mkdir -p $PANEL_DIR/bin $PANEL_DIR/data/secrets $PANEL_DIR/proxy $PANEL_DIR/x5coder-agent $PANEL_DIR/single $PANEL_DIR/multi
 ExecStart=/bin/bash -c '$PANEL_DIR/bin/metrics_agent.py & exec $PANEL_DIR/bin/vps-rooms'
 Restart=always
 RestartSec=3

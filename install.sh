@@ -7,7 +7,7 @@ set -euo pipefail
 REPO_URL="${VPS_MANAGER_REPO:-https://github.com/X5Coder/VPS-Manager.git}"
 BRANCH="${VPS_MANAGER_BRANCH:-main}"
 TARBALL_URL="${VPS_MANAGER_TARBALL:-https://github.com/X5Coder/VPS-Manager/archive/refs/heads/${BRANCH}.tar.gz}"
-PANEL_DIR="${PANEL_DIR:-/opt/vps-rooms}"
+PANEL_DIR="${PANEL_DIR:-/vps-manager}"
 SRC_DIR="${PANEL_DIR}/src"
 
 retry() {
@@ -111,7 +111,8 @@ if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
   fi
 fi
 
-mkdir -p "${PANEL_DIR}/data/secrets" "${PANEL_DIR}/rooms" "${PANEL_DIR}/runtime" "${PANEL_DIR}/volumes" "${PANEL_DIR}/proxy"
+mkdir -p "${PANEL_DIR}/bin" "${PANEL_DIR}/data/secrets" "${PANEL_DIR}/proxy" "${PANEL_DIR}/x5coder-agent" "${PANEL_DIR}/single" "${PANEL_DIR}/multi" "${PANEL_DIR}/backup"
+chmod 755 "${PANEL_DIR}/bin" "${PANEL_DIR}/proxy" "${PANEL_DIR}/x5coder-agent" "${PANEL_DIR}/single" "${PANEL_DIR}/multi" "${PANEL_DIR}/backup"
 chmod 700 "${PANEL_DIR}/data/secrets"
 
 fetch_source() {

@@ -2,16 +2,10 @@ package api
 
 import (
 	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/x5coder/vps-rooms/internal/dockerx"
-	"github.com/x5coder/vps-rooms/internal/projects"
-	"github.com/x5coder/vps-rooms/internal/stack"
 	"github.com/x5coder/vps-rooms/internal/store"
 )
 
@@ -44,8 +38,6 @@ func (s *Server) handleRoomContainer(w http.ResponseWriter, r *http.Request, roo
 		q.Set("container", ct.ID)
 		r.URL.RawQuery = q.Encode()
 		s.handleRoomLogs(w, r, roomID)
-	case "image-tar":
-		s.handleContainerImageTar(w, r, roomID, ct)
 	default:
 		writeErr(w, 404, "not found")
 	}
@@ -120,138 +112,4 @@ func (s *Server) handleContainerFiles(w http.ResponseWriter, r *http.Request, ro
 	default:
 		writeErr(w, 405, "method")
 	}
-}
-
-func (s *Server) handleContainerImageTar(w http.ResponseWriter, r *http.Request, roomID string, ct *store.Container) {
-	if _, room := s.canControlRoom(w, r, roomID); room == nil {
-		return
-	}
-	if r.Method != http.MethodPost {
-		writeErr(w, 405, "method")
-		return
-	}
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	flusher, _ := w.(http.Flusher)
-	logw := &flushWriter{w: w, f: flusher}
-	r.Body = http.MaxBytesReader(w, r.Body, 16<<30)
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		fmt.Fprintf(logw, "error: %v\n", err)
-		return
-	}
-	if envText := readUploadEnv(r); envText != "" {
-		s.saveDeployEnv(roomID, envText)
-	}
-	file, hdr, err := r.FormFile("file")
-	if err != nil {
-		fmt.Fprintf(logw, "error: upload a docker save .tar for this container\n")
-		return
-	}
-	defer file.Close()
-	fname := "app.tar"
-	if hdr != nil && hdr.Filename != "" {
-		fname = hdr.Filename
-	}
-	tmp, err := os.MkdirTemp("", "vm-ctr-*")
-	if err != nil {
-		fmt.Fprintf(logw, "error: %v\n", err)
-		return
-	}
-	defer os.RemoveAll(tmp)
-	dest := filepath.Join(tmp, fname)
-	out, err := os.Create(dest)
-	if err != nil {
-		fmt.Fprintf(logw, "error: %v\n", err)
-		return
-	}
-	n, err := io.Copy(out, file)
-	out.Close()
-	if err != nil {
-		fmt.Fprintf(logw, "error: %v\n", err)
-		return
-	}
-	fmt.Fprintf(logw, "Received %s (%d bytes). Other containers stay running.\n", fname, n)
-	room, _ := s.Store.GetRoom(roomID)
-	if err := s.applyImageTarOneContainer(room, ct, dest, logw); err != nil {
-		fmt.Fprintf(logw, "error: %v\n", err)
-		return
-	}
-	fmt.Fprintf(logw, "Updated container %s. The rest of the room is unchanged.\n", ct.Name)
-}
-
-func (s *Server) applyImageTarOneContainer(room *store.Room, ct *store.Container, tarPath string, logw io.Writer) error {
-	if s.Docker == nil || !s.Docker.Available() {
-		return fmt.Errorf("Docker unavailable")
-	}
-	if logw == nil {
-		logw = io.Discard
-	}
-	fmt.Fprintf(logw, "Loading image (this container only)...\n")
-	loaded, err := s.Docker.LoadImageTag(tarPath)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(logw, "Loaded %s\n", loaded)
-	want := strings.TrimSpace(ct.Image)
-	if want == "" {
-		want = loaded
-	} else if loaded != "" && loaded != want {
-		_ = s.Docker.Tag(loaded, want)
-		fmt.Fprintf(logw, "Tagged %s → %s\n", loaded, want)
-	}
-	svc := strings.TrimSpace(ct.Service)
-	if svc != "" && svc != ct.Name {
-		projs, _ := s.Store.ListProjects(room.ID)
-		for _, p := range projs {
-			_, composeDir, composeProject, _ := projects.ProjectLayout(s.Rooms.ProjectDir(room.ID, p.ID))
-			dir := composeDir
-			if dir == "" {
-				dir = s.Rooms.ProjectDir(room.ID, p.ID)
-			}
-			if dockerx.ComposeFile(dir) == "" {
-				continue
-			}
-			proj := composeProject
-			if proj == "" {
-				proj = "vr" + store.ShortRoomID(room.ID)
-			}
-			fmt.Fprintf(logw, "Restarting service %s only (compose --no-deps)...\n", svc)
-			if err := s.Docker.ComposeUpService(dir, proj, svc, logw); err != nil {
-				return err
-			}
-			ct.Image = want
-			ct.Status = "running"
-			_ = s.Store.UpsertContainer(*ct)
-			return nil
-		}
-	}
-	if p, _ := s.Store.GetProject(ct.ID); p != nil && p.RoomID == room.ID {
-		return s.Projects.RedeployImage(projects.RedeployInput{
-			ID: p.ID, Image: want, Pull: false, Recreate: true, Log: logw,
-		})
-	}
-	fmt.Fprintf(logw, "Recreating this container with the new image...\n")
-	newID, err := s.Docker.RecreateWithImage(ct.DockerID, want, room.NetworkName)
-	if err != nil {
-		return err
-	}
-	ct.DockerID = newID
-	ct.Image = want
-	ct.Status = "running"
-	return s.Store.UpsertContainer(*ct)
-}
-
-func (s *Server) applyUploadedPackage(room *store.Room, p *store.Project, dest, fname string, containerID string, logw io.Writer) error {
-	if s.Stack != nil && stack.ArchiveHasCompose(dest) {
-		fmt.Fprintf(logw, "Multi package — other rooms are not touched.\n")
-		return s.Stack.DeployMulti(room, dest, logw)
-	}
-	if containerID != "" {
-		ct := s.resolveRoomContainer(room.ID, containerID)
-		if ct == nil {
-			return fmt.Errorf("container not found")
-		}
-		return s.applyImageTarOneContainer(room, ct, dest, logw)
-	}
-	_, err := s.applyImageTarRoom(room, p, dest, logw)
-	return err
 }

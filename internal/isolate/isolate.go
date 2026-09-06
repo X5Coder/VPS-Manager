@@ -25,6 +25,13 @@ type RoomPaths struct {
 	LockNotice string
 	Readme     string
 	Runtime    string // decrypted working tree used by panel
+	// New canonical layout under /vps-manager.
+	Kind       string // single | multi
+	WorkDir    string // single → <root>/project, multi → <root>/stack
+	EnvPath    string // single → project/.env, multi → stack/.env
+	VolumesDir string // <root>/volumes
+	ConfigDir  string // <root>/config
+	BackupDir  string // <root>/backup → <room_id>.zip
 }
 
 func Paths(roomsDir, runtimeDir, roomID string) RoomPaths {
@@ -37,6 +44,45 @@ func Paths(roomsDir, runtimeDir, roomID string) RoomPaths {
 		LockNotice: filepath.Join(root, LockFile),
 		Readme:     filepath.Join(root, ReadmeFile),
 		Runtime:    filepath.Join(runtimeDir, roomID, "projects"),
+		Kind:       "single",
+		WorkDir:    filepath.Join(runtimeDir, roomID, "projects"),
+		EnvPath:    filepath.Join(runtimeDir, roomID, "projects", ".env"),
+		VolumesDir: filepath.Join(root, "volumes"),
+		ConfigDir:  filepath.Join(root, "config"),
+		BackupDir:  filepath.Join(root, "backup"),
+	}
+}
+
+// PathsForKind is the canonical resolver for /vps-manager/{single,multi}/<room_id>.
+// single: <root>/project/.env + volumes/ + config/
+// multi:  <root>/stack/docker-compose.yml+.env + volumes/ + config/
+func PathsForKind(baseDir, roomID, kind string) RoomPaths {
+	k := "single"
+	if kind == "multi" {
+		k = "multi"
+	}
+	var root, work string
+	if k == "multi" {
+		root = filepath.Join(baseDir, "multi", roomID)
+		work = filepath.Join(root, "stack")
+	} else {
+		root = filepath.Join(baseDir, "single", roomID)
+		work = filepath.Join(root, "project")
+	}
+	return RoomPaths{
+		Root:       root,
+		Vault:      filepath.Join(root, VaultFile),
+		Hash:       filepath.Join(root, HashFile),
+		Name:       filepath.Join(root, NameFile),
+		LockNotice: filepath.Join(root, LockFile),
+		Readme:     filepath.Join(root, ReadmeFile),
+		Runtime:    work,
+		Kind:       k,
+		WorkDir:    work,
+		EnvPath:    filepath.Join(work, ".env"),
+		VolumesDir: filepath.Join(root, "volumes"),
+		ConfigDir:  filepath.Join(root, "config"),
+		BackupDir:  filepath.Join(root, "backup"),
 	}
 }
 
@@ -61,6 +107,20 @@ The web panel can manage rooms without this CLI.
 	return os.WriteFile(p.Readme, []byte(readme), 0o644)
 }
 
+func EnsureLayout(p RoomPaths) error {
+	for _, d := range []string{p.Root, p.WorkDir, p.VolumesDir, p.ConfigDir, p.BackupDir} {
+		if d == "" {
+			continue
+		}
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			return err
+		}
+	}
+	// Default sub-volumes keep the shape stable: single → app-data/app-uploads,
+	// multi → db/storage/functions (created lazily, only if missing).
+	return nil
+}
+
 func SealRuntime(p RoomPaths, password string) error {
 	if err := os.MkdirAll(filepath.Dir(p.Runtime), 0o700); err != nil {
 		return err
@@ -74,6 +134,7 @@ func SealRuntime(p RoomPaths, password string) error {
 	// Remove plaintext working copy markers from room root (keep only vault + notices)
 	// Wipe any legacy plaintext projects under room root
 	_ = os.RemoveAll(filepath.Join(p.Root, "projects"))
+	_ = EnsureLayout(p)
 	return nil
 }
 

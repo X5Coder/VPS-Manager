@@ -16,19 +16,15 @@ type roomPending struct {
 	HostPort      int `json:"host_port"`
 }
 
-func (s *Server) tokenIsOwner(tok *store.APIToken) bool {
-	return tok != nil
-}
-
 func (s *Server) pendingPath(roomID string) string {
-	return filepath.Join(s.Cfg.RuntimeDir, roomID, "pending.json")
+	return filepath.Join(s.Rooms.VPSPath(roomID), "pending.json")
 }
 
 func (s *Server) writeRoomPending(roomID string, cPort, hPort int) {
 	if cPort <= 0 {
 		cPort = 8080
 	}
-	_ = os.MkdirAll(filepath.Join(s.Cfg.RuntimeDir, roomID), 0o700)
+	_ = os.MkdirAll(s.Rooms.VPSPath(roomID), 0o700)
 	b, _ := json.Marshal(roomPending{ContainerPort: cPort, HostPort: hPort})
 	_ = os.WriteFile(s.pendingPath(roomID), b, 0o600)
 }
@@ -89,7 +85,7 @@ func (s *Server) createEmptyRoom(name string, quotaGB float64, cPort, hPort int,
 		_ = s.Store.UpdateRoom(*rm)
 	}
 	if strings.TrimSpace(sshCert) != "" {
-		p := filepath.Join(s.Cfg.RuntimeDir, rm.ID, "ssh.crt")
+		p := filepath.Join(s.Rooms.RoomConfigDir(rm.ID), "ssh.crt")
 		_ = os.MkdirAll(filepath.Dir(p), 0o700)
 		_ = os.WriteFile(p, []byte(sshCert), 0o600)
 	}

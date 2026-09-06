@@ -22,9 +22,35 @@ var nameRe = regexp.MustCompile(`^[A-Za-z0-9_-]{2,40}$`)
 type Service struct {
 	Store      *store.Store
 	Docker     *dockerx.Client
-	RoomsDir   string
-	RuntimeDir string
-	VolumesDir string
+	BaseDir    string
+	SingleDir  string
+	MultiDir   string
+	RoomsDir   string // legacy (migration)
+	RuntimeDir string // legacy (migration)
+	VolumesDir string // legacy (unused)
+}
+
+func (s *Service) baseDir() string {
+	if s.BaseDir != "" {
+		return s.BaseDir
+	}
+	if s.SingleDir != "" {
+		if d := filepath.Dir(strings.TrimSuffix(s.SingleDir, "/")); d != "" && d != "." {
+			return d
+		}
+	}
+	return "/vps-manager"
+}
+
+func (s *Service) kindOf(roomID string) string {
+	if s.Store != nil {
+		if r, _ := s.Store.GetRoom(roomID); r != nil {
+			if strings.ToLower(strings.TrimSpace(r.Kind)) == "multi" {
+				return "multi"
+			}
+		}
+	}
+	return "single"
 }
 
 type DiskStats struct {
@@ -44,7 +70,11 @@ type CreateInput struct {
 }
 
 func (s *Service) paths(roomID string) isolate.RoomPaths {
-	return isolate.Paths(s.RoomsDir, s.RuntimeDir, roomID)
+	return isolate.PathsForKind(s.baseDir(), roomID, s.kindOf(roomID))
+}
+
+func (s *Service) pathsWithKind(roomID, kind string) isolate.RoomPaths {
+	return isolate.PathsForKind(s.baseDir(), roomID, kind)
 }
 
 func (s *Service) Create(in CreateInput) (*store.Room, error) {
@@ -78,7 +108,7 @@ func (s *Service) Create(in CreateInput) (*store.Room, error) {
 		Kind:        kind,
 		CreatedAt:   time.Now().UTC(),
 	}
-	p := s.paths(id)
+	p := s.pathsWithKind(id, kind)
 	if err := os.MkdirAll(p.Root, 0o700); err != nil {
 		return nil, err
 	}
@@ -88,7 +118,7 @@ func (s *Service) Create(in CreateInput) (*store.Room, error) {
 	if err := os.WriteFile(p.Hash, []byte(hash), 0o600); err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(p.Runtime, 0o700); err != nil {
+	if err := isolate.EnsureLayout(p); err != nil {
 		return nil, err
 	}
 	if err := isolate.SealRuntime(p, in.Password); err != nil {
@@ -240,16 +270,17 @@ func (s *Service) Delete(id string) error {
 		s.Docker.PruneUnusedLocalImages()
 	}
 
-	volRoot := s.volumesRoot()
 	for _, p := range projects {
-		if volRoot != "" && p.ID != "" {
-			_ = os.RemoveAll(filepath.Join(volRoot, p.ID))
-			_ = os.RemoveAll(filepath.Join(volRoot, p.ID+".img"))
-		}
 		_ = s.Store.DeleteProject(p.ID)
 	}
 	_ = os.RemoveAll(s.paths(id).Root)
-	_ = os.RemoveAll(filepath.Join(s.RuntimeDir, id))
+	// legacy cleanup (pre /vps-manager layout)
+	if s.RuntimeDir != "" {
+		_ = os.RemoveAll(filepath.Join(s.RuntimeDir, id))
+	}
+	if s.RoomsDir != "" {
+		_ = os.RemoveAll(filepath.Join(s.RoomsDir, id))
+	}
 	return s.Store.DeleteRoom(id)
 }
 
@@ -277,18 +308,59 @@ func (s *Service) Dir(roomID string) string {
 	return s.paths(roomID).Root
 }
 
+// ProjectDir: canonical work dir.
+// single → /vps-manager/single/<room>/project
+// multi  → /vps-manager/multi/<room>/stack
+// projectID is kept for legacy callers that address per-project files;
+// the canonical tree has ONE work dir per room, so projectID only
+// appends when it points to a real sub-path (mounts.json, __deploy.json).
 func (s *Service) ProjectDir(roomID, projectID string) string {
-	return filepath.Join(s.paths(roomID).Runtime, projectID)
+	p := s.paths(roomID)
+	if projectID == "" {
+		return p.WorkDir
+	}
+	return filepath.Join(p.WorkDir, projectID)
+}
+
+func (s *Service) RoomWorkDir(roomID string) string {
+	return s.paths(roomID).WorkDir
+}
+
+func (s *Service) RoomEnvPath(roomID string) string {
+	return s.paths(roomID).EnvPath
+}
+
+func (s *Service) RoomVolumesDir(roomID string) string {
+	return s.paths(roomID).VolumesDir
+}
+
+func (s *Service) RoomConfigDir(roomID string) string {
+	return s.paths(roomID).ConfigDir
+}
+
+func (s *Service) RoomBackupDir(roomID string) string {
+	return s.paths(roomID).BackupDir
+}
+
+func (s *Service) RoomBackupPath(roomID string) string {
+	p := s.paths(roomID)
+	return filepath.Join(p.BackupDir, roomID+".zip")
+}
+
+// VPSPath is the breadcrumb path shown at the top of every web page.
+func (s *Service) VPSPath(roomID string) string {
+	if roomID == "" {
+		return s.baseDir()
+	}
+	return s.paths(roomID).Root
 }
 
 func (s *Service) volumesRoot() string {
-	if s.VolumesDir != "" {
-		return s.VolumesDir
-	}
-	if s.RuntimeDir != "" {
-		return filepath.Join(filepath.Dir(s.RuntimeDir), "volumes")
-	}
 	return ""
+}
+
+func (s *Service) volumesRootFor(roomID string) string {
+	return s.paths(roomID).VolumesDir
 }
 
 func dirSize(root string) int64 {
@@ -309,7 +381,7 @@ func (s *Service) volumeBytes(roomID string) int64 {
 	if s.Store == nil {
 		return 0
 	}
-	root := s.volumesRoot()
+	root := s.volumesRootFor(roomID)
 	projs, _ := s.Store.ListProjects(roomID)
 	var total int64
 	seen := map[string]struct{}{}
@@ -388,7 +460,7 @@ func (s *Service) imageBytes(roomID string) int64 {
 }
 
 func (s *Service) DiskStats(roomID string) DiskStats {
-	files := dirSize(s.paths(roomID).Root) + dirSize(filepath.Join(s.RuntimeDir, roomID))
+	files := dirSize(s.paths(roomID).Root)
 	vols := s.volumeBytes(roomID)
 	var rw int64
 	if s.Docker != nil && s.Store != nil {

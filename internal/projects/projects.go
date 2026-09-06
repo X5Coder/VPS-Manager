@@ -624,7 +624,7 @@ func (s *Service) ApplyQuota(roomID string, quotaBytes int64) error {
 	}
 	_ = s.prepareRoom(roomID)
 	list, _ := s.Store.ListProjects(roomID)
-	volRoot := s.volumesDir()
+	volRoot := s.volumesDirFor(roomID)
 	for i := range list {
 		p := list[i]
 		vol := filepath.Join(volRoot, p.ID)
@@ -882,8 +882,8 @@ func (s *Service) ApplyRoomEnv(roomID string) error {
 	}
 
 	stackHandled := false
-	if s.Rooms != nil && s.Rooms.RuntimeDir != "" {
-		stackRoot := filepath.Join(s.Rooms.RuntimeDir, roomID, "stack")
+	if s.Rooms != nil {
+		stackRoot := s.Rooms.RoomWorkDir(roomID)
 		if root := findComposeRoot(stackRoot); root != "" {
 			if err := tryCompose(root, "vr"+store.ShortRoomID(roomID)); err != nil {
 				return err
@@ -949,11 +949,11 @@ func findComposeRoot(dir string) string {
 // syncEnvCopies mirrors project .env to room / compose / files roots so
 // docker compose substitution and bind mounts all see the same values.
 func (s *Service) syncEnvCopies(roomID, pdir, text string) {
-	if s.Rooms != nil && s.Rooms.RuntimeDir != "" {
-		roomEnv := filepath.Join(s.Rooms.RuntimeDir, roomID, ".env")
+	if s.Rooms != nil {
+		roomEnv := s.Rooms.RoomEnvPath(roomID)
 		_ = os.MkdirAll(filepath.Dir(roomEnv), 0o700)
 		_ = writeEnv(roomEnv, text)
-		if root := findComposeRoot(filepath.Join(s.Rooms.RuntimeDir, roomID, "stack")); root != "" {
+		if root := findComposeRoot(s.Rooms.RoomWorkDir(roomID)); root != "" {
 			_ = writeEnv(filepath.Join(root, ".env"), text)
 		}
 	}
@@ -1132,11 +1132,14 @@ func (s *Service) volumesDir() string {
 	if s.VolumesDir != "" {
 		return s.VolumesDir
 	}
-	// Derive from runtime: .../runtime -> .../volumes
-	if s.Rooms != nil && s.Rooms.RuntimeDir != "" {
-		return filepath.Join(filepath.Dir(s.Rooms.RuntimeDir), "volumes")
+	return ""
+}
+
+func (s *Service) volumesDirFor(roomID string) string {
+	if s.Rooms != nil {
+		return s.Rooms.RoomVolumesDir(roomID)
 	}
-	return "/opt/vps-rooms/volumes"
+	return s.volumesDir()
 }
 
 // SyncRoomFilesVisibility keeps mounts.json + files_root aligned with live Docker
@@ -1146,8 +1149,10 @@ func (s *Service) SyncRoomFilesVisibility(roomID string) {
 	if err != nil {
 		return
 	}
-	volRoot := s.volumesDir()
-	_ = os.MkdirAll(volRoot, 0o755)
+	volRoot := s.volumesDirFor(roomID)
+	if volRoot != "" {
+		_ = os.MkdirAll(volRoot, 0o755)
+	}
 	for _, p := range list {
 		pdir := s.Rooms.ProjectDir(roomID, p.ID)
 		_ = os.MkdirAll(pdir, 0o700)

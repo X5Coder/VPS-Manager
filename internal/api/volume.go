@@ -78,10 +78,23 @@ func (s *Server) handleRoomVolume(w http.ResponseWriter, r *http.Request, roomID
 		writeErr(w, 400, "volume has no docker name")
 		return
 	}
+	// The panel-managed room env is edited in the Secrets tab — never
+	// expose or edit .env inside volume browsing.
+	if rel == ".env" || strings.HasSuffix(rel, "/.env") || strings.HasSuffix(rel, ".env") {
+		writeJSON(w, 200, map[string]any{"path": rel, "size": 0, "binary": true, "note": "Room env is managed in the Secrets tab"})
+		return
+	}
 	if strings.HasPrefix(src, "/") {
 		ents, err := dockerx.ListHostFiles(src, rel)
 		if err == nil {
-			writeJSON(w, 200, map[string]any{"path": rel, "entries": entsJSON(ents)})
+			kept := make([]dockerx.FSEntry, 0, len(ents))
+			for _, e := range ents {
+				if e.Name == ".env" {
+					continue
+				}
+				kept = append(kept, e)
+			}
+			writeJSON(w, 200, map[string]any{"path": rel, "entries": entsJSON(kept)})
 			return
 		}
 		b, err := dockerx.ReadHostFile(src, rel)
@@ -104,6 +117,9 @@ func (s *Server) handleRoomVolume(w http.ResponseWriter, r *http.Request, roomID
 func entsJSON(ents []dockerx.FSEntry) []map[string]any {
 	out := make([]map[string]any, 0, len(ents))
 	for _, e := range ents {
+		if e.Name == ".env" || strings.HasSuffix(e.Name, ".env") || strings.EqualFold(e.Name, ".env") {
+			continue
+		}
 		out = append(out, map[string]any{"name": e.Name, "dir": e.Dir, "size": e.Size})
 	}
 	return out

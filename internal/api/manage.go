@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -19,7 +18,6 @@ import (
 	"github.com/x5coder/vps-rooms/internal/auth"
 	"github.com/x5coder/vps-rooms/internal/projects"
 	"github.com/x5coder/vps-rooms/internal/rooms"
-	"github.com/x5coder/vps-rooms/internal/stack"
 	"github.com/x5coder/vps-rooms/internal/store"
 )
 
@@ -31,6 +29,14 @@ func (s *Server) routesManage() {
 	s.Mux.HandleFunc("/api/panel/port", s.withGate(s.handlePanelPort))
 	s.Mux.HandleFunc("/api/settings/owner-password", s.withGate(s.handleOwnerPasswordChange))
 	s.Mux.HandleFunc("/api/settings/notify", s.withGate(s.handleNotifySettings))
+	s.Mux.HandleFunc("/api/storage", s.withGate(s.handleStorage))
+	s.Mux.HandleFunc("/api/ports", s.withGate(s.handlePorts))
+	s.routesBackup()
+	s.routesExecJobs()
+}
+
+func roomIDFromPath(full, projectsRoot string) string {
+	return ""
 }
 
 func randomPass(n int) string {
@@ -353,13 +359,40 @@ func (s *Server) hostLogBundle(kind string) (outKind, text string) {
 	kind = strings.ToLower(strings.TrimSpace(kind))
 	if kind == "" || kind == "vps" || kind == "all" {
 		var b strings.Builder
-		for _, k := range []string{"host", "panel", "api", "deploy"} {
-			_, t := s.hostLogBundle(k)
+		snap := s.hostSnapshotLog()
+		if strings.TrimSpace(snap) != "" {
+			b.WriteString(snap)
+			b.WriteString("\n")
+		}
+		labels := map[string]string{
+			"panel":  "PANEL & SYSTEM SERVICE",
+			"api":    "API & SESSIONS",
+			"deploy": "DEPLOYMENTS & RUNTIME",
+			"host":   "HOST EVENTS",
+		}
+		for _, k := range []string{"panel", "api", "deploy", "host"} {
+			var t string
+			switch k {
+			case "panel":
+				t, _ = tailFile(logPath(s.Cfg.DataDir, "panel"), 150*1024)
+				if j := s.panelJournalLines(120); j != "" {
+					sec := "=== vps-rooms service ===\n" + j
+					if strings.TrimSpace(t) != "" {
+						t = t + "\n" + sec
+					} else {
+						t = sec
+					}
+				}
+			case "host":
+				t, _ = tailFile(logPath(s.Cfg.DataDir, "host"), 100*1024)
+			default:
+				t, _ = tailFile(logPath(s.Cfg.DataDir, k), 100*1024)
+			}
 			if strings.TrimSpace(t) == "" || strings.HasPrefix(strings.TrimSpace(t), "(empty") {
 				continue
 			}
 			b.WriteString("===== ")
-			b.WriteString(k)
+			b.WriteString(labels[k])
 			b.WriteString(" =====\n")
 			b.WriteString(strings.TrimSpace(t))
 			b.WriteString("\n\n")
@@ -368,7 +401,7 @@ func (s *Server) hostLogBundle(kind string) (outKind, text string) {
 		if text == "" {
 			text = "(empty — panel events will appear here as you use the panel)"
 		}
-		return "vps", text
+		return "all", text
 	}
 	switch kind {
 	case "panel", "host", "api", "deploy":
@@ -412,13 +445,13 @@ func (s *Server) handleHostLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	kind := r.URL.Query().Get("kind")
 	if kind == "" {
-		kind = "panel"
+		kind = "all"
 	}
 	outKind, text := s.hostLogBundle(kind)
 	writeJSON(w, 200, map[string]any{
 		"kind":  outKind,
 		"log":   text,
-		"kinds": []string{"panel", "api", "deploy", "host"},
+		"kinds": []string{"all", "panel", "api", "deploy", "host"},
 	})
 }
 
@@ -453,7 +486,7 @@ func (s *Server) handleHostLogsClear(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	kind := r.URL.Query().Get("kind")
-	all := r.URL.Query().Get("all") == "1"
+	all := r.URL.Query().Get("all") == "1" || kind == "all" || kind == ""
 	clearedAt := time.Now().UTC().Format("2006-01-02 15:04:05 UTC")
 	_ = s.Store.SetMeta("logs_cleared_at", clearedAt)
 
@@ -514,16 +547,6 @@ func (s *Server) canControlRoom(w http.ResponseWriter, r *http.Request, roomID s
 
 // roomAccess: room session OR owner may open files/env (owner still sees passwords in list).
 func (s *Server) roomAccess(w http.ResponseWriter, r *http.Request, roomID string) (*store.Session, *store.Room) {
-	if tok, _ := s.apiTokenFromRequest(r); tok != nil {
-		room, err := s.Store.GetRoom(roomID)
-		if err != nil || room == nil {
-			writeErr(w, 404, "room not found")
-			return nil, nil
-		}
-		_ = s.Rooms.EnsureUnlocked(roomID)
-		s.Projects.SyncRoomFilesVisibility(roomID)
-		return &store.Session{Kind: auth.KindOwner}, room
-	}
 	sess := s.requireSession(w, r)
 	if sess == nil {
 		return nil, nil
@@ -550,7 +573,7 @@ func (s *Server) roomAccess(w http.ResponseWriter, r *http.Request, roomID strin
 // resolveRoomFile maps a Files UI path to a host absolute path.
 // Project trees may live under /volumes/{id} (Docker /app bind); meta stays in runtime.
 func (s *Server) resolveRoomFile(roomID, rel string) (full, pdir, appRoot string, err error) {
-	projectsRoot := filepath.Join(s.Cfg.RuntimeDir, roomID, "projects")
+	projectsRoot := s.Rooms.RoomWorkDir(roomID)
 	_ = os.MkdirAll(projectsRoot, 0o700)
 	rel = filepath.Clean("/" + rel)
 	if rel == "/" {
@@ -595,15 +618,14 @@ func (s *Server) underAllowedFiles(full, projectsRoot, pdir, appRoot string) boo
 	if check(projectsRoot) || check(pdir) || check(appRoot) {
 		return true
 	}
-	vol := filepath.Clean(s.Cfg.VolumesDir)
-	return vol != "" && (full == vol || strings.HasPrefix(full, vol+string(os.PathSeparator)))
+	return false
 }
 
 func (s *Server) handleRoomFiles(w http.ResponseWriter, r *http.Request, roomID string) {
 	if _, room := s.roomAccess(w, r, roomID); room == nil {
 		return
 	}
-	projectsRoot := filepath.Join(s.Cfg.RuntimeDir, roomID, "projects")
+	projectsRoot := s.Rooms.RoomWorkDir(roomID)
 	_ = os.MkdirAll(projectsRoot, 0o700)
 	rel := r.URL.Query().Get("path")
 	full, pdir, appRoot, _ := s.resolveRoomFile(roomID, rel)
@@ -638,7 +660,7 @@ func (s *Server) handleRoomFiles(w http.ResponseWriter, r *http.Request, roomID 
 			seen := map[string]bool{}
 			out := []item{}
 			add := func(name string, dir bool, sz int64) {
-				if seen[name] {
+				if seen[name] || name == ".env" || strings.HasSuffix(name, ".env") {
 					return
 				}
 				seen[name] = true
@@ -652,9 +674,9 @@ func (s *Server) handleRoomFiles(w http.ResponseWriter, r *http.Request, roomID 
 				}
 				add(e.Name(), e.IsDir(), sz)
 			}
-			// When browsing app volume root, also expose panel .env / mounts.json
+			// When browsing app volume root, also expose mounts.json if present (secrets remain in Secrets tab)
 			if pdir != "" && filepath.Clean(full) == filepath.Clean(appRoot) && filepath.Clean(appRoot) != filepath.Clean(pdir) {
-				for _, metaName := range []string{".env", "mounts.json"} {
+				for _, metaName := range []string{"mounts.json"} {
 					mp := filepath.Join(pdir, metaName)
 					if sti, err := os.Stat(mp); err == nil && !sti.IsDir() {
 						add(metaName, false, sti.Size())
@@ -700,6 +722,10 @@ func (s *Server) handleRoomFiles(w http.ResponseWriter, r *http.Request, roomID 
 		_ = s.Rooms.Seal(roomID)
 		writeJSON(w, 200, map[string]string{"ok": "1"})
 	case http.MethodDelete:
+		if relClean == ".env" || strings.HasSuffix(relClean, ".env") {
+			writeErr(w, 400, ".env files cannot be deleted here")
+			return
+		}
 		if err := os.RemoveAll(full); err != nil {
 			writeErr(w, 500, err.Error())
 			return
@@ -743,6 +769,11 @@ func (s *Server) handleRoomExec(w http.ResponseWriter, r *http.Request, roomID s
 	if _, room := s.roomAccess(w, r, roomID); room == nil {
 		return
 	}
+	// GET polls latest job for this room (refresh persistence)
+	if r.Method == http.MethodGet {
+		s.handleRoomExecStatus(w, r, roomID)
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeErr(w, 405, "method")
 		return
@@ -773,69 +804,8 @@ func (s *Server) handleRoomExec(w http.ResponseWriter, r *http.Request, roomID s
 	if timeout > maxT {
 		timeout = maxT
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), timeout)
-	defer cancel()
-
-	runHost := func() (string, error) {
-		dir := filepath.Join(s.Cfg.RuntimeDir, roomID)
-		if body.ProjectID != "" {
-			pdir := s.Rooms.ProjectDir(roomID, body.ProjectID)
-			if st, err := os.Stat(pdir); err == nil && st.IsDir() {
-				dir = pdir
-			}
-		}
-		_ = os.MkdirAll(dir, 0o750)
-		cmd := exec.CommandContext(ctx, "sh", "-lc", cmdLine)
-		cmd.Dir = dir
-		b, err := cmd.CombinedOutput()
-		return string(b), err
-	}
-
-	hostCLI := isHostShellCommand(cmdLine)
-	dockerID := ""
-	if !body.Host && !hostCLI && s.Docker != nil {
-		ct := s.resolveRoomContainer(roomID, body.ContainerID)
-		if ct != nil {
-			dockerID = ct.DockerID
-		}
-		if dockerID == "" && body.ProjectID != "" {
-			p, _ := s.Store.GetProject(body.ProjectID)
-			if p != nil && p.RoomID == roomID {
-				dockerID = p.ContainerID
-			}
-		}
-	}
-
-	where := "room-host"
-	out := ""
-	var runErr error
-	if dockerID != "" {
-		st, _ := s.Docker.InspectStatus(dockerID)
-		if st == "running" {
-			cmd := exec.CommandContext(ctx, "docker", "exec", dockerID, "sh", "-lc", cmdLine)
-			b, err := cmd.CombinedOutput()
-			out, runErr = string(b), err
-			where = "container"
-			if runErr != nil && (strings.Contains(out, "OCI runtime") || strings.Contains(out, "procReady") || strings.Contains(runErr.Error(), "OCI runtime")) {
-				out2, err2 := runHost()
-				out, runErr, where = out2, err2, "room-host"
-			}
-		} else {
-			out, runErr = runHost()
-		}
-	} else {
-		out, runErr = runHost()
-	}
-	res := map[string]any{"output": out, "where": where}
-	if runErr != nil {
-		res["error"] = runErr.Error()
-		res["exit"] = 1
-	} else {
-		res["exit"] = 0
-	}
-	_ = appendLog(s.Cfg.DataDir, "room-"+roomID[:8], "$ "+cmdLine+"\n"+out)
-	_ = rotateLog(logPath(s.Cfg.DataDir, "room-"+roomID[:8]), 256*1024)
-	writeJSON(w, 200, res)
+	j := s.startRoomExecJob(roomID, cmdLine, body.ProjectID, body.ContainerID, body.Host, timeout)
+	writeJSON(w, 200, map[string]any{"ok": true, "job_id": j.ID, "status": j.Status, "scope": "room", "room_id": roomID})
 }
 
 func isHostShellCommand(cmdLine string) bool {
@@ -984,7 +954,37 @@ func (s *Server) handleRoomLogs(w http.ResponseWriter, r *http.Request, roomID s
 	if _, room := s.roomAccess(w, r, roomID); room == nil {
 		return
 	}
-	s.handleV1Logs(w, r, roomID)
+	s.handleRoomLogsDirect(w, r, roomID)
+}
+
+func (s *Server) handleRoomLogsDirect(w http.ResponseWriter, r *http.Request, roomID string) {
+	q := r.URL.Query()
+	want := logsQueryTarget(r)
+	if r.Method == http.MethodDelete || q.Get("clear") == "1" || q.Get("action") == "clear" {
+		ct := s.resolveRoomContainer(roomID, want)
+		if ct != nil && ct.DockerID != "" {
+			out, err := exec.Command("docker", "inspect", "--format", "{{.LogPath}}", ct.DockerID).Output()
+			if err == nil {
+				lp := strings.TrimSpace(string(out))
+				if lp != "" && filepath.IsAbs(lp) {
+					_ = os.Truncate(lp, 0)
+				}
+			}
+		}
+		_ = os.Truncate(filepath.Join(s.Cfg.DataDir, "logs", "rooms", roomID+".log"), 0)
+		writeJSON(w, 200, map[string]any{"ok": true, "cleared": true})
+		return
+	}
+	if want != "" {
+		s.writeContainerLogs(w, roomID, want)
+		return
+	}
+	projs, _ := s.Store.ListProjects(roomID)
+	if len(projs) > 0 && projs[0].ContainerID != "" {
+		s.writeContainerLogs(w, roomID, projs[0].ContainerID)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"log": "", "note": "no container yet"})
 }
 
 func (s *Server) handleRoomEnv(w http.ResponseWriter, r *http.Request, roomID string) {
@@ -992,7 +992,7 @@ func (s *Server) handleRoomEnv(w http.ResponseWriter, r *http.Request, roomID st
 		return
 	}
 	_ = s.Rooms.EnsureUnlocked(roomID)
-	path := filepath.Join(s.Cfg.RuntimeDir, roomID, ".env")
+	path := s.roomEnvPath(roomID)
 	projs, _ := s.Store.ListProjects(roomID)
 	var first *store.Project
 	if len(projs) > 0 {
@@ -1184,141 +1184,6 @@ func (s *Server) handleRoomUpdate(w http.ResponseWriter, r *http.Request, roomID
 	_ = appendLog(s.Cfg.DataDir, "deploy", "UPDATE project="+pid+" room="+room.ID+" image="+image)
 }
 
-func (s *Server) handleRoomImageTar(w http.ResponseWriter, r *http.Request, roomID string) {
-	room, p0, err := s.resolveRoomProject(roomID)
-	if err != nil || room == nil {
-		writeErr(w, 404, "not found")
-		return
-	}
-	if _, ctrl := s.canControlRoom(w, r, room.ID); ctrl == nil {
-		return
-	}
-	if r.Method != http.MethodPost {
-		writeErr(w, 405, "method")
-		return
-	}
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Cache-Control", "no-cache")
-	flusher, _ := w.(http.Flusher)
-	logw := &flushWriter{w: w, f: flusher}
-
-	r.Body = http.MaxBytesReader(w, r.Body, 16<<30)
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		fmt.Fprintf(logw, "error: could not read upload (%v)\n", err)
-		return
-	}
-	if envText := readUploadEnv(r); envText != "" {
-		s.saveDeployEnv(room.ID, envText)
-	}
-	file, hdr, err := r.FormFile("file")
-	if err != nil {
-		fmt.Fprintf(logw, "error: upload an image file (docker save .tar)\n")
-		return
-	}
-	defer file.Close()
-	fname := "upload.tar"
-	if hdr != nil && hdr.Filename != "" {
-		fname = hdr.Filename
-	}
-	tmp, err := os.MkdirTemp("", "vm-tar-*")
-	if err != nil {
-		fmt.Fprintf(logw, "error: %v\n", err)
-		return
-	}
-	defer os.RemoveAll(tmp)
-	safe := filepath.Base(fname)
-	if safe == "" || safe == "." {
-		safe = "image.tar"
-	}
-	dest := filepath.Join(tmp, safe)
-	out, err := os.Create(dest)
-	if err != nil {
-		fmt.Fprintf(logw, "error: %v\n", err)
-		return
-	}
-	fmt.Fprintf(logw, "Receiving %s...\n", fname)
-	n, err := io.Copy(out, file)
-	out.Close()
-	if err != nil {
-		fmt.Fprintf(logw, "error: %v\n", err)
-		return
-	}
-	fmt.Fprintf(logw, "Saved %d bytes\n", n)
-	ctrID := strings.TrimSpace(r.FormValue("container_id"))
-	if ctrID == "" {
-		ctrID = strings.TrimSpace(r.FormValue("container"))
-	}
-	if err := stack.CheckUpload(fname, dest, room.Kind, ctrID, s.roomIsEmpty(room.ID)); err != nil {
-		fmt.Fprintf(logw, "error: %v\n", err)
-		return
-	}
-	if ctrID != "" {
-		ct := s.resolveRoomContainer(room.ID, ctrID)
-		if ct == nil {
-			fmt.Fprintf(logw, "error: container not found\n")
-			return
-		}
-		fmt.Fprintf(logw, "Updating only %s — other containers stay up.\n", ct.Name)
-		if err := s.applyImageTarOneContainer(room, ct, dest, logw); err != nil {
-			fmt.Fprintf(logw, "error: %v\n", err)
-			return
-		}
-		fmt.Fprintf(logw, "Updated. Container is running. The rest of the room is unchanged.\n")
-		return
-	}
-	if s.Stack != nil && stack.ArchiveHasCompose(dest) {
-		fmt.Fprintf(logw, "Multi-container package detected. Loading stack...\n")
-		jobKey := room.ID
-		if err := s.tryBeginJob(jobKey, "deploy"); err != nil {
-			fmt.Fprintf(logw, "error: %v\n", err)
-			return
-		}
-		defer s.endJob(jobKey)
-		if err := s.Stack.DeployMulti(room, dest, logw); err != nil {
-			fmt.Fprintf(logw, "error: %v\n", err)
-			return
-		}
-		_ = appendLog(s.Cfg.DataDir, "deploy", "MULTI-DEPLOY room="+room.ID+" file="+fname)
-		return
-	}
-	fmt.Fprintf(logw, "Loading image (large files can take a while)...\n")
-	if s.Docker == nil || !s.Docker.Available() {
-		fmt.Fprintf(logw, "error: Docker unavailable\n")
-		return
-	}
-	jobKey := room.ID
-	if p0 != nil {
-		jobKey = p0.ID
-	}
-	if err := s.tryBeginJob(jobKey, "deploy"); err != nil {
-		fmt.Fprintf(logw, "error: %v\n", err)
-		return
-	}
-	defer s.endJob(jobKey)
-	if p0 != nil {
-		s.Projects.MarkDeploying(room.ID, p0.ID, s.localProjectTag(p0), "deploy")
-	}
-	image, err := s.applyImageTarRoom(room, p0, dest, logw)
-	if err != nil {
-		fmt.Fprintf(logw, "error: %v\n", err)
-		return
-	}
-	st := "running"
-	if p0 != nil && s.Docker != nil && p0.ContainerID != "" {
-		if st2, e := s.Docker.InspectStatus(p0.ContainerID); e == nil && st2 != "" {
-			st = st2
-		}
-	}
-	if p0 != nil {
-		if p2, _ := s.Store.GetProject(p0.ID); p2 != nil && p2.Status != "" {
-			st = p2.Status
-		}
-	}
-	fmt.Fprintf(logw, "Updated. Project is running automatically. image=%s status=%s\n", image, st)
-	_ = appendLog(s.Cfg.DataDir, "deploy", "TAR-UPDATE room="+room.ID+" image="+image+" status="+st)
-}
-
 func (s *Server) handleDeployPull(w http.ResponseWriter, r *http.Request) {
 	if s.requireOwner(w, r) == nil {
 		return
@@ -1383,15 +1248,8 @@ func (s *Server) autoDeploy(w http.ResponseWriter, r *http.Request) {
 	)
 
 	if strings.Contains(ct, "multipart/form-data") {
-		if err := r.ParseMultipartForm(256 << 20); err != nil {
-			fmt.Fprintf(logw, "error: %v\n", err)
-			return
-		}
-		projName = r.FormValue("name")
-		roomHint = projName
-		hostPort = projects.ParsePort(r.FormValue("host_port"))
-		cPort = projects.ParsePort(r.FormValue("container_port"))
-		quotaGB, _ = strconv.ParseFloat(strings.TrimSpace(r.FormValue("quota_gb")), 64)
+		fmt.Fprintf(logw, "error: manual upload removed — create via image name only\n")
+		return
 	} else {
 		var body struct {
 			Name          string  `json:"name"`
@@ -1461,91 +1319,4 @@ func (s *Server) autoDeploy(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(logw, "OK room=%s room_id=%s project=%s password=%s\n", rm.Name, rm.ID, p.ID, pass)
 		return
 	}
-
-	if quotaGB <= 0 {
-		fmt.Fprintf(logw, "error: quota_gb is required (set disk space for this project)\n")
-		return
-	}
-	quota, err := s.allocateQuota(quotaGB, 0)
-	if err != nil {
-		fmt.Fprintf(logw, "error: %v\n", err)
-		return
-	}
-	if cPort == 0 {
-		cPort = 80
-	}
-	if strings.TrimSpace(roomHint) == "" {
-		roomHint = "app"
-	}
-	pass := randomPass(10)
-	rm, err := s.Rooms.Create(rooms.CreateInput{
-		Name: s.uniqueRoomName(roomHint), Password: pass, QuotaBytes: quota,
-	})
-	if err != nil {
-		fmt.Fprintf(logw, "error: %v\n", err)
-		return
-	}
-	fmt.Fprintf(logw, "Created room %s\npassword: %s\nquota: %.2f GB\n", rm.Name, pass, quotaGB)
-
-	file, hdr, err := r.FormFile("file")
-	if err != nil {
-		fmt.Fprintf(logw, "error: upload a Docker image (.tar) or a Dockerfile\n")
-		return
-	}
-	defer file.Close()
-	tmp, _ := os.MkdirTemp("", "vm-up-*")
-	defer os.RemoveAll(tmp)
-	fname := ""
-	if hdr != nil {
-		fname = hdr.Filename
-	}
-	low := strings.ToLower(fname)
-	isTar := strings.HasSuffix(low, ".tar") || strings.HasSuffix(low, ".tar.gz") || strings.HasSuffix(low, ".tgz")
-	if isTar {
-		dest := filepath.Join(tmp, "image.tar")
-		out, _ := os.Create(dest)
-		_, _ = io.Copy(out, file)
-		out.Close()
-		fmt.Fprintf(logw, "Loading image %s...\n", fname)
-		if s.Docker == nil || !s.Docker.Available() {
-			fmt.Fprintf(logw, "error: Docker unavailable\n")
-			return
-		}
-		image, err := s.Docker.LoadImageTag(dest)
-		if err != nil {
-			fmt.Fprintf(logw, "error: %v\n", err)
-			return
-		}
-		fmt.Fprintf(logw, "Loaded %s\n", image)
-		if projName == "" {
-			projName = sanitizeName(image)
-		}
-		p, err := s.Projects.DeployImage(projects.DeployImageInput{
-			RoomID: rm.ID, Name: sanitizeName(projName), Image: image, HostPort: hostPort, ContainerPort: cPort, Log: logw,
-		})
-		if err != nil {
-			fmt.Fprintf(logw, "error: %v\n", err)
-			return
-		}
-		fmt.Fprintf(logw, "OK room=%s room_id=%s project=%s password=%s\n", rm.Name, rm.ID, p.ID, pass)
-		return
-	}
-	dest := filepath.Join(tmp, "Dockerfile")
-	out, _ := os.Create(dest)
-	_, _ = io.Copy(out, file)
-	out.Close()
-	if projName == "" {
-		projName = sanitizeName(strings.TrimSuffix(fname, filepath.Ext(fname)))
-		if projName == "" || projName == "dockerfile" {
-			projName = "app"
-		}
-	}
-	p, err := s.Projects.DeployBuild(projects.DeployBuildInput{
-		RoomID: rm.ID, Name: sanitizeName(projName), HostPort: hostPort, ContainerPort: cPort, SourceDir: tmp, Log: logw,
-	})
-	if err != nil {
-		fmt.Fprintf(logw, "error: %v\n", err)
-		return
-	}
-	fmt.Fprintf(logw, "OK room=%s room_id=%s project=%s password=%s\n", rm.Name, rm.ID, p.ID, pass)
 }

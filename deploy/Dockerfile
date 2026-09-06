@@ -21,11 +21,13 @@ COPY agent/metrics_agent.py /app/agent/metrics_agent.py
 COPY deploy/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh /app/agent/metrics_agent.py
 ENV VPS_ROOMS_ADDR=:9090 \
-    VPS_ROOMS_DATA=/opt/vps-rooms/data \
-    VPS_ROOMS_ROOMS=/opt/vps-rooms/rooms \
-    VPS_ROOMS_RUNTIME=/opt/vps-rooms/runtime \
-    VPS_ROOMS_AGENT_SOCK=/opt/vps-rooms/data/agent.sock
-VOLUME ["/opt/vps-rooms/data", "/opt/vps-rooms/rooms", "/opt/vps-rooms/runtime"]
+    VPS_MANAGER_BASE=/vps-manager \
+    VPS_MANAGER_DATA=/vps-manager/data \
+    VPS_MANAGER_SINGLE=/vps-manager/single \
+    VPS_MANAGER_MULTI=/vps-manager/multi \
+    VPS_MANAGER_PROXY=/vps-manager/proxy \
+    VPS_ROOMS_AGENT_SOCK=/vps-manager/data/agent.sock
+VOLUME ["/vps-manager/data", "/vps-manager/single", "/vps-manager/multi", "/vps-manager/proxy", "/vps-manager/backup"]
 EXPOSE 9090
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD curl -fsS http://127.0.0.1:9090/api/health || exit 1

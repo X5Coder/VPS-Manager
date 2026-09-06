@@ -28,14 +28,10 @@ func main() {
 		os.Exit(runSetTelegramID())
 	}
 	cfg := config.Load()
-	if err := os.MkdirAll(cfg.DataDir, 0o750); err != nil {
-		log.Fatal(err)
-	}
-	if err := os.MkdirAll(cfg.RoomsDir, 0o700); err != nil {
-		log.Fatal(err)
-	}
-	if err := os.MkdirAll(cfg.RuntimeDir, 0o700); err != nil {
-		log.Fatal(err)
+	for _, d := range []string{cfg.BaseDir, cfg.BinDir, cfg.DataDir, cfg.ProxyDir, cfg.AgentDir, cfg.SingleDir, cfg.MultiDir, cfg.GlobalBackupDir()} {
+		if err := os.MkdirAll(d, 0o750); err != nil {
+			log.Fatal(err)
+		}
 	}
 	logDir := filepath.Join(cfg.DataDir, "logs")
 	_ = os.MkdirAll(logDir, 0o700)

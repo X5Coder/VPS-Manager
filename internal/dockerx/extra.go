@@ -45,7 +45,7 @@ func (c *Client) CleanVolume(name string) error {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, c.bin, "run", "--rm",
 		"-v", name+":/vol",
-		"alpine:3.20", "sh", "-lc", `rm -rf /vol/..?* /vol/.[!.]* /vol/* 2>/dev/null; true`)
+		"alpine:3.20", "sh", "-lc", `find /vol -mindepth 1 ! -name ".env" ! -name "*.env" -exec rm -rf {} + 2>/dev/null; true`)
 	b, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("clean volume: %s", strings.TrimSpace(string(b)))

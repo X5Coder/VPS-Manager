@@ -109,16 +109,6 @@ CREATE TABLE IF NOT EXISTS sessions (
   room_id TEXT NOT NULL DEFAULT '',
   expires_at TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS api_tokens (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  token_hash TEXT NOT NULL UNIQUE,
-  token_plain TEXT NOT NULL DEFAULT '',
-  token_prefix TEXT NOT NULL,
-  mode TEXT NOT NULL DEFAULT 'read',
-  created_at TEXT NOT NULL,
-  last_used_at TEXT NOT NULL DEFAULT ''
-);
 `)
 	if err != nil {
 		return err
@@ -128,8 +118,7 @@ CREATE TABLE IF NOT EXISTS api_tokens (
 	_, _ = s.DB.Exec(`ALTER TABLE projects ADD COLUMN domain_enabled INTEGER NOT NULL DEFAULT 1`)
 	_, _ = s.DB.Exec(`ALTER TABLE projects ADD COLUMN ssl_status TEXT NOT NULL DEFAULT ''`)
 	_, _ = s.DB.Exec(`ALTER TABLE projects ADD COLUMN external_url TEXT NOT NULL DEFAULT ''`)
-	_, _ = s.DB.Exec(`ALTER TABLE api_tokens ADD COLUMN token_plain TEXT NOT NULL DEFAULT ''`)
-	_, _ = s.DB.Exec(`ALTER TABLE api_tokens ADD COLUMN room_id TEXT NOT NULL DEFAULT ''`)
+	_, _ = s.DB.Exec(`DROP TABLE IF EXISTS api_tokens`)
 	return s.migrateV2()
 }
 
@@ -496,4 +485,13 @@ func (s *Store) DeleteAllSessions() error {
 func (s *Store) CleanupSessions() error {
 	_, err := s.DB.Exec(`DELETE FROM sessions WHERE expires_at < ?`, time.Now().UTC().Format(time.RFC3339))
 	return err
+}
+
+func (s *Store) TotalQuotaBytes() (int64, error) {
+	var n int64
+	err := s.DB.QueryRow(`SELECT COALESCE(SUM(quota_bytes),0) FROM rooms`).Scan(&n)
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
 }

@@ -12,7 +12,7 @@ import (
 
 // Manager writes a Caddyfile and reloads Caddy for HTTPS reverse proxy.
 type Manager struct {
-	Dir      string // e.g. /opt/vps-rooms/proxy
+	Dir      string // e.g. /vps-manager/proxy
 	mu       sync.Mutex
 	sites    map[string]Site // domain -> site
 }

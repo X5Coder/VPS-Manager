@@ -8,7 +8,7 @@ import (
 )
 
 func (s *Server) roomEnvPath(roomID string) string {
-	return filepath.Join(s.Cfg.RuntimeDir, roomID, ".env")
+	return s.Rooms.RoomEnvPath(roomID)
 }
 
 func parseEnvMap(text string) [][2]string {
