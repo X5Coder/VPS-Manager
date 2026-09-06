@@ -2179,15 +2179,13 @@ ${(function () {
         } else {
           const base = listing.path === "/" ? "" : listing.path;
           body = `<div class="panel"><div class="head-row"><h3>Volume · ${esc(vol.name || "volume")} · ${esc(listing.path || "/")}</h3>
-            <div class="row-actions"><button class="btn sm danger action" type="button" data-vol-clean="${esc(vol.id)}">Clean volume</button><button class="btn sm action" id="back-vols">Volumes</button><button class="btn sm action" id="updir">Up</button></div></div>
+            <div class="row-actions"><button class="btn sm danger action" type="button" data-vol-clean="${esc(vol.id)}">Clean volume</button><button class="btn sm action" id="back-vols">Back</button></div></div>
             <p class="muted" style="margin:0 0 10px"><code>${esc(vol.docker_name || "")}</code></p>
-            <ul class="file-list">${(listing.entries || []).filter((e) => e.name !== ".env" && !e.name.endsWith(".env")).map((e) => `<li><a href="#" data-vol-path="${esc((base === "" ? "" : base) + "/" + e.name)}">${e.dir ? "📁" : "📄"} ${esc(e.name)}</a><span class="muted">${e.dir ? "dir" : fmtBytes(e.size)}</span></li>`).join("") || `<li class="muted">${esc(listing.note || "Empty")}</li>`}</ul></div>`;
+            <ul class="file-list">${(listing.entries || []).filter((e) => { const n=(e.name||"").toLowerCase(); return n !== ".env" && !n.endsWith(".env"); }).map((e) => `<li><a href="#" data-vol-path="${esc((base === "" ? "" : base) + "/" + e.name)}">${e.dir ? "📁" : "📄"} ${esc(e.name)}</a><span class="muted">${e.dir ? "dir" : fmtBytes(e.size)}</span></li>`).join("") || `<li class="muted">${esc(listing.note || "Empty")}</li>`}</ul></div>`;
         }
       }
     } else if (tab === "volumes") {
-      body = `<div class="panel"><div class="head-row"><h3>Volumes</h3>
-        <div class="row-actions">${mainProj ? `<button class="btn sm danger action" type="button" id="wipe-all-data">Wipe all project data</button>` : ""}</div></div>
-        <p class="muted">Click a volume to browse files. <strong>Wipe all project data</strong> deletes config.db, profiles, uploads, etc. — keeps the project and .env. <strong>Clean</strong> empties one volume mount.</p>
+      body = `<div class="panel"><div class="head-row"><div class="row-actions">${mainProj ? `<button class="btn sm danger action" type="button" id="wipe-all-data">Wipe all project data</button>` : ""}</div></div>
         <table class="table"><thead><tr><th>#</th><th>Volume</th><th>Source</th><th></th></tr></thead>
         <tbody>${(volumes || []).map((v) => `<tr data-vid="${esc(v.id)}" class="vol-row" style="cursor:pointer"><td class="mono">#${String(v.ordinal || 1).padStart(3,"0")}</td><td>${esc(v.name || "volume")}</td><td class="mono muted">${esc(v.docker_name || v.name || "")}</td><td><button type="button" class="btn sm danger action" data-vol-clean="${esc(v.id)}">Clean</button></td></tr>`).join("") || `<tr><td colspan="4" class="muted">No volumes in this room.</td></tr>`}</tbody></table>
       </div>`;
@@ -2515,15 +2513,19 @@ ${(function () {
       } catch (ex) { toast(ex.message || "Wipe failed"); }
     });
     document.querySelectorAll("[data-vol-clean]").forEach((btn) => {
-      bindAction(btn, async (ev) => {
-        ev.stopPropagation();
+      btn.addEventListener("click", async (ev) => {
+        if (ev && ev.stopPropagation) ev.stopPropagation();
+        if (ev) ev.preventDefault();
+        if (btn.disabled || btn.classList.contains("busy")) return;
         const vid = btn.getAttribute("data-vol-clean");
         if (!vid || !confirm("Delete all files inside this volume? The volume mount is kept.")) return;
+        btn.classList.add("busy"); btn.disabled = true; btn.setAttribute("aria-busy","true");
         try {
           await api(`/api/rooms/${id}/volumes/${encodeURIComponent(vid)}/clean`, { method: "POST", body: "{}" });
           toast("Volume cleaned");
           render();
         } catch (ex) { toast(ex.message || "Clean failed"); }
+        finally { btn.classList.remove("busy"); btn.removeAttribute("aria-busy"); btn.disabled=false; }
       });
     });
     document.querySelectorAll("tr.vol-row").forEach((tr) => {
