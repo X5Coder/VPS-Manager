@@ -274,6 +274,16 @@ func adoptMounts(st *store.Store, docker *dockerx.Client, roomID, dockerID strin
 	if err != nil {
 		return
 	}
+	// Reuse existing record ids per name: every redeploy changes bind
+	// sources, but the logical volume is the same — never pile up rows.
+	byName := map[string]string{}
+	if vols, _ := st.ListVolumes(roomID); len(vols) > 0 {
+		for _, v := range vols {
+			if _, ok := byName[v.Name]; !ok {
+				byName[v.Name] = v.ID
+			}
+		}
+	}
 	for _, m := range mounts {
 		key := strings.TrimSpace(m.Name)
 		label := key
@@ -295,8 +305,14 @@ func adoptMounts(st *store.Store, docker *dockerx.Client, roomID, dockerID strin
 			continue
 		}
 		seen[key] = true
+		id := stableID(roomID, "vol:"+key)
+		if existing, ok := byName[label]; ok {
+			id = existing
+		} else {
+			byName[label] = id
+		}
 		_ = st.UpsertVolume(store.VolumeRec{
-			ID: stableID(roomID, "vol:"+key), RoomID: roomID,
+			ID: id, RoomID: roomID,
 			Name: label, DockerName: dockerName,
 		})
 	}

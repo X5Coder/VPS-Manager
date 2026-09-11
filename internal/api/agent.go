@@ -821,11 +821,35 @@ func (s *Server) deployRoomArchive(r *store.Room, updating bool, archivePath, fo
 				"replaced_projects": replacedProjects, "replaced_containers": replacedContainers,
 			}
 		}
-		// Promote the staged source to the canonical project/ directory.
-		_ = os.RemoveAll(dest)
-		if err := os.Rename(stage, dest); err != nil {
-			return fail(fmt.Errorf("publish: %w", err))
+		// Promote the staged source to the canonical project/ directory,
+		// preserving live project dirs (mounts.json, deploy meta, .env).
+		// Wiping them would orphan running containers on their next restart.
+		keep := map[string]struct{}{}
+		if projs, _ := s.Store.ListProjects(roomID); len(projs) > 0 {
+			for _, p := range projs {
+				if p.ID != "" {
+					keep[p.ID] = struct{}{}
+				}
+			}
 		}
+		_ = os.MkdirAll(dest, 0o750)
+		if ents, err := os.ReadDir(dest); err == nil {
+			for _, e := range ents {
+				if _, ok := keep[e.Name()]; ok {
+					continue
+				}
+				_ = os.RemoveAll(filepath.Join(dest, e.Name()))
+			}
+		}
+		if stageEnts, err := os.ReadDir(stage); err == nil {
+			for _, e := range stageEnts {
+				if _, ok := keep[e.Name()]; ok {
+					continue
+				}
+				_ = os.Rename(filepath.Join(stage, e.Name()), filepath.Join(dest, e.Name()))
+			}
+		}
+		_ = os.RemoveAll(stage)
 		s.Projects.WriteRoomJob(roomID, projects.DeployMeta{Status: status, Job: job})
 		return map[string]any{
 			"room_id": roomID, "kind": r.Kind, "mode": job,
