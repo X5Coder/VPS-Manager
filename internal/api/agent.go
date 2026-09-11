@@ -755,14 +755,19 @@ func (s *Server) deployRoomArchive(r *store.Room, updating bool, archivePath, fo
 
 	if !multi {
 		dest := s.Rooms.RoomProjectDir(roomID)
-		_ = os.RemoveAll(dest)
-		st, err := agentExtractArchive(archivePath, format, dest)
+		// Stage outside project/: DeployBuild copies the source into a
+		// per-project subdir of project/, so extracting there directly
+		// would copy the destination into itself (nested garbage + EISDIR).
+		stage := filepath.Join(s.Rooms.VPSPath(roomID), ".incoming")
+		defer os.RemoveAll(stage)
+		_ = os.RemoveAll(stage)
+		st, err := agentExtractArchive(archivePath, format, stage)
 		if err != nil {
 			return fail(fmt.Errorf("extract: %w", err))
 		}
-		unwrapped, _ := agentUnwrapSingleDir(dest)
+		unwrapped, _ := agentUnwrapSingleDir(stage)
 		envPath := s.Rooms.RoomEnvPath(roomID)
-		addedExample, addedReal, err := agentApplyExampleEnv(envPath, dest)
+		addedExample, addedReal, err := agentApplyExampleEnv(envPath, stage)
 		if err != nil {
 			return fail(fmt.Errorf("env: %w", err))
 		}
@@ -770,7 +775,7 @@ func (s *Server) deployRoomArchive(r *store.Room, updating bool, archivePath, fo
 		if cPort <= 0 {
 			cPort = 80
 		}
-		dockergen, err := agentEnsureDockerfile(dest, cPort)
+		dockergen, err := agentEnsureDockerfile(stage, cPort)
 		if err != nil {
 			return fail(err)
 		}
@@ -791,7 +796,7 @@ func (s *Server) deployRoomArchive(r *store.Room, updating bool, archivePath, fo
 		var built any
 		if dockerOK {
 			p, err := s.Projects.DeployBuild(projects.DeployBuildInput{
-				RoomID: roomID, Name: r.Name, SourceDir: dest,
+				RoomID: roomID, Name: r.Name, SourceDir: stage,
 				HostPort: 0, ContainerPort: cPort, Log: io.Discard,
 			})
 			if err != nil {
@@ -803,6 +808,11 @@ func (s *Server) deployRoomArchive(r *store.Room, updating bool, archivePath, fo
 				"project_id": p.ID, "image": p.Image, "container_id": p.ContainerID,
 				"host_port": p.HostPort, "container_port": p.ContainerPort,
 			}
+		}
+		// Promote the staged source to the canonical project/ directory.
+		_ = os.RemoveAll(dest)
+		if err := os.Rename(stage, dest); err != nil {
+			return fail(fmt.Errorf("publish: %w", err))
 		}
 		s.Projects.WriteRoomJob(roomID, projects.DeployMeta{Status: status, Job: job})
 		return map[string]any{

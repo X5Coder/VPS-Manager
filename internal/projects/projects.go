@@ -1427,9 +1427,31 @@ func readEnvPairs(path string) ([]string, error) {
 }
 
 func copyTree(src, dst string) error {
+	absSrc, err := filepath.Abs(src)
+	if err != nil {
+		return err
+	}
+	absDst, err := filepath.Abs(dst)
+	if err != nil {
+		return err
+	}
+	if absSrc == absDst {
+		return fmt.Errorf("copy source and destination are the same")
+	}
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
+		}
+		absPath, err := filepath.Abs(path)
+		if err != nil {
+			return err
+		}
+		// Never copy the destination into itself (dst inside src): skip it.
+		if absPath == absDst || strings.HasPrefix(absPath, absDst+string(filepath.Separator)) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		rel, err := filepath.Rel(src, path)
 		if err != nil {
