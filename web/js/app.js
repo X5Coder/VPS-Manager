@@ -2025,7 +2025,10 @@
       <div class="field full"><label>Upload ${isMulti ? "stack" : "project"} ZIP (.zip, .tar.gz, .tgz, .tar) — updates this room only</label><input type="file" name="file" accept=".zip,.tar.gz,.tgz,.tar" required /></div>
       ${isMulti ? "" : `<div class="field"><label>Internal port</label><input name="internal_port" type="number" min="1" max="65535" value="${Number(port) || 80}" /></div>`}
       <div class="field full"><button class="btn primary action" type="submit">Upload &amp; update room</button></div>
-    </form>`;
+    </form>
+    <div class="logs-viewer" style="margin-top:12px;min-height:120px">
+      <div class="logs-body" id="zip-log">${esc(state._zipLog || "(upload a ZIP to update this room — steps appear here)")}</div>
+    </div>`;
   }
 
   async function renderRoom() {
@@ -2436,8 +2439,17 @@ ${(function () {
           const r = await fetch(`/api/rooms/${id}/upload`, { method: "POST", body: fd, credentials: "same-origin" });
           const j = await r.json().catch(() => ({}));
           if (!r.ok) throw new Error(j.error || ("Upload failed (" + r.status + ")"));
-          const n = (j.stored && j.stored.files) || 0;
-          if (ok) ok.textContent = `Stored ${n} files — room updated${j.docker_available ? "" : " (build on a Docker host)"}.`;
+          const lines = [`$ upload ${file.name || "archive"} → ${room.name || id} (${j.kind || (isMulti ? "multi" : "single")})`];
+          if (j.stored) lines.push(`✓ stored ${j.stored.files ?? 0} files (${fmtBytes(j.stored.bytes || 0)}) → ${String(j.stored.dir || "").split("/").slice(-2).join("/")}${j.stored.unwrapped ? " [unwrapped]" : ""}`);
+          const env = j.env_applied || {};
+          const added = [...(env.from_env || []), ...(env.from_example || [])];
+          if (added.length) lines.push(`✓ env: +${added.length} vars (${added.slice(0, 8).join(", ")}${added.length > 8 ? ", …" : ""})`);
+          if (j.dockerfile_generated) lines.push("✓ Dockerfile: generated for detected stack");
+          else if (j.kind !== "multi" && !isMulti) lines.push("✓ Dockerfile: existing");
+          if (j.deployment) lines.push(`✓ deployment: ${j.deployment.status || "?"}${j.deployment.built ? ` → ${j.deployment.built.image || ""}` : ""}`);
+          if (j.note) lines.push(`ℹ ${j.note}`);
+          state._zipLog = lines.join("\n");
+          toast("Room updated");
           await renderRoom();
         } catch (ex) {
           if (err) err.textContent = ex.message || "Upload failed";
