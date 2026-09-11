@@ -3,8 +3,11 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/x5coder/vps-rooms/internal/rooms"
@@ -97,4 +100,67 @@ func emptyRoomErr(quotaGB float64) error {
 		return fmt.Errorf("quota_gb is required and must be > 0")
 	}
 	return nil
+}
+
+// handleRoomUpload accepts a project/stack ZIP for one room and stores it:
+// single rooms extract into project/, multi rooms into stack/ (persistent
+// data/volumes and config/.env are never touched). It uses the same core as
+// the agent deploy/update tools.
+func (s *Server) handleRoomUpload(w http.ResponseWriter, r *http.Request, id string) {
+	_, room := s.canControlRoom(w, r, id)
+	if room == nil {
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeErr(w, 405, "method")
+		return
+	}
+	if err := r.ParseMultipartForm(64 << 20); err != nil {
+		writeErr(w, 400, "project ZIP file required (max 64MB)")
+		return
+	}
+	f, _, err := r.FormFile("file")
+	if err != nil {
+		writeErr(w, 400, "field 'file' with the project ZIP is required")
+		return
+	}
+	defer f.Close()
+	tmp, err := os.CreateTemp("", "room-upload-*.zip")
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := io.CopyN(tmp, f, agentMaxArchiveBytes+1); err != nil && err != io.EOF {
+		_ = tmp.Close()
+		writeErr(w, 400, err.Error())
+		return
+	}
+	_ = tmp.Close()
+	if st, err := os.Stat(tmpName); err != nil || st.Size() == 0 {
+		writeErr(w, 400, "empty file")
+		return
+	}
+	if st, _ := os.Stat(tmpName); st != nil && st.Size() > agentMaxArchiveBytes {
+		writeErr(w, 400, "file too large (max 48MB)")
+		return
+	}
+	format, err := agentSniffFile(tmpName)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	port, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("internal_port")))
+	res, err := s.deployRoomArchive(room, true, tmpName, format, port)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	if m, ok := res.(map[string]any); ok {
+		m["kind"] = room.Kind
+		writeJSON(w, 200, m)
+		return
+	}
+	writeJSON(w, 200, res)
 }

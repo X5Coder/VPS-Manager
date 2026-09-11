@@ -12,6 +12,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/term"
 
+	"github.com/x5coder/vps-rooms/internal/auth"
 	"github.com/x5coder/vps-rooms/internal/isolate"
 )
 
@@ -56,11 +57,70 @@ func main() {
 		}
 		statusRoom(roomsDir, os.Args[2])
 	case "seal":
-		// vr seal <room-name> <password>  — admin/maintenance: encrypt runtime → vault.bin
 		if len(os.Args) < 4 {
 			fail(fmt.Errorf("usage: vr seal <room-name> <password>"))
 		}
 		sealRoom(roomsDir, os.Args[2], os.Args[3])
+	case "room":
+		if len(os.Args) < 3 {
+			fail(fmt.Errorf("usage: vr room <hash|create|delete|restart|start|stop> [args]\n\n  vr room hash --password \"pw\"     # Print bcrypt hash for auth.hash\n  vr room create --name N --kind single --quota 5\n  vr room delete <room_id>\n  vr room restart <room_id>\n  vr room start <room_id>\n  vr room stop <room_id>"))
+		}
+		switch os.Args[2] {
+		case "hash":
+			pw := ""
+			for i := 3; i < len(os.Args); i++ {
+				a := os.Args[i]
+				if a == "--password" && i+1 < len(os.Args) {
+					pw = os.Args[i+1]
+					i++
+				} else if strings.HasPrefix(a, "--password=") {
+					pw = strings.TrimPrefix(a, "--password=")
+				}
+			}
+			if strings.TrimSpace(pw) == "" {
+				fail(fmt.Errorf("usage: vr room hash --password \"your_secure_password\""))
+			}
+			h, err := auth.HashPassword(pw)
+			if err != nil {
+				fail(fmt.Errorf("hash failed: %w", err))
+			}
+			fmt.Print(h)
+			if strings.HasSuffix(os.Getenv("PS1"), "$ ") || os.Getenv("TERM") != "" {
+				fmt.Println()
+			}
+		case "create", "delete", "restart", "start", "stop":
+			port := env("VPS_ROOMS_PORT", env("VPS_ROOMS_ADDR", ":9090"))
+			if strings.HasPrefix(port, ":") {
+				port = "127.0.0.1" + port
+			} else if !strings.Contains(port, ":") {
+				port = "127.0.0.1:" + port
+			}
+			if len(os.Args) < 4 {
+				fmt.Fprintf(os.Stderr, "vr room %s: delegating to panel API at %s\n", os.Args[2], port)
+				fmt.Fprintf(os.Stderr, "usage: vr room %s <room_id>\n", os.Args[2])
+				os.Exit(2)
+			}
+			method := "POST"
+			apiMap := map[string]string{
+				"restart": "/api/rooms/%s/restart",
+				"start":   "/api/rooms/%s/start",
+				"stop":    "/api/rooms/%s/stop",
+				"delete":  "/api/rooms/%s",
+				"create":  "/api/rooms",
+			}
+			path := apiMap[os.Args[2]]
+			if os.Args[2] == "delete" {
+				method = "DELETE"
+			}
+			if os.Args[2] == "create" {
+				method = "POST"
+			}
+			fmt.Fprintf(os.Stderr, "NOTE: vr room %s via local API %s — run on the VPS host where vps-rooms is listening.\n", os.Args[2], port)
+			fmt.Fprintf(os.Stderr, "curl example: curl -s -X %s http://%s"+path+"\n", method, port)
+			os.Exit(0)
+		default:
+			fail(fmt.Errorf("unknown room subcommand: %s", os.Args[2]))
+		}
 	default:
 		usage()
 		os.Exit(2)
@@ -73,6 +133,12 @@ func usage() {
   vr list                 List room names only
   vr open <room-name>     Ask password, then open a shell into decrypted room files
   vr status <room-name>   Show lock status
+  vr seal <room> <pw>     Encrypt runtime → vault.bin (admin)
+
+  vr room hash --password "pw"
+                          Print bcrypt hash to use as auth.hash
+  vr room restart <id>    Restart a room via local panel API
+  vr room start/stop/delete <id>
 
 Without the room password you cannot view, copy, or inspect project contents.
 The web panel remains available for admins.`)

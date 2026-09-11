@@ -28,12 +28,14 @@ func main() {
 		os.Exit(runSetTelegramID())
 	}
 	cfg := config.Load()
-	for _, d := range []string{cfg.BaseDir, cfg.BinDir, cfg.DataDir, cfg.ProxyDir, cfg.AgentDir, cfg.SingleDir, cfg.MultiDir, cfg.GlobalBackupDir()} {
+	// Desired top-level map:
+	//   /vps-manager/{bin/,data/{database.sqlite,sessions/,logs/},proxy/,x5coder-agent/,backup/,single/,multi/}
+	for _, d := range []string{cfg.BaseDir, cfg.BinDir, cfg.DataDir, cfg.DataSessionsDir(), cfg.DataLogsDir(), cfg.ProxyDir, cfg.AgentDir, cfg.SingleDir, cfg.MultiDir, cfg.GlobalBackupDir()} {
 		if err := os.MkdirAll(d, 0o750); err != nil {
 			log.Fatal(err)
 		}
 	}
-	logDir := filepath.Join(cfg.DataDir, "logs")
+	logDir := cfg.DataLogsDir()
 	_ = os.MkdirAll(logDir, 0o700)
 	if lf, err := os.OpenFile(filepath.Join(logDir, "panel.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
 		log.SetOutput(io.MultiWriter(os.Stderr, lf))

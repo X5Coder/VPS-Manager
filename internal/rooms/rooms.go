@@ -310,7 +310,7 @@ func (s *Service) Dir(roomID string) string {
 
 // ProjectDir: canonical work dir.
 // single → /vps-manager/single/<room>/project
-// multi  → /vps-manager/multi/<room>/stack
+// multi  → /vps-manager/multi/<room>/project (stack/ holds docker-compose.yml)
 // projectID is kept for legacy callers that address per-project files;
 // the canonical tree has ONE work dir per room, so projectID only
 // appends when it points to a real sub-path (mounts.json, __deploy.json).
@@ -324,6 +324,25 @@ func (s *Service) ProjectDir(roomID, projectID string) string {
 
 func (s *Service) RoomWorkDir(roomID string) string {
 	return s.paths(roomID).WorkDir
+}
+
+// RoomProjectDir is the permanent extracted source directory for a room.
+// It is intentionally distinct from a multi-room's stack directory.
+func (s *Service) RoomProjectDir(roomID string) string {
+	return s.paths(roomID).ProjectDir
+}
+
+// RoomStackDir stores orchestration files for a multi-container room.
+func (s *Service) RoomStackDir(roomID string) string {
+	return s.paths(roomID).StackDir
+}
+
+func (s *Service) RoomContainersDir(roomID string) string {
+	return s.paths(roomID).ContainerDir
+}
+
+func (s *Service) RoomLogsDir(roomID string) string {
+	return s.paths(roomID).LogsDir
 }
 
 func (s *Service) RoomEnvPath(roomID string) string {
@@ -495,6 +514,142 @@ func (s *Service) DiskStats(roomID string) DiskStats {
 
 func (s *Service) UsageBytes(roomID string) (int64, error) {
 	return s.DiskStats(roomID).Usage, nil
+}
+
+// DetectFilesystemRooms scans the filesystem for rooms created via SSH
+// and adds them to the database if they have valid structure
+func (s *Service) DetectFilesystemRooms() ([]store.Room, error) {
+	if s.Store == nil {
+		return nil, fmt.Errorf("store not available")
+	}
+	
+	baseDir := s.baseDir()
+	var newRooms []store.Room
+	
+	// Scan both single and multi directories
+	for _, kind := range []string{"single", "multi"} {
+		kindDir := filepath.Join(baseDir, kind)
+		entries, err := os.ReadDir(kindDir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+		
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			
+			roomID := entry.Name()
+			// Check if room already exists in database
+			if existing, _ := s.Store.GetRoom(roomID); existing != nil {
+				continue
+			}
+			
+			// Validate room structure
+			roomPath := filepath.Join(kindDir, roomID)
+			if !s.isValidRoomStructure(roomPath) {
+				continue
+			}
+			
+			// Try to read room name and hash
+			nameFile := filepath.Join(roomPath, isolate.NameFile)
+			hashFile := filepath.Join(roomPath, isolate.HashFile)
+			
+			// Read room name - if missing, generate a default name
+			roomName := ""
+			if nameBytes, err := os.ReadFile(nameFile); err == nil {
+				roomName = strings.TrimSpace(string(nameBytes))
+			}
+			if roomName == "" {
+				// Generate default name if NAME file doesn't exist or is empty
+				roomName = "room-" + roomID[:8]
+				// Create the NAME file with the default name
+				_ = os.WriteFile(nameFile, []byte(roomName+"\n"), 0o644)
+			}
+			
+			// Read password hash - required
+			hashBytes, err := os.ReadFile(hashFile)
+			if err != nil {
+				continue
+			}
+			passHash := strings.TrimSpace(string(hashBytes))
+			
+			if passHash == "" {
+				continue
+			}
+			
+			// Create room record in database
+			netName := "vpsrooms_" + strings.ReplaceAll(roomID[:8], "-", "")
+			room := store.Room{
+				ID:          roomID,
+				Name:        roomName,
+				PassHash:    passHash,
+				PassPlain:   "", // SSH-created rooms don't expose plain password
+				NetworkName: netName,
+				QuotaBytes:  10 * 1024 * 1024 * 1024, // Default 10GB quota
+				Kind:        kind,
+				CreatedAt:   time.Now().UTC(),
+			}
+			
+			if err := s.Store.CreateRoom(room); err != nil {
+				continue
+			}
+			
+			// Ensure Docker network exists
+			if s.Docker != nil && s.Docker.Available() {
+				_ = s.Docker.EnsureNetwork(netName)
+			}
+			
+			newRooms = append(newRooms, room)
+		}
+	}
+	
+	return newRooms, nil
+}
+
+// isValidRoomStructure checks if a directory has the required room files
+func (s *Service) isValidRoomStructure(roomPath string) bool {
+	// Only hash file is strictly required - others can be created
+	hashFile := filepath.Join(roomPath, isolate.HashFile)
+	if _, err := os.Stat(hashFile); err != nil {
+		return false
+	}
+
+	// Enforce the desired map for both kinds:
+	//   single → project/, container/, volumes/, config/, logs/, backup/
+	//   multi  → project/, stack/, containers/, volumes/, config/, logs/, backup/
+	isMulti := strings.HasSuffix(filepath.Dir(roomPath), "multi")
+	if _, err := os.Stat(filepath.Join(roomPath, "stack")); err == nil {
+		isMulti = true
+	}
+	_ = os.MkdirAll(filepath.Join(roomPath, "project"), 0o700)
+	if isMulti {
+		_ = os.MkdirAll(filepath.Join(roomPath, "stack"), 0o700)
+		_ = os.MkdirAll(filepath.Join(roomPath, "containers"), 0o700)
+	} else {
+		_ = os.MkdirAll(filepath.Join(roomPath, "container"), 0o700)
+	}
+	_ = os.MkdirAll(filepath.Join(roomPath, "volumes"), 0o700)
+	_ = os.MkdirAll(filepath.Join(roomPath, "config"), 0o700)
+	_ = os.MkdirAll(filepath.Join(roomPath, "logs"), 0o700)
+	_ = os.MkdirAll(filepath.Join(roomPath, "backup"), 0o700)
+	
+	// Create missing files if they don't exist
+	nameFile := filepath.Join(roomPath, isolate.NameFile)
+	if _, err := os.Stat(nameFile); err != nil {
+		// NAME file can be created later with default name
+	}
+	
+	vaultFile := filepath.Join(roomPath, isolate.VaultFile)
+	if _, err := os.Stat(vaultFile); err != nil {
+		// Create empty vault if missing
+		_ = os.WriteFile(vaultFile, []byte{}, 0o600)
+	}
+	
+	return true
 }
 
 func (s *Service) SetQuota(roomID string, quotaBytes int64) error {

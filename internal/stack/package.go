@@ -28,7 +28,7 @@ type Service struct {
 
 func (s *Service) stackDir(roomID string) string {
 	if s.Rooms != nil {
-		return s.Rooms.RoomWorkDir(roomID)
+		return s.Rooms.RoomStackDir(roomID)
 	}
 	base := s.BaseDir
 	if base == "" {

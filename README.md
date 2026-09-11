@@ -75,29 +75,100 @@ Panel URL:  http://YOUR_VPS_IP:9090
 
 ---
 
-### 🗺️ خريطة المشروع الافتراضية
+### 🗺️ خريطة المشروع النهائية
 
 كل شيء يعيش تحت `/vps-manager` فقط — لا يكتب خارجها أبداً.
 
 ```
 /vps-manager/
-├── data/                 →  قاعدة البيانات + كلمات السر + السجلات
-│   ├── panel.db
-│   └── secrets/owner.env , telegram.env
-├── proxy/                →  إعدادات الدومينات
-├── backup/               →  نسخة كاملة  vps-manager.zip
 │
-├── single/<room_id>/     →  غرفة حاوية واحدة
-│   ├── project/.env      →  ملف الـ Env الوحيد
-│   ├── volumes/          →  البيانات المحفوظة
-│   ├── config/           →  إعدادات إضافية
-│   └── backup/<id>.zip   →  نسخة الغرفة
+├── bin/                              # تشغيل وأدوات VPS Manager
 │
-└── multi/<room_id>/      →  غرفة Compose متعددة الحاويات
-    ├── stack/            →  docker-compose.yml + .env
-    ├── volumes/          →  db / storage / functions
-    ├── config/
-    └── backup/<id>.zip
+├── data/                             # بيانات VPS Manager
+│   ├── database.sqlite               # قاعدة البيانات
+│   ├── sessions/                     # جلسات المستخدمين
+│   └── logs/                         # Logs الخاصة بالـVPS Manager
+│
+├── proxy/                            # إعدادات الـReverse Proxy
+│
+├── x5coder-agent/                    # الـVPS Agent
+│
+├── backup/                           # Backup كامل لـVPS Manager
+│   └── vps-manager.zip
+│
+├── single/                           # Rooms من نوع Single Container
+│   └── <room_id>/
+│       ├── project/                  # الـSource الكامل والمفكوك للمشروع
+│       ├── container/                # بيانات وإعدادات الـContainer
+│       ├── volumes/                  # Volumes الخاصة بالـRoom
+│       │   ├── <volume_name>/        # Volume
+│       │   └── ...
+│       ├── config/                   # إعدادات الـRoom والـENV والـSecrets
+│       ├── logs/                     # Logs الخاصة بالـContainer
+│       └── backup/                   # Clone كامل للـRoom
+│           └── <room_id>.zip
+│
+└── multi/                            # Rooms من نوع Multi Container
+    └── <room_id>/
+        ├── project/                  # محجوز (مصدر الـStack يعيش في stack/)
+        ├── stack/                    # الـSource الكامل + ملفات وتعريف الـStack
+        │   ├── docker-compose.yml    # تعريف الـServices والـNetworks والـVolumes
+        │   └── ...
+        ├── containers/               # Containers الخاصة بالـRoom
+        │   ├── <container_id>/       # بيانات وإعدادات Container
+        │   └── ...
+        ├── volumes/                  # Volumes الخاصة بالـRoom
+        │   ├── <volume_name>/        # Volume
+        │   └── ...
+        ├── config/                   # إعدادات الـStack والـServices والـENV والـSecrets
+        ├── logs/                     # Logs الخاصة بالـContainers
+        │   ├── <container_id>/       # Logs الخاصة بـContainer
+        │   └── ...
+        └── backup/                   # Clone كامل للـRoom
+            └── <room_id>.zip
+```
+
+#### 🏗️ بنية الغرفة الداخلية
+
+**الغرفة المطلوبة للاكتشاف التلقائي (SSH)**:
+```
+# single:
+/vps-manager/single/<room_id>/
+├── auth.hash        # ✅ مطلوب (كلمة المرور المشفرة)
+├── NAME             # ❌ اختياري (يُنشأ تلقائياً: room-<id8>)
+├── vault.bin        # ❌ اختياري (يُنشأ فارغاً إذا مفقود)
+├── project/         # ✅ يُنشأ تلقائياً
+├── container/       # ✅ يُنشأ تلقائياً
+├── volumes/         # ✅ يُنشأ تلقائياً (<volume_name>/ عند الحاجة)
+├── config/          # ✅ يُنشأ تلقائياً (.env هنا)
+├── logs/            # ✅ يُنشأ تلقائياً
+└── backup/          # ✅ يُنشأ تلقائياً (<room_id>.zip)
+
+# multi:
+/vps-manager/multi/<room_id>/
+├── auth.hash        # ✅ مطلوب
+├── NAME             # ❌ اختياري
+├── vault.bin        # ❌ اختياري
+├── project/         # ✅ يُنشأ تلقائياً (محجوز — المصدر في stack/)
+├── stack/           # ✅ يُنشأ تلقائياً (docker-compose.yml هنا)
+├── containers/      # ✅ يُنشأ تلقائياً (<container_id>/ عند التشغيل)
+├── volumes/         # ✅ يُنشأ تلقائياً (<volume_name>/ عند الحاجة)
+├── config/          # ✅ يُنشأ تلقائياً (.env هنا)
+├── logs/            # ✅ يُنشأ تلقائياً (<container_id>/ عند التشغيل)
+└── backup/          # ✅ يُنشأ تلقائياً (<room_id>.zip)
+```
+
+**إنشاء غرفة عبر SSH**:
+```bash
+# 1. إنشاء المجلد
+mkdir -p /vps-manager/single/my-room/project
+
+# 2. إضافة كلمة المرور المشفرة (مطلوب فقط)
+echo "hashed_password_here" > /vps-manager/single/my-room/auth.hash
+
+# خلال 10 ثواني: يُكتشف تلقائياً و يُضاف للوحة
+# الاسم الافتراضي: room-my-room
+# يمكن تغييره من الواجهة
 ```
 
 كل صفحة في اللوحة تعرض المسار الحالي أعلى الشاشة `VPS Path` وشريحة اتصال SSH.
@@ -110,6 +181,36 @@ Panel URL:  http://YOUR_VPS_IP:9090
 docker restart vps-manager          # إعادة تشغيل اللوحة
 docker logs -f vps-manager          # السجلات
 /vps-manager/bin/vps-rooms set-telegram-id  # تغيير مالك تليجرام
+```
+
+### 🚀 أوامر SSH كاملة للغرف
+
+```bash
+# الاتصال بالخادم
+ssh root@YOUR_VPS_IP
+
+# عرض جميع الغرف
+curl -s http://127.0.0.1:9090/api/rooms
+
+# إنشاء غرفة جديدة عبر SSH (اكتشاف تلقائي)
+mkdir -p /vps-manager/single/my-room/project
+echo "hashed_password" > /vps-manager/single/my-room/auth.hash
+# خلال 10 ثواني: تظهر في اللوحة
+
+# تشغيل غرفة
+curl -s -X POST http://127.0.0.1:9090/api/rooms/{room_id}/start
+
+# إيقاف غرفة
+curl -s -X POST http://127.0.0.1:9090/api/rooms/{room_id}/stop
+
+# إعادة تشغيل غرفة
+curl -s -X POST http://127.0.0.1:9090/api/rooms/{room_id}/restart
+
+# حذف غرفة
+curl -s -X DELETE http://127.0.0.1:9090/api/rooms/{room_id}
+
+# فحص يدوي للغرف الجديدة
+curl -s -X POST http://127.0.0.1:9090/api/rooms/scan
 ```
 
 **اللوحة تعمل على:** `http://IP:9090` — الحاوية `vps-manager` (`host` + `privileged`)

@@ -46,6 +46,16 @@ type VolumeRec struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
+// AgentToken is a revocable credential for the HTTPS x5coder-agent API.
+// TokenHash is deliberately never returned or stored in plaintext.
+type AgentToken struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Prefix    string    `json:"prefix"`
+	CreatedAt time.Time `json:"created_at"`
+	LastUsedAt time.Time `json:"last_used_at,omitempty"`
+}
+
 func (s *Store) migrateV2() error {
 	_, _ = s.DB.Exec(`ALTER TABLE rooms ADD COLUMN kind TEXT NOT NULL DEFAULT 'single'`)
 	_, _ = s.DB.Exec(`ALTER TABLE rooms ADD COLUMN domain TEXT NOT NULL DEFAULT ''`)
@@ -85,11 +95,53 @@ CREATE TABLE IF NOT EXISTS volumes (
   created_at TEXT NOT NULL,
   UNIQUE(room_id, ordinal)
 );
+CREATE TABLE IF NOT EXISTS agent_tokens (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  token_hash TEXT NOT NULL UNIQUE,
+  prefix TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  last_used_at TEXT NOT NULL DEFAULT ''
+);
 `)
 	if err != nil {
 		return err
 	}
 	return s.seedContainersFromProjects()
+}
+
+func (s *Store) CreateAgentToken(token AgentToken, hash string) error {
+	_, err := s.DB.Exec(`INSERT INTO agent_tokens(id,name,token_hash,prefix,created_at,last_used_at) VALUES(?,?,?,?,?,?)`,
+		token.ID, token.Name, hash, token.Prefix, token.CreatedAt.UTC().Format(time.RFC3339), "")
+	return err
+}
+
+func (s *Store) ListAgentTokens() ([]AgentToken, error) {
+	rows, err := s.DB.Query(`SELECT id,name,prefix,created_at,last_used_at FROM agent_tokens ORDER BY created_at DESC`)
+	if err != nil { return nil, err }
+	defer rows.Close()
+	var out []AgentToken
+	for rows.Next() {
+		var t AgentToken
+		var created, used string
+		if err := rows.Scan(&t.ID, &t.Name, &t.Prefix, &created, &used); err != nil { return nil, err }
+		t.CreatedAt, _ = time.Parse(time.RFC3339, created)
+		if used != "" { t.LastUsedAt, _ = time.Parse(time.RFC3339, used) }
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) VerifyAgentToken(hash string) (bool, error) {
+	res, err := s.DB.Exec(`UPDATE agent_tokens SET last_used_at=? WHERE token_hash=?`, time.Now().UTC().Format(time.RFC3339), hash)
+	if err != nil { return false, err }
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+func (s *Store) DeleteAgentToken(id string) error {
+	_, err := s.DB.Exec(`DELETE FROM agent_tokens WHERE id=?`, id)
+	return err
 }
 
 // seedContainersFromProjects copies each existing project row into containers/images

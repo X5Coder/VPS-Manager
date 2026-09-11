@@ -304,7 +304,21 @@ func (s *Service) DeployBuild(in DeployBuildInput) (*store.Project, error) {
 	}
 	tag := fmt.Sprintf("vpsrooms/%s:latest", id[:8])
 	fmt.Fprintf(log, "بناء الصورة %s...\n", tag)
-	if err := s.Docker.BuildImage(context.Background(), pdir, tag, log); err != nil {
+	// Room env doubles as Docker build args, so Dockerfiles with ARG/ENV
+	// (e.g. BOT_TOKEN) bake real values instead of empty ones.
+	buildArgs := map[string]string{}
+	if s.Rooms != nil {
+		if pairs, _ := readEnvPairs(s.Rooms.RoomEnvPath(in.RoomID)); len(pairs) > 0 {
+			for _, kv := range pairs {
+				if k, v, ok := strings.Cut(kv, "="); ok {
+					if k = strings.TrimSpace(k); k != "" {
+						buildArgs[k] = strings.Trim(strings.TrimSpace(v), `"'`)
+					}
+				}
+			}
+		}
+	}
+	if err := s.Docker.Build(context.Background(), dockerx.BuildOpts{Tag: tag, Context: pdir, Args: buildArgs}, log); err != nil {
 		return nil, err
 	}
 	hostPort := in.HostPort
@@ -883,7 +897,7 @@ func (s *Service) ApplyRoomEnv(roomID string) error {
 
 	stackHandled := false
 	if s.Rooms != nil {
-		stackRoot := s.Rooms.RoomWorkDir(roomID)
+		stackRoot := s.Rooms.RoomStackDir(roomID)
 		if root := findComposeRoot(stackRoot); root != "" {
 			if err := tryCompose(root, "vr"+store.ShortRoomID(roomID)); err != nil {
 				return err
@@ -953,7 +967,7 @@ func (s *Service) syncEnvCopies(roomID, pdir, text string) {
 		roomEnv := s.Rooms.RoomEnvPath(roomID)
 		_ = os.MkdirAll(filepath.Dir(roomEnv), 0o700)
 		_ = writeEnv(roomEnv, text)
-		if root := findComposeRoot(s.Rooms.RoomWorkDir(roomID)); root != "" {
+		if root := findComposeRoot(s.Rooms.RoomStackDir(roomID)); root != "" {
 			_ = writeEnv(filepath.Join(root, ".env"), text)
 		}
 	}

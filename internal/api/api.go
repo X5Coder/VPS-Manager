@@ -71,6 +71,7 @@ func New(cfg config.Config, st *store.Store, docker *dockerx.Client, hub *metric
 	ps.AfterChange = func() { _ = s.syncProxy() }
 	_ = s.syncProxy()
 	s.startLiveCache()
+	go s.startFilesystemRoomScanner()
 	return s
 }
 
@@ -89,6 +90,7 @@ func (s *Server) routes() {
 
 	s.Mux.HandleFunc("/api/rooms", s.withGate(s.handleRooms))
 	s.Mux.HandleFunc("/api/rooms/", s.withGate(s.handleRoomByID))
+	s.Mux.HandleFunc("/api/rooms/scan", s.withGate(s.handleRoomScan))
 
 	s.Mux.HandleFunc("/api/projects", s.withGate(s.handleProjects))
 	s.Mux.HandleFunc("/api/projects/", s.withGate(s.handleProjectByID))
@@ -104,6 +106,7 @@ func (s *Server) routes() {
 	s.routesManage()
 	s.routesSSH()
 	s.routesProxyDomain()
+	s.routesAgent()
 }
 
 func clientIP(r *http.Request) string {
@@ -152,7 +155,7 @@ func (s *Server) alertAccess(r *http.Request, title, action, detail, room string
 func (s *Server) Handler(webFS http.FileSystem) http.Handler {
 	static := http.FileServer(webFS)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/") {
+		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/x5coder-agent/") {
 			s.Mux.ServeHTTP(w, r)
 			return
 		}
@@ -640,6 +643,33 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, out)
 }
 
+func (s *Server) handleRoomScan(w http.ResponseWriter, r *http.Request) {
+	if s.requireOwner(w, r) == nil {
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeErr(w, 405, "method")
+		return
+	}
+	
+	newRooms, err := s.Rooms.DetectFilesystemRooms()
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	
+	// Trigger inventory adoption for new rooms
+	for _, room := range newRooms {
+		inventory.RefreshRoom(s.Store, s.Docker, s.Rooms, s.Cfg.RuntimeDir, room)
+	}
+	
+	writeJSON(w, 200, map[string]any{
+		"ok":        "1",
+		"new_rooms": len(newRooms),
+		"rooms":     newRooms,
+	})
+}
+
 func (s *Server) handleRooms(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -905,6 +935,9 @@ func (s *Server) handleRoomByID(w http.ResponseWriter, r *http.Request) {
 			return
 		case "update":
 			s.handleRoomUpdate(w, r, id)
+			return
+		case "upload":
+			s.handleRoomUpload(w, r, id)
 			return
 		case "pause":
 			if r.Method != http.MethodPost {

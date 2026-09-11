@@ -57,7 +57,7 @@ func Load() Config {
 		RoomsDir:       env("VPS_ROOMS_ROOMS", singleDir),
 		RuntimeDir:     env("VPS_ROOMS_RUNTIME", singleDir),
 		VolumesDir:     env("VPS_ROOMS_VOLUMES", ""),
-		DBPath:         env("VPS_ROOMS_DB", filepath.Join(dataDir, "panel.db")),
+		DBPath:         env("VPS_ROOMS_DB", filepath.Join(dataDir, "database.sqlite")),
 		OwnerPass:      ownerPass,
 		SessionHours:   envInt("VPS_ROOMS_SESSION_HOURS", 24),
 		AgentSock:      env("VPS_ROOMS_AGENT_SOCK", filepath.Join(dataDir, "agent.sock")),
@@ -117,6 +117,14 @@ func (c Config) GlobalBackupPath() string {
 }
 
 // VPSPath returns the breadcrumb path shown at the top of every web page.
+func (c Config) DataSessionsDir() string {
+	return filepath.Join(c.DataDir, "sessions")
+}
+
+func (c Config) DataLogsDir() string {
+	return filepath.Join(c.DataDir, "logs")
+}
+
 func (c Config) VPSPath(roomID, kind string) string {
 	if roomID == "" {
 		return c.BaseDir

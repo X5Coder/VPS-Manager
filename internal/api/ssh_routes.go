@@ -9,9 +9,6 @@ import (
 )
 
 func (s *Server) routesSSH() {
-	s.Mux.HandleFunc("/api/ssh/status", s.withGate(s.handleSSHStatus))
-	s.Mux.HandleFunc("/api/ssh/keys", s.withGate(s.handleSSHKeys))
-	s.Mux.HandleFunc("/api/ssh/root-password", s.withGate(s.handleSSHRootPassword))
 	s.Mux.HandleFunc("/api/ssh/terminal/ws", s.withGateWS(s.handleSSHTerminalWS))
 	s.Mux.HandleFunc("/api/vps/paths", s.withGate(s.handleVPSPaths))
 }
@@ -46,7 +43,7 @@ func (s *Server) handleSSHStatus(w http.ResponseWriter, r *http.Request) {
 		"backup_dir":  s.Cfg.GlobalBackupDir(),
 		"panel_port":  9090,
 		"vps_path":    s.Cfg.BaseDir,
-		"layout":      []string{"bin/", "data/", "proxy/", "x5coder-agent/", "backup/vps-manager.zip", "single/<room_id>/{project/.env,volumes/,config/,backup/<room_id>.zip}", "multi/<room_id>/{stack/docker-compose.yml+.env,volumes/,config/,backup/<room_id>.zip}"},
+		"layout":      []string{"bin/", "data/{database.sqlite,sessions/,logs/}", "proxy/", "x5coder-agent/", "backup/vps-manager.zip", "single/<room_id>/{project/,container/,volumes/,config/,logs/,backup/<room_id>.zip}", "multi/<room_id>/{project/,stack/docker-compose.yml,containers/,volumes/,config/,logs/,backup/<room_id>.zip}"},
 	})
 }
 

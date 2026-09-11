@@ -451,7 +451,7 @@
   function viewSectionLabel(view) {
     const v = view || state.view;
     if (v === "room") return roomSectionLabel();
-    return { server: "server", rooms: "rooms", logs: "logs", ssh: "ssh", backup: "backup", settings: "settings" }[v] || v || "";
+    return { server: "server", rooms: "rooms", logs: "logs", agent: "x5coder-agent", backup: "backup", settings: "settings" }[v] || v || "";
   }
   function paintBreadcrumb(el, info, fallbackCrumbs, section) {
     if (!el) return;
@@ -483,8 +483,8 @@
         return "/projects";
       case "server": return "/server";
       case "terminal": return "/terminal";
+      case "agent": return "/x5coder-agent";
       case "backup": return "/backup";
-      case "ssh": return "/ssh";
       case "logs": return "/logs";
       case "settings": return "/settings";
       default: return "/server";
@@ -503,9 +503,10 @@
     if (room) return { view: "room", roomId: room[1], roomTab: room[2] || "overview" };
     if (p === "/projects") return { view: "rooms" };
     if (p === "/docs" || p === "/guide" || p === "/tokens" || p === "/api") return { view: "server" };
-    if (p === "/ssh") return { view: "ssh" };
+    if (p === "/ssh") return { view: "server" };
     if (p === "/deploy") return { view: "rooms" };
     if (p === "/terminal") return { view: "terminal" };
+    if (p === "/x5coder-agent") return { view: "agent" };
     if (p === "/backup") return { view: "backup" };
     if (p === "/logs") return { view: "logs" };
     if (p === "/settings") return { view: "settings" };
@@ -942,7 +943,7 @@
 
     const nav = root.querySelector("#nav");
     const items = isOwner
-      ? [["server", "Server"], ["rooms", "Rooms"], ["terminal", "Root Shell"], ["logs", "Logs"], ["ssh", "SSH & Docs"], ["backup", "Backup"], ["settings", "Settings"]]
+      ? [["server", "Server"], ["rooms", "Rooms"], ["terminal", "Root Shell"], ["logs", "Logs"], ["agent", "x5coder-agent"], ["backup", "Backup"], ["settings", "Settings"]]
       : [["room", "Room"], ["rooms", "All rooms"]];
     const highlight = navHighlight(active || state.view);
     nav.innerHTML = items.map(([k, label]) => {
@@ -997,7 +998,7 @@
           ? [{ label: "/vps-manager" }, { label: state.roomKindHint || "single" }, { label: String(roomId).slice(0, 8) }]
           : [{ label: "/vps-manager" }];
         paintBreadcrumb(el, state.cache?.vpsPaths, fallback);
-        const rid = (next === "room" || next === "rooms" || next === "ssh") ? (roomId || "") : "";
+        const rid = (next === "room" || next === "rooms") ? (roomId || "") : "";
         fetchVPSPaths(next === "room" ? roomId : "").then((info) => {
           if (!info) return;
           state.cache = state.cache || {};
@@ -1778,11 +1779,86 @@
 
 
 
-  function docsPagePlain() {
-    return `VPS Manager — no public API.
-Manage everything from the panel or via SSH.
-Layout: /vps-manager/{bin,data,proxy,x5coder-agent,single/<id>/project, multi/<id>/stack}.
-SSH: see the SSH page for the connect string.`;
+  async function renderAgent() {
+    const gen = state._gen;
+    shell(`<div class="topbar"><div><h2>x5coder-agent</h2><div class="sub">HTTPS control plane · Bearer token authentication</div></div></div>${skel(3)}`, "agent");
+    try {
+      const data = await api("/api/agent/tokens");
+      if (!alive("agent", gen)) return;
+      const tokens = data.tokens || [];
+      const tools = (data.tools && data.tools.length ? data.tools : [{ name: "get_vps_overview", description: "Get the overall VPS status including CPU, RAM, disk, network, Docker, storage usage, and resource usage.", input_schema: { type: "object", properties: {}, required: [] } }]);
+      const toolCount = tools.length;
+      const toolLabel = toolCount === 1 ? "1 controlled VPS tool" : toolCount + " controlled VPS tools";
+      const agentExampleBody = (t) => {
+        const schema = t.input_schema || {};
+        const req = schema.required || [];
+        if (!req.length) return "{}";
+        const props = schema.properties || {};
+        const o = {};
+        req.forEach((k) => {
+          const type = (props[k] && props[k].type) || "string";
+          if (type === "number" || type === "integer") o[k] = 5;
+          else if (type === "boolean") o[k] = true;
+          else if (type === "object") o[k] = {};
+          else if (props[k] && props[k].enum && props[k].enum.length) o[k] = props[k].enum[0];
+          else o[k] = "<" + k + ">";
+        });
+        return JSON.stringify(o);
+      };
+      const toolsHTML = tools.map((t) => {
+        const toolJSON = JSON.stringify(t, null, 2);
+        const invokeURL = (data.endpoint || "") + "/" + t.name;
+        const body = agentExampleBody(t);
+        const curl = "curl -s -X POST " + invokeURL + " -H \"Authorization: Bearer <secret>\" -H \"Content-Type: application/json\" -d '" + body + "'";
+        return `<h4 class="mono">${esc(t.name)}</h4>
+          <div class="cmd-card"><pre class="mono copyable" data-copy="${esc(toolJSON)}">${esc(toolJSON)}</pre></div>
+          <div class="cmd-card"><pre class="mono copyable" data-copy="${esc(curl)}">${esc(curl)}</pre></div>`;
+      }).join("");
+      shell(`
+        <div class="topbar"><div><h2>x5coder-agent</h2><div class="sub">Controlled HTTPS access to VPS Manager tools</div></div><div class="actions"><button class="btn primary action" id="agent-create-token">Create token</button></div></div>
+        <div class="panel">
+          <h3>Agent endpoint</h3>
+          <p class="muted">Use this URL with <code>Authorization: Bearer &lt;token&gt;</code>. Tokens are shown only once when created.</p>
+          <div class="fact-row"><span>Tools discovery URL</span><strong class="mono copyable" data-copy="${esc(data.endpoint || "")}">${esc(data.endpoint || "")}</strong></div>
+          <div class="fact-row"><span>Available tools</span><strong>${esc(toolLabel)}</strong></div>
+          <p class="muted">The tools list is public. Running any tool requires the secret key.</p>
+        </div>
+        <div class="panel"><h3>Tools</h3>
+          <p class="muted">Unified send — token in the header, full tool input as JSON body (empty <code>{}</code> when no input is required):</p>
+          <div class="cmd-card"><pre class="mono copyable" data-copy="${esc("curl -s " + (data.endpoint || "") + "  # public tools list, no key needed")}">curl -s ${esc(data.endpoint || "")}  # public tools list, no key needed</pre></div>
+          ${toolsHTML}
+        </div>
+        <div class="panel"><h3>Access tokens</h3>
+          ${tokens.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>Prefix</th><th>Created</th><th>Last used</th><th></th></tr></thead><tbody>${tokens.map((t) => `<tr><td>${esc(t.name)}</td><td class="mono">${esc(t.prefix)}…</td><td>${esc(new Date(t.created_at).toLocaleString())}</td><td>${t.last_used_at ? esc(new Date(t.last_used_at).toLocaleString()) : "Never"}</td><td><button class="btn sm danger action" data-agent-revoke="${esc(t.id)}">Revoke</button></td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">No token has been created yet.</p>`}
+        </div>
+        <dialog id="agent-token-dialog" class="panel" style="max-width:460px;width:calc(100% - 32px);color:var(--text)">
+          <form method="dialog" id="agent-token-form" class="form-grid"><h3 class="full">Create x5coder-agent token</h3><div class="field full"><label>Token name</label><input name="name" required minlength="2" maxlength="64" placeholder="e.g. Production AI agent" autofocus /></div><p class="error full" id="agent-token-error"></p><div class="full row-actions"><button class="btn action" value="cancel">Cancel</button><button class="btn primary action" value="default" type="submit">Create token</button></div></form>
+        </dialog>`, "agent");
+      bindCopyables();
+      const dialog = document.querySelector("#agent-token-dialog");
+      document.querySelector("#agent-create-token")?.addEventListener("click", () => dialog?.showModal());
+      document.querySelector("#agent-token-form")?.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const error = document.querySelector("#agent-token-error");
+        if (error) error.textContent = "";
+        try {
+          const fd = new FormData(e.currentTarget);
+          const created = await api("/api/agent/tokens", { method: "POST", body: JSON.stringify({ name: fd.get("name") }) });
+          dialog?.close();
+          await copyText(created.secret || "");
+          shell(`<div class="topbar"><div><h2>x5coder-agent</h2><div class="sub">Token created</div></div></div><div class="panel"><h3>Copy this token now</h3><p class="error">This secret will not be displayed again.</p><div class="cmd-card"><pre class="mono copyable" data-copy="${esc(created.secret || "")}">${esc(created.secret || "")}</pre></div><p class="muted">Tools URL: <span class="mono">${esc(created.endpoint || "")}</span></p><button class="btn primary action" id="agent-back">Done</button></div>`, "agent");
+          bindCopyables();
+          document.querySelector("#agent-back")?.addEventListener("click", () => renderAgent());
+        } catch (ex) { if (error) error.textContent = ex.message || "Could not create token"; }
+      });
+      document.querySelectorAll("[data-agent-revoke]").forEach((button) => button.addEventListener("click", async () => {
+        if (!confirm("Revoke this token? Any agent using it will lose access immediately.")) return;
+        try { await api(`/api/agent/tokens/${encodeURIComponent(button.dataset.agentRevoke)}`, { method: "DELETE" }); toast("Token revoked"); renderAgent(); }
+        catch (ex) { toast(ex.message || "Could not revoke token"); }
+      }));
+    } catch (e) {
+      if (alive("agent", gen)) shell(`<p class="error">${esc(e.message)}</p>`, "agent");
+    }
   }
 
   async function renderSettings() {
@@ -1939,6 +2015,19 @@ SSH: see the SSH page for the connect string.`;
     return lines.join("\n") + (lines.length ? "\n" : "");
   }
 
+  const isEnvVolumeName = (n) => {
+    const s = String(n || "").toLowerCase();
+    return s === "env" || s === ".env" || s.endsWith(".env");
+  };
+
+  function uploadHTML(isMulti, port) {
+    return `<form id="zip-upload-form" class="form-grid" style="margin-top:14px">
+      <div class="field full"><label>Upload ${isMulti ? "stack" : "project"} ZIP (.zip, .tar.gz, .tgz, .tar) — updates this room only</label><input type="file" name="file" accept=".zip,.tar.gz,.tgz,.tar" required /></div>
+      ${isMulti ? "" : `<div class="field"><label>Internal port</label><input name="internal_port" type="number" min="1" max="65535" value="${Number(port) || 80}" /></div>`}
+      <div class="field full"><button class="btn primary action" type="submit">Upload &amp; update room</button></div>
+    </form>`;
+  }
+
   async function renderRoom() {
     const gen = state._gen;
     const id = state.roomId || state.me?.room?.id;
@@ -1985,7 +2074,7 @@ SSH: see the SSH page for the connect string.`;
       </div>`;
     } else if (emptyRoom) {
       body = `<div class="panel"><h3>Empty room</h3>
-        <p class="muted" style="margin:0 0 12px">Isolated and empty. No manual file upload — deploy by image name (single) or compose text (multi). Kind: <strong>${esc(isMulti ? "multi (compose / several containers)" : "single (one container)")}</strong>.</p>
+        <p class="muted" style="margin:0 0 12px">Isolated and empty. Upload a project ZIP below, or deploy by image name (single) or compose text (multi). Kind: <strong>${esc(isMulti ? "multi (compose / several containers)" : "single (one container)")}</strong>.</p>
         <form id="image-deploy-form" class="form-grid">
           <div class="field full"><label>Docker image</label><input name="image" placeholder="nginx:alpine" required /></div>
           <div class="field"><label>Host port</label><input name="host_port" type="number" min="0" max="65535" placeholder="e.g. 8000" /></div>
@@ -1996,6 +2085,8 @@ SSH: see the SSH page for the connect string.`;
         <div class="logs-viewer" style="margin-top:12px;min-height:120px">
           <div class="logs-body" id="tar-log">(waiting for deploy)</div>
         </div>
+        ${uploadHTML(isMulti, 80)}
+        <p class="error" id="ziperr"></p><p class="muted" id="zipok"></p>
       </div>`;
     } else {
       body = `
@@ -2016,6 +2107,10 @@ SSH: see the SSH page for the connect string.`;
         ${(roomState === "restarting" || roomState === "crashed")
           ? `<p class="error" style="margin:10px 0 0">This container is ${esc(roomState)} — it keeps exiting. Open <strong>Container → Logs</strong> to see the error. Most apps crash because an env value (like a token) is missing.</p>`
           : ""}
+        <div class="panel"><h3>Source upload</h3>
+          ${uploadHTML(isMulti, (mainProj && mainProj.container_port) || 80)}
+          <p class="error" id="ziperr"></p><p class="muted" id="zipok"></p>
+        </div>
         <div class="stat-chips">
           <div class="stat"><div class="label">Containers</div><div class="value">${containers.length}</div><div class="muted">${images.length} images · ${volumes.length} volumes</div></div>
           <div class="stat"><div class="label">Quota used</div><div class="value">${fmtBytes(room.usage_bytes)}</div><div class="muted">cap ${room.quota_bytes ? fmtBytes(room.quota_bytes) : "not set"} · files + volumes + RW</div></div>
@@ -2185,9 +2280,9 @@ ${(function () {
         }
       }
     } else if (tab === "volumes") {
-      body = `<div class="panel"><div class="head-row"><div class="row-actions">${mainProj ? `<button class="btn sm danger action" type="button" id="wipe-all-data">Wipe all project data</button>` : ""}</div></div>
+      body = `<div class="panel"><div class="head-row"><div class="row-actions">${mainProj ? `<button class="btn sm danger action" type="button" id="wipe-all-data">Wipe all volumes (keep .env)</button>` : ""}</div></div>
         <table class="table"><thead><tr><th>#</th><th>Volume</th><th>Source</th><th></th></tr></thead>
-        <tbody>${(volumes || []).map((v) => `<tr data-vid="${esc(v.id)}" class="vol-row" style="cursor:pointer"><td class="mono">#${String(v.ordinal || 1).padStart(3,"0")}</td><td>${esc(v.name || "volume")}</td><td class="mono muted">${esc(v.docker_name || v.name || "")}</td><td><button type="button" class="btn sm danger action" data-vol-clean="${esc(v.id)}">Clean</button></td></tr>`).join("") || `<tr><td colspan="4" class="muted">No volumes in this room.</td></tr>`}</tbody></table>
+        <tbody>${(volumes || []).filter((v) => !isEnvVolumeName(v.name)).map((v) => `<tr data-vid="${esc(v.id)}" class="vol-row" style="cursor:pointer"><td class="mono">#${String(v.ordinal || 1).padStart(3,"0")}</td><td>${esc(v.name || "volume")}</td><td class="mono muted">${esc(v.docker_name || v.name || "")}</td><td><button type="button" class="btn sm danger action" data-vol-clean="${esc(v.id)}">Clean</button></td></tr>`).join("") || `<tr><td colspan="4" class="muted">No volumes in this room.</td></tr>`}</tbody></table>
       </div>`;
     } else if (tab === "files") {
       let listing = { entries: [], path: state.filePath || "." };
@@ -2203,7 +2298,7 @@ ${(function () {
           <textarea class="file-editor" id="fedit">${esc(listing.content)}</textarea></div>`;
       } else {
         body = `<div class="panel"><div class="head-row"><h3>Files · ${esc(listing.path || ".")}</h3>
-          <div class="row-actions">${mainProj ? `<button class="btn sm danger action" type="button" id="wipe-all-data">Wipe all data</button>` : ""}<button class="btn sm action" id="updir">Up</button></div></div>
+          <div class="row-actions">${mainProj ? `<button class="btn sm danger action" type="button" id="wipe-all-data">Wipe all volumes (keep .env)</button>` : ""}<button class="btn sm action" id="updir">Up</button></div></div>
           <ul class="file-list">${(listing.entries || []).map((e) => `<li><a href="#" data-path="${esc((listing.path === "." ? "" : listing.path + "/") + e.name)}">${e.dir ? "📁" : "📄"} ${esc(e.name)}</a><span class="muted">${e.dir ? "dir" : fmtBytes(e.size)}</span></li>`).join("") || "<li class='muted'>Empty</li>"}</ul></div>`;
       }
     } else if (tab === "logs") {
@@ -2324,6 +2419,30 @@ ${(function () {
           await renderRoom();
         } catch (ex) {
           if (err) err.textContent = ex.message || "Deploy failed";
+        }
+      });
+      document.querySelector("#zip-upload-form")?.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const err = document.querySelector("#ziperr");
+        const ok = document.querySelector("#zipok");
+        if (err) err.textContent = "";
+        if (ok) ok.textContent = "";
+        const btn = e.target.querySelector("button[type=submit]");
+        const fd = new FormData(e.target);
+        const file = fd.get("file");
+        if (!file || !file.size) { if (err) err.textContent = "Choose a ZIP file first"; return; }
+        if (btn) { btn.disabled = true; btn.textContent = "Uploading…"; }
+        try {
+          const r = await fetch(`/api/rooms/${id}/upload`, { method: "POST", body: fd, credentials: "same-origin" });
+          const j = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(j.error || ("Upload failed (" + r.status + ")"));
+          const n = (j.stored && j.stored.files) || 0;
+          if (ok) ok.textContent = `Stored ${n} files — room updated${j.docker_available ? "" : " (build on a Docker host)"}.`;
+          await renderRoom();
+        } catch (ex) {
+          if (err) err.textContent = ex.message || "Upload failed";
+        } finally {
+          if (btn) { btn.disabled = false; btn.textContent = "Upload & update room"; }
         }
       });
       bindQuotaSliders();
@@ -2504,17 +2623,17 @@ ${(function () {
       state._containersPoll = null;
     }
     bindAction(document.querySelector("#wipe-all-data"), async () => {
-      if (!mainProj) return;
-      if (!confirm("Delete ALL persisted project data (config.db, profiles, uploads, …)? The project and .env are kept. The container will restart.")) return;
+      if (!confirm("Delete ALL volume contents in this room? .env files are kept. Containers restart.")) return;
       try {
-        await api(`/api/projects/${mainProj.id}/wipe-data`, { method: "POST", body: "{}" });
-        toast("Wiped — container recreated");
+        const res = await api(`/api/rooms/${id}/volumes/wipe-all`, { method: "POST", body: "{}" });
+        const n = (res.wiped || []).length;
+        toast(`Wiped ${n} volume${n === 1 ? "" : "s"} — .env kept${res.docker_available ? "" : " (no Docker: restart on host)"}`);
         render();
       } catch (ex) { toast(ex.message || "Wipe failed"); }
     });
     document.querySelectorAll("[data-vol-clean]").forEach((btn) => {
       btn.addEventListener("click", async (ev) => {
-        if (ev && ev.stopPropagation) ev.stopPropagation();
+        if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();
         if (ev) ev.preventDefault();
         if (btn.disabled || btn.classList.contains("busy")) return;
         const vid = btn.getAttribute("data-vol-clean");
@@ -2939,6 +3058,7 @@ ${(function () {
     const conn = st?.connect || "ssh root@13.140.164.29 -p 22";
     const port = st?.port || 22;
     const pass = rootPass || "kareem1234";
+    const hostIP = conn.match(/@([\d.]+)/)?.[1] || "13.140.164.29";
 
     const activeRooms = (list || []).filter((r) => r.room_id);
     const sample = activeRooms[0] || {
@@ -3000,25 +3120,44 @@ NEVER place application code or configuration in arbitrary host paths (such as \
 ### Canonical Directory Layout:
 \`\`\`
 /vps-manager/
-├── bin/              # VPS Manager binaries (vps-rooms panel, vr CLI)
-├── data/             # SQLite database, sessions, and system logs (/vps-manager/data/logs)
-├── proxy/            # Reverse proxy configurations (Caddy / Nginx)
-├── x5coder-agent/    # Remote agent & monitoring
-├── backup/           # Global VPS backup archive (/vps-manager/backup/vps-manager.zip)
-├── single/           # Standalone single-container rooms
+├── bin/
+├── data/
+│   ├── database.sqlite
+│   ├── sessions/
+│   └── logs/
+├── proxy/
+├── x5coder-agent/
+├── backup/
+│   └── vps-manager.zip
+├── single/
 │   └── <room_id>/
-│       ├── project/  # Application code (Dockerfile / source)
-│       │   └── .env  # App environment variables & secrets
-│       ├── volumes/  # Persistent application storage
-│       ├── config/   # Project runtime configuration
-│       └── backup/   # <room_id>.zip (contains project + volumes + config + .env)
-└── multi/            # Multi-container / Docker Compose stacks
+│       ├── project/
+│       ├── container/
+│       ├── volumes/
+│       │   ├── <volume_name>/
+│       │   └── ...
+│       ├── config/
+│       ├── logs/
+│       └── backup/
+│           └── <room_id>.zip
+└── multi/
     └── <room_id>/
-        ├── stack/    # docker-compose.yml and service definitions
-        │   └── .env  # Shared stack environment variables
-        ├── volumes/  # Persistent volumes per service
-        ├── config/   # Stack configuration
-        └── backup/   # <room_id>.zip (full stack backup)
+        ├── project/
+        ├── stack/
+        │   ├── docker-compose.yml
+        │   └── ...
+        ├── containers/
+        │   ├── <container_id>/
+        │   └── ...
+        ├── volumes/
+        │   ├── <volume_name>/
+        │   └── ...
+        ├── config/
+        ├── logs/
+        │   ├── <container_id>/
+        │   └── ...
+        └── backup/
+            └── <room_id>.zip
 \`\`\`
 
 ---
@@ -3083,6 +3222,23 @@ curl -s -X POST http://13.140.164.29:9090/api/rooms \\
 \`\`\`bash
 /vps-manager/bin/vr room create --name my-service --kind single --quota 5
 \`\`\`
+
+### Step 2: Upload / Place Project Code in the Canonical Path
+- Via Panel: After room creation, the panel provides upload UI (tar.gz) or direct text editing.
+- Via SSH (Auto-Detected): Create room structure directly on filesystem — auto-detected within 10 seconds:
+\`\`\`bash
+# Create Single Room (Auto-Detected)
+mkdir -p /vps-manager/single/my-new-room/project
+echo "hashed_password_here" > /vps-manager/single/my-new-room/auth.hash
+# Within 10 seconds: appears in panel as "room-my-new-room"
+
+# Create Multi Room (Auto-Detected)
+mkdir -p /vps-manager/multi/my-compose-room/stack
+echo "hashed_password_here" > /vps-manager/multi/my-compose-room/auth.hash
+# Within 10 seconds: appears in panel with stack/ directory ready for docker-compose.yml
+\`\`\`
+- Required for SSH creation: Only \`auth.hash\` file with hashed password. Everything else (NAME, vault.bin, directories) is auto-created.
+- Manual scan trigger: \`curl -s -X POST http://127.0.0.1:9090/api/rooms/scan\`
 
 ### Step 2: Upload / Place Project Code in the Canonical Path
 - For Single Room:
@@ -3159,6 +3315,199 @@ curl -s -X DELETE http://13.140.164.29:9090/api/rooms/${sId}
 2. **Volumes isolation**: Application data resides in volumes/ and is never mixed with code.
 3. **Canonical paths only**: No projects outside /vps-manager/single/ or /vps-manager/multi/.
 4. **Log paths**: Unified logs are in /vps-manager/data/logs/.
+
+---
+
+## 8. COMPLETE ROOM MANAGEMENT COMMANDS
+
+### LIST ALL ROOMS:
+\`\`\`bash
+# Get all rooms with IDs, names, and status
+curl -s http://127.0.0.1:9090/api/rooms | jq '.[] | {id, name, kind, quota_bytes, usage_bytes}'
+
+# Via database
+sqlite3 /vps-manager/data/panel.db "SELECT id, name, kind, created_at FROM rooms;"
+
+# Via filesystem
+ls -la /vps-manager/single/
+ls -la /vps-manager/multi/
+\`\`\`
+
+### ROOM CONTROL OPERATIONS:
+\`\`\`bash
+# START ROOM
+curl -s -X POST http://127.0.0.1:9090/api/rooms/${sId}/start
+/vps-manager/bin/vr room start ${sId}
+
+# STOP ROOM  
+curl -s -X POST http://127.0.0.1:9090/api/rooms/${sId}/stop
+/vps-manager/bin/vr room stop ${sId}
+
+# RESTART ROOM
+curl -s -X POST http://127.0.0.1:9090/api/rooms/${sId}/restart
+/vps-manager/bin/vr room restart ${sId}
+
+# PAUSE ROOM
+curl -s -X POST http://127.0.0.1:9090/api/rooms/${sId}/pause
+
+# RESUME ROOM
+curl -s -X POST http://127.0.0.1:9090/api/rooms/${sId}/resume
+\`\`\`
+
+### ROOM MODIFICATION:
+\`\`\`bash
+# CHANGE ROOM NAME
+echo "New Room Name" > /vps-manager/${sKind}/${sId}/NAME
+
+# CHANGE ROOM PASSWORD (generate hash first)
+NEW_HASH=$(/vps-manager/bin/vr room hash --password "new_password")
+echo "\$NEW_HASH" > /vps-manager/${sKind}/${sId}/auth.hash
+
+# CHANGE ROOM QUOTA
+curl -s -X PUT http://127.0.0.1:9090/api/rooms/${sId} \\
+  -H "Content-Type: application/json" \\
+  -d '{"quota_bytes": 10737418240}'  # 10GB
+\`\`\`
+
+### ROOM MONITORING:
+\`\`\`bash
+# DISK USAGE
+curl -s http://127.0.0.1:9090/api/rooms/${sId} | jq '{usage_bytes, quota_bytes, footprint_bytes}'
+du -sh /vps-manager/${sKind}/${sId}
+
+# RESOURCE USAGE
+curl -s http://127.0.0.1:9090/api/metrics
+docker stats --no-stream --format "table {{.Container}}\\t{{.CPUPerc}}\\t{{.MemUsage}}" $(docker ps -q --filter "label=vps-rooms.room=${sId}")
+
+# LOGS
+tail -n 100 -f /vps-manager/data/logs/rooms/${sId}.log
+docker logs --tail 100 -f $(docker ps -q --filter "label=vps-rooms.room=${sId}")
+\`\`\`
+
+### DELETE ROOM COMPLETELY:
+\`\`\`bash
+# ⚠️ IRREVERSIBLE - Use with caution
+curl -s -X DELETE http://127.0.0.1:9090/api/rooms/${sId}
+/vps-manager/bin/vr room delete ${sId}
+
+# Manual cleanup if API fails
+docker stop $(docker ps -q --filter "label=vps-rooms.room=${sId}")
+docker rm $(docker ps -aq --filter "label=vps-rooms.room=${sId}")
+sqlite3 /vps-manager/data/panel.db "DELETE FROM rooms WHERE id='${sId}';"
+rm -rf /vps-manager/${sKind}/${sId}
+docker network rm vpsrooms_${sId.slice(0, 8)}
+\`\`\`
+
+### FILESYSTEM ACCESS:
+\`\`\`bash
+# Navigate to room
+cd ${sWork}  # Single: /vps-manager/single/${sId}/project
+              # Multi:  /vps-manager/multi/${sId}/stack
+
+# View environment
+cat ${sEnv}
+
+# Browse volumes
+ls -la ${sVol}
+
+# Edit .env (protected from deletion)
+nano /vps-manager/${sKind}/${sId}/${sCode}/.env
+\`\`\`
+
+### BACKUP & RESTORE:
+\`\`\`bash
+# Create backup
+curl -s -X POST http://127.0.0.1:9090/api/rooms/${sId}/backup
+cd /vps-manager/${sKind}/${sId} && tar -czf backup/${sId}-manual-$(date +%Y%m%d).tar.gz project/ volumes/ config/ .env
+
+# List backups
+curl -s http://127.0.0.1:9090/api/backup
+ls -la /vps-manager/${sKind}/${sId}/backup/
+
+# Restore from backup
+curl -s -X POST http://127.0.0.1:9090/api/rooms/${sId}/restore \\
+  -H "Content-Type: application/json" \\
+  -d '{"backup_file": "backup-file.zip"}'
+\`\`\`
+
+---
+
+## 9. API COMMAND REFERENCE
+
+### Room Management:
+- \`POST /api/rooms\` - Create room
+- \`GET /api/rooms\` - List all rooms  
+- \`GET /api/rooms/{id}\` - Get room details
+- \`PUT /api/rooms/{id}\` - Update room
+- \`DELETE /api/rooms/{id}\` - Delete room
+- \`POST /api/rooms/{id}/start\` - Start room
+- \`POST /api/rooms/{id}/stop\` - Stop room
+- \`POST /api/rooms/{id}/restart\` - Restart room
+- \`POST /api/rooms/{id}/pause\` - Pause room
+- \`POST /api/rooms/{id}/resume\` - Resume room
+- \`POST /api/rooms/scan\` - Force filesystem scan
+
+### SSH & Filesystem:
+- \`GET /api/ssh/status\` - SSH connection info
+- \`GET /api/vps/paths?all=1\` - All room paths
+- \`GET /api/ssh/root-password\` - Root password
+
+### Monitoring:
+- \`GET /api/metrics\` - System metrics
+- \`GET /api/host\` - Host information
+
+### CLI Commands:
+- \`/vps-manager/bin/vr room create\` - Create room
+- \`/vps-manager/bin/vr room delete\` - Delete room
+- \`/vps-manager/bin/vr room start\` - Start room
+- \`/vps-manager/bin/vr room stop\` - Stop room
+- \`/vps-manager/bin/vr room restart\` - Restart room
+- \`/vps-manager/bin/vr room hash\` - Generate password hash
+
+---
+
+## 10. TROUBLESHOOTING
+
+### Room Not Appearing After SSH Creation:
+\`\`\`bash
+# Force manual scan
+curl -s -X POST http://127.0.0.1:9090/api/rooms/scan
+
+# Check auth.hash exists
+ls -la /vps-manager/single/<room_id>/auth.hash
+
+# Check database
+sqlite3 /vps-manager/data/panel.db "SELECT * FROM rooms WHERE id='<room_id>';"
+\`\`\`
+
+### Container Not Starting:
+\`\`\`bash
+# Check logs
+docker logs <container_id>
+
+# Check room status  
+curl -s http://127.0.0.1:9090/api/rooms/<room_id>
+
+# Restart room
+curl -s -X POST http://127.0.0.1:9090/api/rooms/<room_id>/restart
+\`\`\`
+
+### Disk Space Issues:
+\`\`\`bash
+# Check room usage
+du -sh /vps-manager/<kind>/<room_id>
+
+# Clean volumes (protected .env)
+curl -s -X POST http://127.0.0.1:9090/api/rooms/<room_id>/volumes/<vol_id>/clean
+
+# Global disk usage
+df -h /vps-manager
+\`\`\`
+
+---
+
+**END OF COMPLETE OPERATIONS HANDBOOK**
+All commands are optimized for AI execution with clear patterns for every operation.
 `;
   }
 
@@ -3292,6 +3641,39 @@ curl -s -X DELETE http://13.140.164.29:9090/api/rooms/${sId}
                   <button type="button" class="btn sm action" data-copy="tail -n 100 -f /vps-manager/data/logs/vps-rooms.log">Copy</button>
                 </div>
                 <div class="cmd-box mono">tail -n 100 -f /vps-manager/data/logs/vps-rooms.log</div>
+              </div>
+
+              <h4 style="margin-top:20px">🏗️ Create New Room via SSH (Auto-Detected)</h4>
+              <p class="muted" style="font-size:0.8rem">Create rooms directly on the filesystem — they'll be auto-detected within 10 seconds and appear in the panel.</p>
+
+              <div class="ai-cmd-card">
+                <div class="cmd-head">
+                  <span class="cmd-badge">5</span>
+                  <strong>Create New Single Room</strong>
+                  <button type="button" class="btn sm action" data-copy="mkdir -p /vps-manager/single/new-room/project &amp;&amp; echo 'hashed_password' &gt; /vps-manager/single/new-room/auth.hash">Copy</button>
+                </div>
+                <div class="cmd-box mono">mkdir -p /vps-manager/single/new-room/project &amp;&amp; echo 'hashed_password' &gt; /vps-manager/single/new-room/auth.hash</div>
+                <div class="cmd-note">Only auth.hash is required. Everything else is auto-created. Room appears as 'room-new-room' (rename from panel).</div>
+              </div>
+
+              <div class="ai-cmd-card">
+                <div class="cmd-head">
+                  <span class="cmd-badge">6</span>
+                  <strong>Create New Multi Room (Compose)</strong>
+                  <button type="button" class="btn sm action" data-copy="mkdir -p /vps-manager/multi/compose-room/stack &amp;&amp; echo 'hashed_password' &gt; /vps-manager/multi/compose-room/auth.hash">Copy</button>
+                </div>
+                <div class="cmd-box mono">mkdir -p /vps-manager/multi/compose-room/stack &amp;&amp; echo 'hashed_password' &gt; /vps-manager/multi/compose-room/auth.hash</div>
+                <div class="cmd-note">Auto-creates stack/ directory for docker-compose.yml + .env files.</div>
+              </div>
+
+              <div class="ai-cmd-card">
+                <div class="cmd-head">
+                  <span class="cmd-badge">7</span>
+                  <strong>Manual Room Scan (Force Detection)</strong>
+                  <button type="button" class="btn sm action" data-copy="curl -s -X POST http://127.0.0.1:9090/api/rooms/scan">Copy</button>
+                </div>
+                <div class="cmd-box mono">curl -s -X POST http://127.0.0.1:9090/api/rooms/scan</div>
+                <div class="cmd-note">Force immediate filesystem scan instead of waiting 10 seconds.</div>
               </div>
             </div>
           </div>
@@ -3843,7 +4225,7 @@ curl -s -X DELETE http://13.140.164.29:9090/api/rooms/${sId}
   }
 
   async function render() {
-    if (state.view !== "ssh" && state.view !== "terminal") closeSSHTerm();
+    if (state.view !== "terminal") closeSSHTerm();
     if (!state.gated) { renderGate(); return; }
     if (!state.me) await loadMe();
     if (!state.me) { renderUnlock(); return; }
@@ -3851,9 +4233,8 @@ curl -s -X DELETE http://13.140.164.29:9090/api/rooms/${sId}
       if (state.view === "rooms") return renderRooms();
       if (state.view === "backup") return renderBackup();
       if (state.view === "logs") return renderLogs();
-      if (state.view === "docs") return renderServer();
+      if (state.view === "agent") return renderAgent();
       if (state.view === "settings") return renderSettings();
-      if (state.view === "ssh") return renderSSH();
       if (state.view === "terminal") return renderTerminal();
       if (state.view === "room") return renderRoom();
       await renderServer();

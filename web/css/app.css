@@ -1207,16 +1207,6 @@ button, input, textarea, select { font: inherit; color: inherit; }
   70% { box-shadow: 0 0 0 8px rgba(90, 212, 106, 0); }
   100% { box-shadow: 0 0 0 0 rgba(90, 212, 106, 0); }
 }
-.docs-h { margin: 22px 0 8px; font-size: 1.05rem; }
-.docs-link {
-  background: none;
-  border: 0;
-  padding: 0;
-  color: var(--accent, #8ab4ff);
-  cursor: pointer;
-  font: inherit;
-  text-decoration: underline;
-}
 .mobile-bar-brand { cursor: pointer; }
 
 .room-card {
@@ -2114,60 +2104,20 @@ button, input, textarea, select { font: inherit; color: inherit; }
   scrollbar-color: #111 #000;
 }
 .cmd-pre::-webkit-scrollbar { height: 8px; width: 8px; }
+.cmd-card > pre {
+  margin: 0;
+  padding: 14px 16px;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  line-height: 1.55;
+  color: #d7ffd7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  -webkit-overflow-scrolling: touch;
+}
 .cmd-pre::-webkit-scrollbar-track { background: #000; }
 .cmd-pre::-webkit-scrollbar-thumb { background: #111; border-radius: 8px; }
-.docs-lead { color: var(--muted); margin: 0 0 14px; font-size: 0.9rem; line-height: 1.55; }
-.docs-repo {
-  margin: 0 0 16px;
-  font-size: 0.9rem;
-  color: var(--soft);
-}
-.docs-repo a { color: #fff; text-underline-offset: 3px; }
-.docs-os {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 12px;
-  margin: 0 0 16px;
-}
-.docs-os .panel { margin: 0; padding: 16px 18px; }
-.docs-os h3 { margin: 0 0 8px; font-size: 0.82rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
-.docs-os p { margin: 0; color: var(--soft); font-size: 0.9rem; line-height: 1.55; }
-.docs-step {
-  display: grid;
-  grid-template-columns: 40px minmax(0, 1fr);
-  gap: 12px;
-  margin-top: 14px;
-  padding: 16px 16px 14px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: #101010;
-}
-.docs-n {
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
-  display: grid;
-  place-items: center;
-  background: #1a1a1a;
-  border: 1px solid var(--line);
-  font-weight: 700;
-  font-size: 1rem;
-}
-.docs-step-body h3 { margin: 4px 0 4px; font-size: 1.05rem; }
-.docs-step-body .muted { margin: 0 0 8px; }
-.docs-step .cmd-card { margin-top: 8px; }
-.docs-steps {
-  margin: 0;
-  padding-left: 1.2rem;
-  color: var(--soft);
-  line-height: 1.7;
-  font-size: 0.9rem;
-}
-.docs-steps li { margin: 4px 0; }
-@media (max-width: 900px) {
-  .docs-os { grid-template-columns: 1fr; }
-}
-
 .env-form { display: flex; flex-direction: column; gap: 8px; }
 .env-row {
   display: grid;
@@ -2635,15 +2585,13 @@ body.nav-open .mobile-toggle span:nth-child(3) {
   .link-list { flex-direction: column; gap: 8px; }
   .link-chip { width: 100%; }
 
-  /* tokens / docs */
+  /* tokens */
   .tok-card-top { flex-direction: column; gap: 10px; align-items: flex-start; }
   .tok-card-top .row-actions { width: 100%; }
   .tok-card-top .row-actions .btn { flex: 1 1 auto; }
   .tok-card .row-actions { flex-wrap: wrap; }
   .secret-row { font-size: 0.72rem; }
-  .docs-step { padding: 12px; }
   .cmd-card pre { font-size: 0.72rem; white-space: pre-wrap; word-break: break-word; }
-  .docs-lead, .docs-repo { font-size: 0.8rem; }
 }
 @media (max-width: 400px) {
   .stats-grid { grid-template-columns: 1fr !important; }
@@ -2813,33 +2761,6 @@ body.nav-open .mobile-toggle span:nth-child(3) {
 .ssh-chip{background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:4px 10px;font-size:.78rem;cursor:pointer;color:#9fd8ff}
 .ssh-chip:hover{border-color:rgba(159,216,255,.5)}
 
-/* AI Handbook & Documentation section */
-.ai-handbook{background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:14px 16px;margin-top:12px}
-.ai-handbook h4{margin:12px 0 6px;color:#9fd8ff;font-size:.95rem;display:flex;align-items:center;gap:6px}
-.ai-handbook p{font-size:.84rem;color:#b0b8c4;line-height:1.5;margin:4px 0 8px}
-.ai-tree-box{background:#050505;border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:14px 16px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.82rem;line-height:1.55;overflow-x:auto;white-space:pre}
-.tree-branch{color:#6e7681}
-.tree-root{color:#58a6ff;font-weight:700}
-.tree-core{color:#79c0ff;font-weight:600}
-.tree-single{color:#d2a8ff;font-weight:600}
-.tree-multi{color:#ffa657;font-weight:600}
-.tree-code{color:#7ee787;font-weight:600}
-.tree-env{color:#f1e05a;font-weight:700;background:rgba(241,224,90,.12);padding:1px 5px;border-radius:4px}
-.tree-vol{color:#56d4dd}
-.tree-zip{color:#ff7b72}
-.tree-comment{color:#8b949e;font-style:italic}
-.ai-handbook-creds{background:rgba(20,30,45,.55);border:1px solid rgba(159,216,255,.25);border-radius:12px;padding:14px 16px;margin:12px 0 16px;box-shadow:0 4px 20px rgba(0,0,0,.3)}
-.creds-title{font-weight:700;font-size:.92rem;color:#9fd8ff;margin-bottom:10px;display:flex;align-items:center;gap:8px}
-.creds-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px 16px;margin-bottom:8px}
-.creds-item{display:flex;flex-direction:column;gap:4px}
-.creds-label{font-size:.74rem;color:#8b949e;text-transform:uppercase;letter-spacing:.5px;font-weight:600}
-.creds-val{font-size:.85rem;color:#e6edf3;background:rgba(0,0,0,.45);padding:6px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.08);display:inline-flex;align-items:center}
-.creds-pw{color:#f1e05a;font-weight:700;letter-spacing:1px}
-.creds-note{font-size:.78rem;color:#8b949e;margin-top:6px}
-
-/* SSH page */
-.ssh-room-card{background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.07);border-radius:12px;padding:12px 14px;margin:10px 0}
-.ssh-rooms{display:flex;flex-direction:column}
 /* Live root shell — black terminal */
 .ssh-term{background:#050505;border:1px solid rgba(255,255,255,.14);border-radius:12px;outline:none;cursor:text}
 .ssh-term:focus{border-color:rgba(159,216,255,.45)}

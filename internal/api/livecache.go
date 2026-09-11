@@ -3,6 +3,7 @@ package api
 import (
 	"time"
 
+	"github.com/x5coder/vps-rooms/internal/inventory"
 	"github.com/x5coder/vps-rooms/internal/rooms"
 )
 
@@ -112,4 +113,30 @@ func (s *Server) cachedStatus(projectID string) string {
 		return ""
 	}
 	return s.liveStatus[projectID]
+}
+
+// startFilesystemRoomScanner periodically scans for rooms created via SSH
+func (s *Server) startFilesystemRoomScanner() {
+	if s.Rooms == nil {
+		return
+	}
+	
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	
+	for {
+		select {
+		case <-ticker.C:
+			newRooms, err := s.Rooms.DetectFilesystemRooms()
+			if err != nil {
+				continue
+			}
+			if len(newRooms) > 0 {
+				// Trigger inventory adoption for new rooms
+				for _, room := range newRooms {
+					inventory.RefreshRoom(s.Store, s.Docker, s.Rooms, s.Cfg.RuntimeDir, room)
+				}
+			}
+		}
+	}
 }

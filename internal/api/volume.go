@@ -2,6 +2,8 @@ package api
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/x5coder/vps-rooms/internal/dockerx"
@@ -14,6 +16,10 @@ func (s *Server) handleRoomVolume(w http.ResponseWriter, r *http.Request, roomID
 	}
 	if len(rest) == 0 {
 		writeJSON(w, 200, map[string]any{"volumes": s.roomVolumesJSON(roomID)})
+		return
+	}
+	if len(rest) == 1 && rest[0] == "wipe-all" {
+		s.handleRoomVolumesWipeAll(w, r, roomID)
 		return
 	}
 	vol := s.resolveRoomVolume(roomID, rest[0])
@@ -89,7 +95,9 @@ func (s *Server) handleRoomVolume(w http.ResponseWriter, r *http.Request, roomID
 		if err == nil {
 			kept := make([]dockerx.FSEntry, 0, len(ents))
 			for _, e := range ents {
-				if e.Name == ".env" {
+				// Hide .env files completely from volume browsing
+				lowerName := strings.ToLower(e.Name)
+				if lowerName == ".env" || strings.HasSuffix(lowerName, ".env") {
 					continue
 				}
 				kept = append(kept, e)
@@ -98,6 +106,11 @@ func (s *Server) handleRoomVolume(w http.ResponseWriter, r *http.Request, roomID
 			return
 		}
 		b, err := dockerx.ReadHostFile(src, rel)
+		// Also hide .env when reading individual files
+		if strings.ToLower(strings.TrimSpace(rel)) == ".env" || strings.HasSuffix(strings.ToLower(strings.TrimSpace(rel)), ".env") {
+			writeJSON(w, 200, map[string]any{"path": rel, "size": 0, "binary": true, "note": "Room env is managed in the Secrets tab"})
+			return
+		}
 		s.writeFilePayload(w, rel, b, err)
 		return
 	}
@@ -111,13 +124,20 @@ func (s *Server) handleRoomVolume(w http.ResponseWriter, r *http.Request, roomID
 		return
 	}
 	b, err := s.Docker.ReadVolumeFile(src, rel)
+	// Also hide .env when reading individual files from Docker volumes
+	if strings.ToLower(strings.TrimSpace(rel)) == ".env" || strings.HasSuffix(strings.ToLower(strings.TrimSpace(rel)), ".env") {
+		writeJSON(w, 200, map[string]any{"path": rel, "size": 0, "binary": true, "note": "Room env is managed in the Secrets tab"})
+		return
+	}
 	s.writeFilePayload(w, rel, b, err)
 }
 
 func entsJSON(ents []dockerx.FSEntry) []map[string]any {
 	out := make([]map[string]any, 0, len(ents))
 	for _, e := range ents {
-		if e.Name == ".env" || strings.HasSuffix(e.Name, ".env") || strings.EqualFold(e.Name, ".env") {
+		// Hide .env files completely from volume browsing
+		lowerName := strings.ToLower(e.Name)
+		if lowerName == ".env" || strings.HasSuffix(lowerName, ".env") {
 			continue
 		}
 		out = append(out, map[string]any{"name": e.Name, "dir": e.Dir, "size": e.Size})
@@ -139,6 +159,99 @@ func (s *Server) writeFilePayload(w http.ResponseWriter, rel string, b []byte, e
 		return
 	}
 	writeJSON(w, 200, map[string]any{"path": rel, "content": string(b), "size": len(b), "binary": false})
+}
+
+// handleRoomVolumesWipeAll wipes the contents of every tracked room volume
+// but never touches .env files, records, mounts, or directories. Containers
+// are then restarted fast (Docker Restart, no rebuild) so empty binds are
+// live immediately.
+func (s *Server) handleRoomVolumesWipeAll(w http.ResponseWriter, r *http.Request, roomID string) {
+	if _, room := s.canControlRoom(w, r, roomID); room == nil {
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeErr(w, 405, "method")
+		return
+	}
+	dockerOK := s.Docker != nil && s.Docker.Available()
+	volRoot := s.Rooms.RoomVolumesDir(roomID)
+	vols, _ := s.Store.ListVolumes(roomID)
+	wiped := []string{}
+	skipped := []string{}
+	for _, v := range vols {
+		hostDir := filepath.Join(volRoot, v.Name)
+		if st, err := os.Stat(hostDir); err == nil && st.IsDir() {
+			ents, err := os.ReadDir(hostDir)
+			if err != nil {
+				writeErr(w, 400, err.Error())
+				return
+			}
+			for _, e := range ents {
+				if e.Name() == ".env" || strings.HasSuffix(e.Name(), ".env") {
+					continue // NEVER delete .env
+				}
+				if err := os.RemoveAll(filepath.Join(hostDir, e.Name())); err != nil {
+					writeErr(w, 400, err.Error())
+					return
+				}
+			}
+			wiped = append(wiped, v.Name)
+			continue
+		}
+		if v.DockerName != "" && !strings.HasPrefix(v.DockerName, "/") {
+			if !dockerOK {
+				skipped = append(skipped, v.Name)
+				continue
+			}
+			if err := s.Docker.CleanVolume(v.DockerName); err != nil {
+				writeErr(w, 400, err.Error())
+				return
+			}
+			wiped = append(wiped, v.Name)
+		}
+	}
+	restarted := []string{}
+	restartErrors := []string{}
+	if dockerOK {
+		seen := map[string]struct{}{}
+		ids := []string{}
+		if cts, _ := s.Store.ListContainers(roomID); len(cts) > 0 {
+			for _, c := range cts {
+				if c.DockerID != "" {
+					ids = append(ids, c.DockerID)
+				}
+			}
+		}
+		if projs, _ := s.Store.ListProjects(roomID); len(projs) > 0 {
+			for _, p := range projs {
+				if p.ContainerID != "" {
+					ids = append(ids, p.ContainerID)
+				}
+			}
+		}
+		for _, id := range ids {
+			if _, dup := seen[id]; dup {
+				continue
+			}
+			seen[id] = struct{}{}
+			if err := s.Docker.Restart(id); err != nil {
+				restartErrors = append(restartErrors, id)
+				continue
+			}
+			restarted = append(restarted, id)
+		}
+	}
+	res := map[string]any{
+		"room_id": roomID, "wiped": wiped, "restarted": restarted,
+		"restart_errors": restartErrors, "docker_available": dockerOK,
+	}
+	if len(skipped) > 0 {
+		res["skipped_no_docker"] = skipped
+	}
+	if !dockerOK {
+		res["note"] = "Docker unavailable — host volume contents wiped (.env kept); restart on a Docker host"
+	}
+	writeJSON(w, 200, res)
 }
 
 func (s *Server) resolveRoomVolume(roomID, want string) *store.VolumeRec {

@@ -25,7 +25,7 @@ type sshTermMsg struct {
 }
 
 // handleSSHTerminalWS opens a live root shell (PTY) over WebSocket.
-// The browser auto-connects when the SSH page opens — ready to type.
+// The browser auto-connects when the Root Shell opens — ready to type.
 func (s *Server) handleSSHTerminalWS(w http.ResponseWriter, r *http.Request) {
 	conn, err := sshTermUpgrader.Upgrade(w, r, nil)
 	if err != nil {
