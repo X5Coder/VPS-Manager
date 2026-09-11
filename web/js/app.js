@@ -190,6 +190,32 @@
   function projectIconHTML(extra = "") {
     return `<span class="proj-ico ${extra}" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 20 7.5v9L12 21 4 16.5v-9L12 3z"/><path d="M12 12 20 7.5M12 12v9M12 12 4 7.5"/></svg></span>`;
   }
+  // Small expressive SVG icon set (icon-only buttons + copy/eye affordances).
+  function ico(name, size = 15) {
+    const p = `width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"`;
+    const paths = {
+      copy: `<svg ${p}><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`,
+      check: `<svg ${p}><polyline points="20 6 9 17 4 12"/></svg>`,
+      eye: `<svg ${p}><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`,
+      eyeOff: `<svg ${p}><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`,
+      play: `<svg ${p}><polygon points="6 3 20 12 6 21 6 3"/></svg>`,
+      dl: `<svg ${p}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`,
+      trash: `<svg ${p}><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`,
+      upload: `<svg ${p}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>`,
+      file: `<svg ${p}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`,
+      link: `<svg ${p}><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`,
+      box: `<svg ${p}><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>`,
+      user: `<svg ${p}><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`,
+      key: `<svg ${p}><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>`,
+      shield: `<svg ${p}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`,
+      db: `<svg ${p}><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>`,
+      bell: `<svg ${p}><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>`,
+    };
+    return paths[name] || "";
+  }
+  function copyIcoBtn(copyText_val, title = "Copy", cls = "") {
+    return `<button type="button" class="icon-btn copy-ico ${cls}" data-copy="${esc(copyText_val)}" title="${esc(title)}" aria-label="${esc(title)}">${ico("copy")}</button>`;
+  }
   function brandWordmarkHTML(roleId, roleText) {
     return `${brandMarkHTML()}<div class="brand-text"><strong class="brand-name">VPS Manager</strong><span class="brand-role" id="${roleId}">${esc(roleText)}</span></div>`;
   }
@@ -376,6 +402,18 @@
       e.preventDefault();
       e.stopPropagation();
       copyText(n.getAttribute("data-copy") || n.textContent);
+      // Animated feedback for icon copy buttons: morph to a check briefly.
+      if (n.classList && n.classList.contains("copy-ico") && !n.dataset.animating) {
+        n.dataset.animating = "1";
+        const orig = n.innerHTML;
+        n.classList.add("copied");
+        n.innerHTML = ico("check");
+        setTimeout(() => {
+          n.innerHTML = orig;
+          n.classList.remove("copied");
+          delete n.dataset.animating;
+        }, 1100);
+      }
     }, true);
   }
 
@@ -1285,9 +1323,9 @@
       const st = await api("/api/storage");
       maxGB = Math.max(0.1, Number(st.quota_available_gb || 0));
     } catch {}
-    const modal = el(`<div class="modal-back add-proj-modal show">
+    const modal = el(`<div class="modal-back add-proj-modal">
       <div class="modal-card add-proj-card">
-        <h3>New project room</h3>
+        <div class="modal-head"><h3>New project room</h3><button type="button" class="icon-btn modal-x" data-x title="Close" aria-label="Close">✕</button></div>
         <p class="muted">Creates an empty isolated room. Open it, then clone from GitHub or upload files. The agent uses the room terminal.</p>
         <form id="add-proj-form" class="form-grid" style="margin-top:14px">
           <div class="field full"><label>Name</label><input name="name" required minlength="2" maxlength="40" placeholder="my-app" autocomplete="off" /></div>
@@ -1313,8 +1351,10 @@
       setTimeout(() => modal.remove(), 280);
     };
     modal.querySelector("[data-no]").onclick = close;
+    modal.querySelector("[data-x]").onclick = close;
     modal.addEventListener("click", (e) => { if (e.target === modal) close(); });
     document.body.appendChild(modal);
+    requestAnimationFrame(() => requestAnimationFrame(() => modal.classList.add("show")));
     bindQuotaSliders(modal);
     modal.querySelector("[name=name]")?.focus();
     modal.querySelector("#add-proj-form").onsubmit = async (e) => {
@@ -1779,8 +1819,39 @@
 
 
 
+  function highlightJsonFrag(line) {
+    return line.replace(/(&quot;([^&]|&(?!quot;))*?&quot;)(\s*:)?|\b(true|false|null)\b|(-?\d[\d.]*)/g, (m, str, _inner, colon, bool, num) => {
+      if (str) {
+        if (colon) return `<span class="jk">&quot;${str.slice(6, -6)}&quot;</span><span class="jc">:</span>`;
+        return `<span class="js">${str}</span>`;
+      }
+      if (bool) return `<span class="jb">${bool}</span>`;
+      if (num) return `<span class="jn">${num}</span>`;
+      return m;
+    });
+  }
+  function highlightAgentJSON(obj) {
+    return highlightJsonFrag(esc(JSON.stringify(obj, null, 2)));
+  }
+  // Colorized HTTP request blocks for Docs (method / url / headers / json).
+  function highlightHttpBlock(raw) {
+    const html = esc(raw).split("\n").map((line) => {
+      let m;
+      if ((m = line.match(/^(GET|POST|PUT|PATCH|DELETE)(\s+)(\S.*)$/))) {
+        return `<span class="ht-m">${m[1]}</span>${m[2]}<span class="ht-u">${m[3]}</span>`;
+      }
+      if ((m = line.match(/^([A-Za-z][A-Za-z-]*)(:)(\s*)(.+)$/)) && !/^\s*[{"]/.test(line)) {
+        return `<span class="ht-h">${m[1]}</span><span class="ht-c">:</span>${m[3]}<span class="ht-v">${highlightJsonFrag(m[4])}</span>`;
+      }
+      if (/^\s*[{}[\],]*\s*$/.test(line)) return `<span class="ht-c">${line || " "}</span>`;
+      return highlightJsonFrag(line);
+    }).join("\n");
+    return html.replace(/&lt;([^&\n]*?)&gt;/g, '<span class="ht-p">&lt;$1&gt;</span>');
+  }
+
   async function renderAgent() {
     const gen = state._gen;
+    if (!state.agentTab) state.agentTab = "tools";
     shell(`<div class="topbar"><div><h2>x5coder-agent</h2><div class="sub">HTTPS control plane · Bearer token authentication</div></div></div>${skel(3)}`, "agent");
     try {
       const data = await api("/api/agent/tokens");
@@ -1789,68 +1860,126 @@
       const tools = (data.tools && data.tools.length ? data.tools : [{ name: "get_vps_overview", description: "Get the overall VPS status including CPU, RAM, disk, network, Docker, storage usage, and resource usage.", input_schema: { type: "object", properties: {}, required: [] } }]);
       const toolCount = tools.length;
       const toolLabel = toolCount === 1 ? "1 controlled VPS tool" : toolCount + " controlled VPS tools";
-      const agentExampleBody = (t) => {
-        const schema = t.input_schema || {};
-        const req = schema.required || [];
-        if (!req.length) return "{}";
-        const props = schema.properties || {};
-        const o = {};
-        req.forEach((k) => {
-          const type = (props[k] && props[k].type) || "string";
-          if (type === "number" || type === "integer") o[k] = 5;
-          else if (type === "boolean") o[k] = true;
-          else if (type === "object") o[k] = {};
-          else if (props[k] && props[k].enum && props[k].enum.length) o[k] = props[k].enum[0];
-          else o[k] = "<" + k + ">";
-        });
-        return JSON.stringify(o);
-      };
-      const toolsHTML = tools.map((t) => {
-        const toolJSON = JSON.stringify(t, null, 2);
-        const invokeURL = (data.endpoint || "") + "/" + t.name;
-        const body = agentExampleBody(t);
-        const curl = "curl -s -X POST " + invokeURL + " -H \"Authorization: Bearer <secret>\" -H \"Content-Type: application/json\" -d '" + body + "'";
-        return `<h4 class="mono">${esc(t.name)}</h4>
-          <div class="cmd-card"><pre class="mono copyable" data-copy="${esc(toolJSON)}">${esc(toolJSON)}</pre></div>
-          <div class="cmd-card"><pre class="mono copyable" data-copy="${esc(curl)}">${esc(curl)}</pre></div>`;
-      }).join("");
-      shell(`
-        <div class="topbar"><div><h2>x5coder-agent</h2><div class="sub">Controlled HTTPS access to VPS Manager tools</div></div><div class="actions"><button class="btn primary action" id="agent-create-token">Create token</button></div></div>
-        <div class="panel">
-          <h3>Agent endpoint</h3>
-          <p class="muted">Use this URL with <code>Authorization: Bearer &lt;token&gt;</code>. Tokens are shown only once when created.</p>
-          <div class="fact-row"><span>Tools discovery URL</span><strong class="mono copyable" data-copy="${esc(data.endpoint || "")}">${esc(data.endpoint || "")}</strong></div>
-          <div class="fact-row"><span>Available tools</span><strong>${esc(toolLabel)}</strong></div>
-          <p class="muted">The tools list is public. Running any tool requires the secret key.</p>
-        </div>
-        <div class="panel"><h3>Tools</h3>
-          <p class="muted">Unified send — token in the header, full tool input as JSON body (empty <code>{}</code> when no input is required):</p>
-          <div class="cmd-card"><pre class="mono copyable" data-copy="${esc("curl -s " + (data.endpoint || "") + "  # public tools list, no key needed")}">curl -s ${esc(data.endpoint || "")}  # public tools list, no key needed</pre></div>
-          ${toolsHTML}
+      const endpoint = data.endpoint || "";
+      const tab = state.agentTab || "tools";
+      const toolsJSON = highlightAgentJSON(tools);
+      const rawToolsJSON = JSON.stringify(tools, null, 2);
+      const aiContext = [
+        "VPS Manager x5coder-agent API.",
+        `Discovery (public, no key): GET ${endpoint} -> { tools: [{ name, description, input_schema }] }.`,
+        `Invoke (key required): POST ${endpoint}/<tool_name> with header "Authorization: Bearer <secret>", Content-Type application/json, body = tool input object ({} when no input).`,
+        "Responses: 200 = JSON result, 401 = bad/missing token, 404 = unknown tool.",
+        `Available tools (${toolCount}): ` + tools.map((t) => {
+          const req = ((t.input_schema || {}).required || []).join(",");
+          return `${t.name}${req ? ` (required: ${req})` : " (no input)"} - ${t.description || ""}`;
+        }).join(" | "),
+      ].join("\n");
+      const aiContextPreview = aiContext.length > 320 ? aiContext.slice(0, 320) + "…" : aiContext;
+
+      const docsHTML = `
+        <div class="panel agent-docs agent-anim" key="docs">
+          <div class="head-row"><h3>How sending works</h3>${copyIcoBtn("GET " + endpoint, "Copy discovery URL")}</div>
+          <ul class="fact-list">
+            <li><strong>Base URL is public:</strong> <code class="mono">GET ${esc(endpoint)}</code> returns the full tools list. No key needed.</li>
+            <li><strong>Running a tool needs a key:</strong> <code class="mono">POST ${esc(endpoint)}/&lt;tool_name&gt;</code> with header <code class="mono">Authorization: Bearer &lt;secret&gt;</code>.</li>
+            <li><strong>Body is always JSON:</strong> send the tool input object. Tools with no input take <code class="mono">{}</code>.</li>
+            <li><strong>Responses are JSON:</strong> <code class="mono">200</code> = result, <code class="mono">401</code> = bad/missing token, <code class="mono">404</code> = unknown tool.</li>
+          </ul>
+          <h4 class="agent-sub">1 · Discover tools (public, no key)</h4>
+          <div class="cmd-card cmd-row"><pre class="mono http-colored">${highlightHttpBlock("GET " + endpoint)}</pre>${copyIcoBtn("GET " + endpoint, "Copy discovery request")}</div>
+          <h4 class="agent-sub">2 · Create a token (shown once)</h4>
+          <p class="muted" style="margin:0 0 8px;font-size:.82rem">Press <strong>Create token</strong> above, name it, and store the secret. It is never shown again — use the eye icon to reveal it before leaving.</p>
+          <h4 class="agent-sub">3 · Invoke a tool (key required)</h4>
+          <div class="cmd-card cmd-row"><pre class="mono http-colored">${highlightHttpBlock("POST " + endpoint + "/<tool_name>\nAuthorization: Bearer <secret>\nContent-Type: application/json\n\n{\n  \"room_id\": \"<id>\",\n  \"command\": \"ls -la\"\n}")}</pre>${copyIcoBtn("POST " + endpoint + "/<tool_name>\nAuthorization: Bearer <secret>\nContent-Type: application/json\n\n{\n  \"room_id\": \"<id>\",\n  \"command\": \"ls -la\"\n}", "Copy invoke template")}</div>
+          <h4 class="agent-sub">Paste this to your AI</h4>
+          <p class="muted" style="margin:0 0 8px;font-size:.82rem">Copies a context block so the AI understands the API without further explanation.</p>
+          <div class="cmd-card cmd-row"><pre class="mono ai-ctx">${esc(aiContextPreview)}</pre>${copyIcoBtn(aiContext, "Copy AI context")}</div>
+        </div>`;
+
+      const toolsHTML = `
+        <div class="panel agent-tools-card agent-anim" key="tools">
+          <div class="head-row">
+            <h3>Tools · ${esc(toolLabel)}</h3>
+          </div>
+          <div class="fact-row"><span>Tools discovery URL</span><strong class="mono">${esc(endpoint)}</strong></div>
+          <p class="muted" style="font-size:.8rem">Single template — JSON only. Scroll inside the box.</p>
+          <div class="json-wrap">${copyIcoBtn(rawToolsJSON, "Copy tools JSON", "json-copy")}<div class="json-scroll"><pre class="json-colored mono">${toolsJSON}</pre></div></div>
         </div>
         <div class="panel"><h3>Access tokens</h3>
-          ${tokens.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>Prefix</th><th>Created</th><th>Last used</th><th></th></tr></thead><tbody>${tokens.map((t) => `<tr><td>${esc(t.name)}</td><td class="mono">${esc(t.prefix)}…</td><td>${esc(new Date(t.created_at).toLocaleString())}</td><td>${t.last_used_at ? esc(new Date(t.last_used_at).toLocaleString()) : "Never"}</td><td><button class="btn sm danger action" data-agent-revoke="${esc(t.id)}">Revoke</button></td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">No token has been created yet.</p>`}
+          ${tokens.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>Prefix</th><th>Created</th><th>Last used</th><th></th></tr></thead><tbody>${tokens.map((t) => `<tr><td>${esc(t.name)}</td><td class="mono"><span class="tok-prefix">${esc(t.prefix)}… ${copyIcoBtn(t.prefix, "Copy prefix")}</span></td><td>${esc(new Date(t.created_at).toLocaleString())}</td><td>${t.last_used_at ? esc(new Date(t.last_used_at).toLocaleString()) : "Never"}</td><td><button class="btn sm danger action" data-agent-revoke="${esc(t.id)}">Revoke</button></td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">No token has been created yet.</p>`}
+        </div>`;
+
+      shell(`
+        <div class="agent-page">
+        <div class="topbar"><div><h2>x5coder-agent</h2><div class="sub">Controlled HTTPS access to VPS Manager tools</div></div><div class="actions"><button class="btn primary action" id="agent-create-token">Create token</button></div></div>
+        <div class="tabs agent-tabs">
+          <button data-atab="tools" class="${tab === "tools" ? "active" : ""}">Tools</button>
+          <button data-atab="docs" class="${tab === "docs" ? "active" : ""}">Docs</button>
         </div>
-        <dialog id="agent-token-dialog" class="panel" style="max-width:460px;width:calc(100% - 32px);color:var(--text)">
-          <form method="dialog" id="agent-token-form" class="form-grid"><h3 class="full">Create x5coder-agent token</h3><div class="field full"><label>Token name</label><input name="name" required minlength="2" maxlength="64" placeholder="e.g. Production AI agent" autofocus /></div><p class="error full" id="agent-token-error"></p><div class="full row-actions"><button class="btn action" value="cancel">Cancel</button><button class="btn primary action" value="default" type="submit">Create token</button></div></form>
-        </dialog>`, "agent");
+        ${tab === "docs" ? docsHTML : toolsHTML}
+        </div>`, "agent");
       bindCopyables();
-      const dialog = document.querySelector("#agent-token-dialog");
-      document.querySelector("#agent-create-token")?.addEventListener("click", () => dialog?.showModal());
-      document.querySelector("#agent-token-form")?.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const error = document.querySelector("#agent-token-error");
-        if (error) error.textContent = "";
-        try {
-          const fd = new FormData(e.currentTarget);
-          const created = await api("/api/agent/tokens", { method: "POST", body: JSON.stringify({ name: fd.get("name") }) });
-          dialog?.close();
-          await copyText(created.secret || "");
-          shell(`<div class="topbar"><div><h2>x5coder-agent</h2><div class="sub">Token created</div></div></div><div class="panel"><h3>Copy this token now</h3><p class="error">This secret will not be displayed again.</p><div class="cmd-card"><pre class="mono copyable" data-copy="${esc(created.secret || "")}">${esc(created.secret || "")}</pre></div><p class="muted">Tools URL: <span class="mono">${esc(created.endpoint || "")}</span></p><button class="btn primary action" id="agent-back">Done</button></div>`, "agent");
-          bindCopyables();
-          document.querySelector("#agent-back")?.addEventListener("click", () => renderAgent());
-        } catch (ex) { if (error) error.textContent = ex.message || "Could not create token"; }
-      });
+      document.querySelectorAll("[data-atab]").forEach((b) => b.onclick = () => { state.agentTab = b.dataset.atab; state._gen++; renderAgent(); });
+      const openAgentModal = () => {
+        closeAgentModal(true);
+        const modal = el(`<div class="modal-back logout-modal agent-modal" id="agent-modal">
+          <div class="modal-card logout-card agent-modal-card">
+            <h3>Create x5coder-agent token</h3>
+            <form id="agent-token-form" class="form-grid">
+              <div class="field full"><label>Token name</label><input name="name" required minlength="2" maxlength="64" placeholder="e.g. Production AI agent" autofocus /></div>
+              <p class="error full" id="agent-token-error"></p>
+              <div class="full row-actions"><button class="btn action" type="button" id="agent-modal-cancel">Cancel</button><button class="btn primary action" type="submit">Create token</button></div>
+            </form>
+          </div>
+        </div>`);
+        const done = (instant) => {
+          modal.classList.remove("show");
+          modal.classList.add("hide");
+          setTimeout(() => modal.remove(), instant ? 0 : 220);
+        };
+        modal._close = done;
+        modal.addEventListener("click", (e) => { if (e.target === modal) done(false); });
+        modal.querySelector("#agent-modal-cancel").onclick = () => done(false);
+        modal.querySelector("#agent-token-form").addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const error = modal.querySelector("#agent-token-error");
+          if (error) error.textContent = "";
+          try {
+            const fd = new FormData(e.currentTarget);
+            const created = await api("/api/agent/tokens", { method: "POST", body: JSON.stringify({ name: fd.get("name") }) });
+            done(false);
+            setTimeout(() => showCreatedSecret(created.secret || "", created.endpoint || ""), 230);
+          } catch (ex) { if (error) error.textContent = ex.message || "Could not create token"; }
+        });
+        document.body.appendChild(modal);
+        requestAnimationFrame(() => requestAnimationFrame(() => modal.classList.add("show")));
+      };
+      const closeAgentModal = (instant) => {
+        const m = document.querySelector("#agent-modal");
+        if (m && m._close) m._close(instant);
+        else if (m) m.remove();
+      };
+      const showCreatedSecret = async (secret, ep) => {
+        await copyText(secret);
+        shell(`<div class="agent-page"><div class="topbar"><div><h2>x5coder-agent</h2><div class="sub">Token created</div></div></div>
+          <div class="panel agent-anim" key="created"><h3>Copy this token now</h3>
+          <p class="error">This secret will not be displayed again.</p>
+          <div class="tok-secret-row"><code class="mono copyable" id="tok-secret-val" data-copy="${esc(secret)}" title="Tap to copy">••••••••••••••••</code>
+            <button type="button" class="icon-btn" id="tok-eye" title="Reveal key" aria-label="Reveal key">${ico("eye")}</button>
+            ${copyIcoBtn(secret, "Copy secret")}
+          </div>
+          <p class="muted">Tools URL: <span class="mono">${esc(ep)}</span></p>
+          <button class="btn primary action" id="agent-back">Done</button></div></div>`, "agent");
+        bindCopyables();
+        let revealed = false;
+        document.querySelector("#tok-eye")?.addEventListener("click", (e) => {
+          revealed = !revealed;
+          document.querySelector("#tok-secret-val").textContent = revealed ? secret : "••••••••••••••••";
+          e.currentTarget.innerHTML = revealed ? ico("eyeOff") : ico("eye");
+        });
+        document.querySelector("#agent-back")?.addEventListener("click", () => renderAgent());
+      };
+      document.querySelector("#agent-create-token")?.addEventListener("click", openAgentModal);
       document.querySelectorAll("[data-agent-revoke]").forEach((button) => button.addEventListener("click", async () => {
         if (!confirm("Revoke this token? Any agent using it will lose access immediately.")) return;
         try { await api(`/api/agent/tokens/${encodeURIComponent(button.dataset.agentRevoke)}`, { method: "DELETE" }); toast("Token revoked"); renderAgent(); }
@@ -1874,52 +2003,54 @@
     if (!alive("settings", gen)) return;
 
     shell(`
-      <div class="topbar"><div>
-        <h2>Settings</h2>
-        <div class="sub">Root SSH · Admin vault · Alerts</div>
-      </div></div>
-      <div class="grid-2">
-        <div class="panel">
-          <h3>Change VPS root password (SSH)</h3>
-          <form id="pw-form" class="form-grid">
-            <div class="field full"><label>New root password</label><input name="password" type="password" minlength="8" required /></div>
-            <div class="full"><button class="btn primary action" type="submit">Update root password</button></div>
+      <div class="set-page">
+      <div class="set-hero"><span class="set-hero-ico">${ico("gear", 20)}</span><div><h2>Settings</h2><div class="sub">Passwords · Storage · Alerts</div></div></div>
+      <section class="set-sec">
+        <header><span class="set-ico">${ico("key", 16)}</span><div><h3>Root SSH password</h3><p>Used for direct SSH access as root.</p></div></header>
+        <div class="set-body">
+          <form id="pw-form" class="mng-col">
+            <div class="field"><label>New root password</label><input name="password" type="password" minlength="8" required placeholder="Minimum 8 characters" /></div>
+            <div><button class="btn primary action set-btn" type="submit">Update root password</button></div>
           </form>
           <p class="error" id="pwerr"></p>
         </div>
-        <div class="panel">
-          <h3>Change admin panel password</h3>
-          <form id="adminpass" class="form-grid">
-            <div class="field full"><label>Current admin password</label><input name="current" type="password" required autocomplete="current-password" /></div>
-            <div class="field full"><label>New admin password</label><input name="new_password" type="password" minlength="8" required autocomplete="new-password" /></div>
-            <div class="full"><button class="btn primary action" type="submit">Update admin password</button></div>
+      </section>
+      <section class="set-sec">
+        <header><span class="set-ico">${ico("shield", 16)}</span><div><h3>Admin panel password</h3><p>Signs out all admin sessions.</p></div></header>
+        <div class="set-body">
+          <form id="adminpass" class="mng-col">
+            <div class="field"><label>Current admin password</label><input name="current" type="password" required autocomplete="current-password" /></div>
+            <div class="field"><label>New admin password</label><input name="new_password" type="password" minlength="8" required autocomplete="new-password" placeholder="Minimum 8 characters" /></div>
+            <div><button class="btn primary action set-btn" type="submit">Update admin password</button></div>
           </form>
           <p class="error" id="adminerr"></p>
           <p class="ok-text hidden" id="adminok">Admin password updated.</p>
         </div>
-      </div>
-      <div class="panel" style="margin-top:12px">
-        <h3>Storage snapshot</h3>
-          <div class="storage-grid">
-            <div><span class="muted">Free disk</span><strong>${fmtBytes(st.disk_free)}</strong></div>
-            <div><span class="muted">Quota reserved</span><strong>${fmtBytes(st.quota_reserved)}</strong></div>
-            <div><span class="muted">Host free</span><strong class="ok-text">${(st.quota_available_gb || 0).toFixed(2)} GB</strong></div>
-          </div>
-          <p class="muted" style="margin-top:10px">Room quota is a writable-data cap (files, volumes, container RW). It is not 3 GB of Docker images. Host fill is mostly images, build cache, and leftover upload temps. See Server → How each project uses disk.</p>
+      </section>
+      <section class="set-sec">
+        <header><span class="set-ico">${ico("db", 16)}</span><div><h3>Storage</h3><p>Writable-data quota model.</p></div></header>
+        <div class="set-body">
+          <div class="set-kv"><span class="muted">Free disk</span><strong>${fmtBytes(st.disk_free)}</strong></div>
+          <div class="set-kv"><span class="muted">Quota reserved</span><strong>${fmtBytes(st.quota_reserved)}</strong></div>
+          <div class="set-kv"><span class="muted">Host free</span><strong class="ok-text">${(st.quota_available_gb || 0).toFixed(2)} GB</strong></div>
+          <p class="muted mng-note" style="margin:10px 0 0">Room quota caps files, volumes and container data — not Docker images. Host fill is mostly images and build cache.</p>
         </div>
-      <div class="panel" style="margin-top:12px">
-        <h3>Access alert bot (optional)</h3>
-        <p class="muted">Separate Telegram bot for access notifications. Leave empty to disable. Gate owner chat id stays fixed.</p>
-        <form id="notify-form" class="form-grid" style="margin-top:12px">
-          <div class="field full"><label>Notify bot token</label><input name="bot_token" type="password" placeholder="123456:ABC…" autocomplete="off" /></div>
-          <div class="field full"><label>Notify chat id</label><input name="chat_id" placeholder="e.g. 123456789" autocomplete="off" /></div>
-          <div class="full" style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="btn primary action" type="submit">Save alert bot</button>
-            <button class="btn sm danger action" type="button" id="notify-clear">Disable alerts</button>
-          </div>
-        </form>
-        <p class="error" id="notifyerr"></p>
-        <p class="muted" id="notifystatus" style="margin-top:8px"></p>
+      </section>
+      <section class="set-sec">
+        <header><span class="set-ico">${ico("bell", 16)}</span><div><h3>Access alerts</h3><p>Optional Telegram notifications.</p></div></header>
+        <div class="set-body">
+          <form id="notify-form" class="mng-col">
+            <div class="field"><label>Notify bot token</label><input name="bot_token" type="password" placeholder="123456:ABC…" autocomplete="off" /></div>
+            <div class="field"><label>Notify chat id</label><input name="chat_id" placeholder="e.g. 123456789" autocomplete="off" /></div>
+            <div class="set-btns">
+              <button class="btn primary action" type="submit">Save</button>
+              <button class="icon-btn danger" type="button" id="notify-clear" title="Disable alerts" aria-label="Disable alerts">${ico("trash", 14)}</button>
+            </div>
+          </form>
+          <p class="error" id="notifyerr"></p>
+          <p class="muted mng-note" id="notifystatus" style="margin-top:8px"></p>
+        </div>
+      </section>
       </div>`, "settings");
 
     bindCopyables();
@@ -2021,15 +2152,68 @@
   };
 
   function uploadHTML(isMulti, port) {
-    return `<form id="zip-upload-form" class="form-grid" style="margin-top:14px">
-      <div class="field full"><label>Upload ${isMulti ? "stack" : "project"} ZIP (.zip, .tar.gz, .tgz, .tar) — updates this room only</label><input type="file" name="file" accept=".zip,.tar.gz,.tgz,.tar" required /></div>
-      ${isMulti ? "" : `<div class="field"><label>Internal port</label><input name="internal_port" type="number" min="1" max="65535" value="${Number(port) || 80}" /></div>`}
-      <div class="field full"><button class="btn primary action" type="submit">Upload &amp; update room</button></div>
+    const hasLog = !!(state._zipLog && String(state._zipLog).trim());
+    return `<form id="zip-upload-form" class="upload-card" novalidate>
+      <div class="dropzone upload-drop" id="zip-drop" role="button" tabindex="0" aria-label="Drop project archive here or tap to choose">
+        <input type="file" name="file" id="zip-file-input" accept=".zip,.tar.gz,.tgz,.tar" hidden />
+        <div class="dz-icon" aria-hidden="true">${ico("upload", 26)}</div>
+        <div class="dz-title">Drop archive here or <span class="dz-link">choose file</span></div>
+        <div class="dz-sub">.zip · .tar.gz · .tgz · .tar — updates this room only</div>
+        <div class="dz-file hidden" id="zip-file-chip"><span class="dz-file-ico">${ico("file", 14)}</span><span class="mono" id="zip-file-name"></span></div>
+      </div>
+      ${isMulti ? "" : `<div class="field upload-port"><label>Internal port</label><input name="internal_port" type="number" min="1" max="65535" value="${Number(port) || 80}" /></div>`}
+      <button class="btn primary action upload-btn" type="submit" id="zip-upload-btn" disabled><span class="up-ico">${ico("upload", 15)}</span> Upload &amp; update room</button>
     </form>
-    <p class="muted" style="font-size:.78rem">Update replaces the previous version only after the new one builds — volumes, <code>.env</code> and data are always preserved (volume deletion is a separate action).</p>
-    <div class="logs-viewer" style="margin-top:12px;min-height:120px">
-      <div class="logs-body" id="zip-log">${esc(state._zipLog || "(upload a ZIP to update this room — steps appear here)")}</div>
+    <p class="error" id="ziperr"></p><p class="muted" id="zipok"></p>
+    <div class="logs-viewer zip-log-wrap ${hasLog ? "zip-log-enter" : "hidden"}" id="zip-log-wrap" style="margin-top:12px;min-height:120px">
+      <div class="logs-body" id="zip-log">${esc(state._zipLog || "")}</div>
     </div>`;
+  }
+  function bindUploadDropzone() {
+    const drop = document.querySelector("#zip-drop");
+    const input = document.querySelector("#zip-file-input");
+    const form = document.querySelector("#zip-upload-form");
+    const btn = document.querySelector("#zip-upload-btn");
+    const chip = document.querySelector("#zip-file-chip");
+    const nameEl = document.querySelector("#zip-file-name");
+    if (!drop || !input || !form || !btn) return;
+    const setFile = (file) => {
+      if (!file) return;
+      try {
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        input.files = dt.files;
+      } catch {}
+      if (nameEl) nameEl.textContent = `${file.name} · ${fmtBytes(file.size)}`;
+      chip?.classList.remove("hidden");
+      drop.classList.add("has-file");
+      btn.disabled = false;
+    };
+    drop.addEventListener("click", (e) => {
+      if (e.target.closest("#zip-file-chip")) return;
+      input.click();
+    });
+    drop.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); input.click(); }
+    });
+    input.addEventListener("change", () => { if (input.files && input.files[0]) setFile(input.files[0]); });
+    ["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => {
+      e.preventDefault();
+      drop.classList.add("drag");
+    }));
+    ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => {
+      e.preventDefault();
+      if (ev === "dragleave" && e.relatedTarget && drop.contains(e.relatedTarget)) return;
+      drop.classList.remove("drag");
+    }));
+    drop.addEventListener("drop", (e) => {
+      const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if (f) {
+        setFile(f);
+        if (form.requestSubmit) form.requestSubmit();
+        else form.dispatchEvent(new Event("submit", { cancelable: true }));
+      }
+    });
   }
 
   async function renderRoom() {
@@ -2148,72 +2332,72 @@
     }
     } else if (tab === "manage") {
       body = `
+<div class="mng-grid">
 ${(function () {
-          if (!mainProj) return `<div class="panel"><h3>Port & domain</h3><p class="muted">Add a container first.</p></div>`;
+          if (!mainProj) return `<section class="panel mng-card"><div class="mng-head"><span class="mng-ico">${ico("link", 15)}</span><h3>Port &amp; domain</h3></div><p class="muted" style="margin:0">Add a container first.</p></section>`;
           const hasPort = Number(mainProj.host_port) > 0;
           const hasDomain = !!(mainProj.domain && String(mainProj.domain).trim());
           const show = hasPort || hasDomain || state.showNetPanel;
           if (!show) {
-            return `<div class="panel" style="padding:12px 16px">
-              <button class="btn sm action" type="button" id="show-net-panel">Set port / domain</button>
-            </div>`;
+            return `<section class="panel mng-card"><div class="mng-head"><span class="mng-ico">${ico("link", 15)}</span><h3>Port &amp; domain</h3></div>
+              <button class="btn primary action mng-wide" type="button" id="show-net-panel">Set port / domain</button>
+            </section>`;
           }
           return `
-        <div class="panel"><h3>Port & domain</h3>
-          <form id="port-form" class="form-grid">
-            <div class="field"><label>Host port</label><input name="host_port" type="number" min="0" max="65535" value="${mainProj.host_port || ""}" placeholder="e.g. 8000" /></div>
-            <div class="field" style="display:flex;align-items:end;gap:8px">
-              <button class="btn primary sm action" type="submit">Save port</button>
-              <button class="btn sm danger action" type="button" id="clear-port">Disable port</button>
+        <section class="panel mng-card"><div class="mng-head"><span class="mng-ico">${ico("link", 15)}</span><h3>Port &amp; domain</h3>${mainProj.host_port ? `<span class="badge port-badge mono">:${mainProj.host_port}</span>` : ""}</div>
+          <form id="port-form" class="mng-row">
+            <div class="field mng-grow"><label>Host port</label><input name="host_port" type="number" min="0" max="65535" value="${mainProj.host_port || ""}" placeholder="e.g. 8000" /></div>
+            <div class="mng-btns">
+              <button class="btn primary sm action" type="submit" title="Save port">Save</button>
+              <button class="icon-btn danger" type="button" id="clear-port" title="Disable port" aria-label="Disable port">${ico("trash", 14)}</button>
             </div>
           </form>
-          <form id="domain-form" class="form-grid" style="margin-top:12px">
-            <div class="field full"><label>Domain</label><input name="domain" value="${esc(mainProj.domain || "")}" placeholder="app.example.com" /></div>
-            <div class="field"><label>SSL status</label><input readonly value="${esc(mainProj.ssl_status || "—")}" /></div>
-            <div class="field" style="display:flex;align-items:end;gap:8px;flex-wrap:wrap">
-              <button class="btn primary sm action" type="submit">Bind domain</button>
-              <button class="btn sm danger action" type="button" id="clear-domain">Disable domain</button>
+          <form id="domain-form" class="mng-col" style="margin-top:12px">
+            <div class="field"><label>Domain</label><input name="domain" value="${esc(mainProj.domain || "")}" placeholder="app.example.com" /></div>
+            <div class="mng-row">
+              <div class="field mng-grow"><label>SSL status</label><input readonly value="${esc(mainProj.ssl_status || "—")}" /></div>
+              <div class="mng-btns">
+                <button class="btn primary sm action" type="submit" title="Bind domain">Bind</button>
+                <button class="icon-btn danger" type="button" id="clear-domain" title="Disable domain" aria-label="Disable domain">${ico("trash", 14)}</button>
+              </div>
             </div>
           </form>
           <p class="error" id="linkerr"></p>
-          <p class="muted" style="margin-top:8px;font-size:0.82rem">Port &amp; domain are applied via nginx proxy on this VPS.</p>
-        </div>`;
+          <p class="muted mng-note">Applied via nginx proxy on this VPS.</p>
+        </section>`;
         })()}
-<div class="panel"><h3>Name, password & disk</h3>
+<section class="panel mng-card"><div class="mng-head"><span class="mng-ico">${ico("user", 15)}</span><h3>Identity &amp; disk</h3></div>
           ${(() => {
             const cur = Number(qgb) || 0.1;
             const maxQ = Math.max(cur, Number(room.quota_max_gb || room.quota_available_gb || st?.quota_available_gb || cur));
-            return `<form id="rname" class="row-actions">
-              <input name="name" value="${esc(room.name)}" minlength="2" maxlength="40" pattern="[A-Za-z0-9_-]{2,40}" placeholder="Project name" style="flex:1;background:#101010;border:1px solid var(--line);border-radius:8px;padding:10px" />
-              <button class="btn sm primary action" type="submit">Save name</button>
+            return `<form id="rname" class="mng-row">
+              <div class="field mng-grow"><label>Project name</label><input name="name" value="${esc(room.name)}" minlength="2" maxlength="40" pattern="[A-Za-z0-9_-]{2,40}" placeholder="Project name" /></div>
+              <div class="mng-btns"><button class="icon-btn bk-go" type="submit" title="Save name" aria-label="Save name">${ico("check", 14)}</button></div>
             </form>
-            <form id="rpass" class="row-actions" style="margin-top:14px"><input name="password" type="text" minlength="6" placeholder="New project password" style="flex:1;background:#101010;border:1px solid var(--line);border-radius:8px;padding:10px" />
-            <button class="btn sm primary action" type="submit">Save password</button></form>
-            <form id="quota" class="form-grid" style="margin-top:14px">
-              <div class="field full">${quotaSliderHTML({ name: "quota_gb", maxGB: maxQ, valueGB: cur, required: true })}</div>
-              <p class="muted" style="margin:0">Save applies this cap to the running project now. Max <strong>${maxQ.toFixed(1)} GB</strong>.</p>
-              <div class="full"><button class="btn primary sm action" type="submit">Save disk</button></div>
+            <form id="rpass" class="mng-row" style="margin-top:12px">
+              <div class="field mng-grow"><label>Project password</label><input name="password" type="text" minlength="6" placeholder="New project password" /></div>
+              <div class="mng-btns"><button class="icon-btn bk-go" type="submit" title="Save password" aria-label="Save password">${ico("check", 14)}</button></div>
+            </form>
+            <form id="quota" class="mng-col" style="margin-top:12px">
+              <div class="field">${quotaSliderHTML({ name: "quota_gb", maxGB: maxQ, valueGB: cur, required: true })}</div>
+              <p class="muted mng-note" style="margin:0">Cap applies now. Max <strong>${maxQ.toFixed(1)} GB</strong>.</p>
+              <div><button class="btn primary sm action" type="submit">Save disk</button></div>
             </form>`;
           })()}
           <p class="ok-text hidden" id="rok">Saved.</p>
           <p class="error" id="rerr"></p>
-        </div>
-        <div class="panel"><h3>Run command (background)</h3>
-          <p class="muted" style="font-size:.82rem;margin:0">Runs in background — button shows loading and survives page refresh. Output appears only when finished.</p>
-          <form id="room-exec-form" class="row-actions" style="margin-top:10px">
-            <input id="room-cmd" placeholder="e.g. ls -la  or  cat .env  or  pwd" autocomplete="off" style="flex:1;background:#0a0a0a;border:1px solid var(--line);border-radius:8px;padding:10px;color:#eee" />
-            <button class="btn primary action" type="submit" id="room-exec-btn">Run</button>
-          </form>
-          <pre class="logs-body hidden" id="room-exec-out" style="margin-top:10px;max-height:300px;overflow:auto;white-space:pre-wrap"></pre>
-        </div>
-        <div class="panel"><h3>Room backup (background)</h3>
-          <p class="muted" style="font-size:.82rem;margin:0 0 8px">Zips this room into <code>backup/${esc(id)}.zip</code> (project/stack + volumes + config + .env). Runs in background with button loading.</p>
-          <div class="fact-row"><span>Current backup</span><strong class="mono" data-bk-filerow="${esc(id)}">— none —</strong></div>
-          <div class="row-actions" style="margin-top:8px">
-            <button class="btn sm primary action" data-bk-room="${esc(id)}">Backup now</button>
+        </section>
+        <section class="panel mng-card"><div class="mng-head"><span class="mng-ico">${ico("box", 15)}</span><h3>Room backup</h3><span class="muted mng-tag">background</span></div>
+          <p class="muted mng-note" style="margin:0">Zips into <code>backup/${esc(id)}.zip</code> (stack + volumes + config + .env).</p>
+          <div class="mng-row" style="margin-top:10px;align-items:center">
+            <div class="mng-grow"><div class="bk-sub mono" data-bk-filerow="${esc(id)}">— none —</div><div class="bk-status" data-bk-status="${esc(id)}"></div></div>
+            <div class="bk-tools" data-bk-fileactions="${esc(id)}">
+              <button type="button" class="icon-btn bk-go" data-bk-room="${esc(id)}" title="Backup now" aria-label="Backup now">${ico("play", 14)}</button>
+            </div>
           </div>
           <p class="error hidden" data-bk-err="${esc(id)}"></p>
-        </div>`;
+        </section>
+</div>`;
     } else if (tab === "container") {
       const ct = containers.find((c) => c.id === state.ctrId) || containers[0];
       let sub = state.ctrTab || "files";
@@ -2365,7 +2549,6 @@ ${(function () {
         <div class="row-actions">
           ${emptyRoom ? "" : powerToggleHTML(id, anyRun ? "running" : ((projs[0] && projs[0].status) || "stopped"))}
           <button class="btn sm danger action" data-act="delete">Delete</button>
-          <button class="btn sm primary action" id="backrooms">Rooms</button>
         </div>
       </div>
       <div class="tabs">
@@ -2381,13 +2564,6 @@ ${(function () {
 
     bindCmdCopies();
     document.querySelectorAll("[data-tab]").forEach((b) => b.onclick = () => setView("room", { roomTab: b.dataset.tab, filePath: b.dataset.tab === "files" ? (state.filePath || ".") : state.filePath }));
-    bindAction(document.querySelector("#backrooms"), async () => {
-      if (state.me?.kind !== "owner") {
-        await unlockOwner();
-      }
-      state.showNetPanel = false;
-      setView("rooms");
-    });
     bindPowerToggles();
     document.querySelectorAll("[data-act]").forEach((b) => bindAction(b, async () => {
       if (b.dataset.act === "delete") {
@@ -2432,10 +2608,19 @@ ${(function () {
         if (err) err.textContent = "";
         if (ok) ok.textContent = "";
         const btn = e.target.querySelector("button[type=submit]");
+        const logWrap = document.querySelector("#zip-log-wrap");
+        const logEl = document.querySelector("#zip-log");
         const fd = new FormData(e.target);
         const file = fd.get("file");
         if (!file || !file.size) { if (err) err.textContent = "Choose a ZIP file first"; return; }
-        if (btn) { btn.disabled = true; btn.textContent = "Uploading…"; }
+        if (logWrap) {
+          logWrap.classList.remove("hidden");
+          logWrap.classList.remove("zip-log-enter");
+          void logWrap.offsetWidth;
+          logWrap.classList.add("zip-log-enter");
+        }
+        if (logEl) logEl.textContent = `$ upload ${file.name || "archive"}…\n`;
+        if (btn) { btn.disabled = true; btn.innerHTML = "Uploading…"; }
         try {
           const r = await fetch(`/api/rooms/${id}/upload`, { method: "POST", body: fd, credentials: "same-origin" });
           const j = await r.json().catch(() => ({}));
@@ -2455,9 +2640,10 @@ ${(function () {
         } catch (ex) {
           if (err) err.textContent = ex.message || "Upload failed";
         } finally {
-          if (btn) { btn.disabled = false; btn.textContent = "Upload & update room"; }
+          if (btn) { btn.disabled = false; btn.innerHTML = `<span class="up-ico">${ico("upload", 15)}</span> Upload &amp; update room`; }
         }
       });
+      bindUploadDropzone();
       bindQuotaSliders();
       const flashOk = () => {
         const el = document.querySelector("#rok");
@@ -2545,16 +2731,17 @@ ${(function () {
         resumeExecFromStorage(roomExecBtn, roomExecOut, "room", id);
       }
 
-      // room backup on overview
+      // room backup on manage tab (icon button + status line)
       const roomBkBtn = document.querySelector(`[data-bk-room="${id}"]`);
       if(roomBkBtn){
         const key = "room:" + id;
+        const stEl = () => document.querySelector(`[data-bk-status="${id}"]`);
         const isBusy = (state._bkTrack && state._bkTrack[key]) || localStorage.getItem("vpsm_bk_" + key) === "running";
         if(isBusy){
           roomBkBtn.disabled = true;
           roomBkBtn.classList.add("busy");
           roomBkBtn.setAttribute("aria-busy", "true");
-          roomBkBtn.innerHTML = "Backing up…";
+          const s = stEl(); if (s) s.textContent = "Backing up…";
           startBkTrack(key, roomBkBtn, id, false);
         }
         api("/api/backup/files").then(res=>{
@@ -2562,7 +2749,8 @@ ${(function () {
           updateBkFileRow(id, false, files);
           const f = files.find(x => (x.kind === "room" && (x.name === id + ".zip" || x.room_id === id)));
           if(roomBkBtn && !roomBkBtn.classList.contains("busy")){
-            roomBkBtn.innerHTML = f ? "Replace backup" : "Backup now";
+            roomBkBtn.title = f ? "Replace backup" : "Backup now";
+            roomBkBtn.setAttribute("aria-label", roomBkBtn.title);
           }
         }).catch(()=>{});
         api("/api/backup/status").then(res=>{
@@ -2573,11 +2761,10 @@ ${(function () {
         }).catch(()=>{});
         roomBkBtn.onclick = async () => {
           if (roomBkBtn.disabled || roomBkBtn.classList.contains("busy")) return;
-          const origLabel = roomBkBtn.innerHTML;
           roomBkBtn.disabled = true;
           roomBkBtn.classList.add("busy");
           roomBkBtn.setAttribute("aria-busy", "true");
-          roomBkBtn.innerHTML = "Starting…";
+          const s = stEl(); if (s) s.textContent = "Starting…";
           try {
             try { localStorage.setItem("vpsm_bk_" + key, "running"); } catch {}
             await api("/api/backup/room", { method: "POST", body: JSON.stringify({ room_id: id }) });
@@ -2588,7 +2775,7 @@ ${(function () {
             roomBkBtn.disabled = false;
             roomBkBtn.classList.remove("busy");
             roomBkBtn.removeAttribute("aria-busy");
-            roomBkBtn.innerHTML = origLabel;
+            const s2 = stEl(); if (s2) s2.textContent = "";
             toast(ex.message || "Backup failed");
           }
         };
@@ -3583,13 +3770,13 @@ All commands are optimized for AI execution with clear patterns for every operat
               <p class="muted" style="font-size:.82rem;margin:2px 0 0">Comprehensive guide for AI models (Claude, ChatGPT, etc.) and engineers. Explains directory rules, real room commands, and includes current live tree.</p>
             </div>
             <div class="row-actions">
-              <button class="btn primary action" type="button" id="copy-ai-guide">📋 Copy Guide for AI</button>
+              <button class="btn primary action" type="button" id="copy-ai-guide">${ico("copy", 14)} Copy Guide for AI</button>
             </div>
           </div>
 
           <div class="ai-handbook">
             <div class="ai-handbook-creds">
-              <div class="creds-title">🔑 SSH Direct Access & Credentials (Engineers & AI Models)</div>
+              <div class="creds-title"><span class="creds-ico">${ico("key", 14)}</span> SSH Direct Access & Credentials (Engineers & AI Models)</div>
               <div class="creds-grid">
                 <div class="creds-item">
                   <span class="creds-label">SSH Command</span>
@@ -3859,6 +4046,9 @@ All commands are optimized for AI execution with clear patterns for every operat
     if (el) { el.textContent = msg || ""; el.classList.toggle("hidden", !msg); }
     else if (msg) toast(msg);
   }
+  function bkActionsSel(roomId, isFull) {
+    return isFull ? '[data-bk-fileactions="full"]' : `[data-bk-fileactions="${roomId}"]`;
+  }
   function updateBkFileRow(roomId, isFull, files) {
     let f = null;
     if (isFull) f = (files || []).find((x) => x.kind === "full");
@@ -3875,12 +4065,18 @@ All commands are optimized for AI execution with clear patterns for every operat
     const sel = isFull ? '[data-bk-filerow="full"]' : `[data-bk-filerow="${roomId}"]`;
     const row = document.querySelector(sel);
     if (row) {
+      row.textContent = f ? `${f.name} · ${fmtBytes(f.size)}` : (isFull ? "No full archive" : "No backup yet");
+    }
+    const acts = document.querySelector(bkActionsSel(roomId, isFull));
+    if (acts) {
+      acts.querySelectorAll("[data-dl],[data-del-bk]").forEach((n) => n.remove());
       if (f) {
-        row.innerHTML = `${esc(f.name)} · ${fmtBytes(f.size)} <button class="btn sm action" data-dl="${esc(f.name)}">Download</button> <button class="btn sm danger action" data-del-bk="${esc(f.name)}">Delete</button>`;
-        row.querySelector("[data-dl]")?.addEventListener("click", () => downloadBackupFile(f.name));
-        row.querySelector("[data-del-bk]")?.addEventListener("click", () => deleteBackupFile(f.name));
-      } else {
-        row.textContent = "— none —";
+        const wrap = document.createElement("span");
+        wrap.style.display = "contents";
+        wrap.innerHTML = `<button type="button" class="icon-btn" data-dl="${esc(f.name)}" title="Download" aria-label="Download">${ico("dl")}</button><button type="button" class="icon-btn danger" data-del-bk="${esc(f.name)}" title="Delete backup" aria-label="Delete backup">${ico("trash")}</button>`;
+        acts.appendChild(wrap);
+        wrap.querySelector("[data-dl]")?.addEventListener("click", () => downloadBackupFile(f.name));
+        wrap.querySelector("[data-del-bk]")?.addEventListener("click", () => deleteBackupFile(f.name));
       }
     }
     return !!f;
@@ -3893,6 +4089,13 @@ All commands are optimized for AI execution with clear patterns for every operat
     btn.disabled = true;
     btn.classList.add("busy");
     btn.setAttribute("aria-busy", "true");
+    const statusEl = () => document.querySelector(isFull ? '[data-bk-status="full"]' : `[data-bk-status="${roomId}"]`);
+    const setProgress = (txt) => {
+      const st = statusEl();
+      if (st) st.textContent = txt || "";
+      // Legacy text buttons (if any) still show progress inside the button.
+      if (btn && !btn.classList.contains("icon-btn")) btn.innerHTML = esc(txt || "Working…");
+    };
     const tick = async () => {
       if (!document.body.contains(btn) || state._bkTrack[key] !== my) return;
       let js = {};
@@ -3903,7 +4106,7 @@ All commands are optimized for AI execution with clear patterns for every operat
         btn.disabled = true;
         btn.classList.add("busy");
         btn.setAttribute("aria-busy", "true");
-        btn.innerHTML = `Backing up… ${job.files || 0} files · ${fmtBytes(job.bytes || 0)}`;
+        setProgress(`Backing up… ${job.files || 0} files · ${fmtBytes(job.bytes || 0)}`);
         showBkError(roomId, isFull, "");
         setTimeout(tick, 1800);
         return;
@@ -3913,7 +4116,7 @@ All commands are optimized for AI execution with clear patterns for every operat
         btn.disabled = false;
         btn.classList.remove("busy");
         btn.removeAttribute("aria-busy");
-        btn.innerHTML = isFull ? "Retry full backup" : "Retry backup";
+        setProgress("");
         showBkError(roomId, isFull, job.error || "Backup failed");
         return;
       }
@@ -3925,9 +4128,7 @@ All commands are optimized for AI execution with clear patterns for every operat
         try {
           const files = (await api("/api/backup/files")).files || [];
           const has = updateBkFileRow(roomId, isFull, files);
-          btn.innerHTML = isFull
-            ? (has ? "Replace full backup" : "Backup everything now")
-            : (has ? "Replace backup" : "Backup now");
+          setProgress("");
           showBkError(roomId, isFull, has ? "" : "Finished but no file listed — check /vps-manager/backup");
           toast(isFull ? "Full backup completed successfully" : "Room backup completed successfully");
         } catch (ex) {
@@ -3950,18 +4151,31 @@ All commands are optimized for AI execution with clear patterns for every operat
     outEl.textContent = text || "";
     outEl.classList.toggle("hidden", !text);
   }
+  // Icon-safe busy state: icon buttons keep their icon (CSS spinner shows),
+  // legacy text buttons show a running label.
+  function execBusy(btn, on, label) {
+    if (!btn) return;
+    if (on) {
+      if (btn.dataset.origHtml == null) btn.dataset.origHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.classList.add("busy");
+      btn.setAttribute("aria-busy", "true");
+      if (!btn.classList.contains("icon-btn")) btn.innerHTML = label || "⏳ Running…";
+    } else {
+      btn.disabled = false;
+      btn.classList.remove("busy");
+      btn.removeAttribute("aria-busy");
+      if (btn.dataset.origHtml != null) { btn.innerHTML = btn.dataset.origHtml; delete btn.dataset.origHtml; }
+      if (btn.dataset.origText != null) delete btn.dataset.origText;
+    }
+  }
   function startExecTrack(btn, jobId, outputEl, scope, roomId){
     if(!btn || !jobId) return;
     const key = scope + ":" + jobId;
     state._execTrack[key] = (state._execTrack[key]||0)+1;
     const my = state._execTrack[key];
     try{ localStorage.setItem(execLsKey(scope, roomId), jobId); }catch{}
-    const origText = btn.dataset.origText || btn.textContent;
-    btn.dataset.origText = origText;
-    btn.disabled = true;
-    btn.classList.add("busy");
-    btn.innerHTML = `⏳ Running…`;
-    btn.setAttribute("aria-busy","true");
+    execBusy(btn, true);
     showExecOutput(outputEl, "");
     const tick = async () => {
       if(!document.body.contains(btn) || state._execTrack[key] !== my) return;
@@ -3970,14 +4184,11 @@ All commands are optimized for AI execution with clear patterns for every operat
       catch{ setTimeout(tick, 3000); return; }
       if(!js) { setTimeout(tick, 3000); return; }
       if(js.status === "running"){
-        btn.innerHTML = `⏳ Running…`;
+        execBusy(btn, true);
         setTimeout(tick, 1500);
         return;
       }
-      btn.disabled = false;
-      btn.classList.remove("busy");
-      btn.innerHTML = origText;
-      btn.removeAttribute("aria-busy");
+      execBusy(btn, false);
       try{ localStorage.removeItem(execLsKey(scope, roomId)); }catch{}
       const out = (js.output || "") + (js.error ? `\n[error] ${js.error}` : "");
       showExecOutput(outputEl, out || "(no output)");
@@ -3997,30 +4208,19 @@ All commands are optimized for AI execution with clear patterns for every operat
       }).catch(()=>{});
       return false;
     }
-    const origText = btn.dataset.origText || btn.textContent;
-    btn.dataset.origText = origText;
-    btn.disabled = true;
-    btn.classList.add("busy");
-    btn.innerHTML = `⏳ Running…`;
-    btn.setAttribute("aria-busy","true");
+    execBusy(btn, true);
     showExecOutput(outputEl, "");
     api(`/api/exec/status?job_id=${encodeURIComponent(jid)}`).then(js=>{
       if(js && js.status === "running"){
         startExecTrack(btn, jid, outputEl, scope, roomId);
       } else if(js && (js.status==="done"||js.status==="error")){
         try{ localStorage.removeItem(execLsKey(scope, roomId)); }catch{}
-        btn.disabled = false;
-        btn.classList.remove("busy");
-        btn.innerHTML = origText;
-        btn.removeAttribute("aria-busy");
+        execBusy(btn, false);
         const out = (js.output||"") + (js.error? `\n[error] ${js.error}`:"");
         showExecOutput(outputEl, out);
       } else {
         try{ localStorage.removeItem(execLsKey(scope, roomId)); }catch{}
-        btn.disabled = false;
-        btn.classList.remove("busy");
-        btn.innerHTML = origText;
-        btn.removeAttribute("aria-busy");
+        execBusy(btn, false);
       }
     }).catch(()=>{
       startExecTrack(btn, jid, outputEl, scope, roomId);
@@ -4029,12 +4229,7 @@ All commands are optimized for AI execution with clear patterns for every operat
   }
   async function runExec(btn, scope, roomId, command, outputEl){
     if(!command) { toast("Type a command"); return; }
-    const orig = btn.textContent;
-    btn.dataset.origText = orig;
-    btn.disabled = true;
-    btn.classList.add("busy");
-    btn.innerHTML = `⏳ Starting…`;
-    btn.setAttribute("aria-busy","true");
+    execBusy(btn, true, "⏳ Starting…");
     showExecOutput(outputEl, "");
     try{
       let res;
@@ -4049,7 +4244,7 @@ All commands are optimized for AI execution with clear patterns for every operat
       if(!jid) throw new Error("No job id");
       startExecTrack(btn, jid, outputEl, scope, roomId);
     }catch(ex){
-      btn.disabled=false; btn.classList.remove("busy"); btn.innerHTML=orig; btn.removeAttribute("aria-busy");
+      execBusy(btn, false);
       toast(ex.message||"Failed");
       showExecOutput(outputEl, ex.message||"Failed");
     }
@@ -4080,69 +4275,70 @@ All commands are optimized for AI execution with clear patterns for every operat
       const cands = (files || []).filter((f) => f.kind === "room" && f.name.indexOf(roomId.replace(/-/g, "").slice(0, 8)) === 5);
       return cands[0];
     };
+    const bkDlBtn = (name) => `<button type="button" class="icon-btn" data-dl="${esc(name)}" title="Download" aria-label="Download">${ico("dl")}</button>`;
+    const bkDelBtn = (name) => `<button type="button" class="icon-btn danger" data-del-bk="${esc(name)}" title="Delete backup" aria-label="Delete backup">${ico("trash")}</button>`;
     const cards = (rooms || []).map((r) => {
       const f = fileFor(r.id);
       const job = jobs ? jobs["room:" + r.id] : null;
       const busy = isBkBusy("room:" + r.id);
-      return `<div class="backup-card">
-        <div class="backup-card-head">
-          <h4>${esc(r.name || r.id)}</h4>
-          <span class="badge ${r.kind === "multi" ? "info" : "muted-badge"}">${esc(r.kind || "single")}</span>
+      const statusTxt = busy ? (job && job.files ? `${job.files} files · ${fmtBytes(job.bytes || 0)}` : "Working…") : "";
+      return `<div class="bk-row">
+        <div class="bk-ico" aria-hidden="true">${ico("file", 17)}</div>
+        <div class="bk-meta">
+          <div class="bk-name-row"><h4>${esc(r.name || r.id)}</h4>
+            <span class="badge ${r.kind === "multi" ? "info" : "muted-badge"}">${esc(r.kind || "single")}</span>
+          </div>
+          <div class="bk-sub mono" data-bk-filerow="${esc(r.id)}">${f ? `${esc(f.name)} · ${fmtBytes(f.size)}` : "No backup yet"}</div>
+          <div class="bk-status" data-bk-status="${esc(r.id)}">${esc(statusTxt)}</div>
+          <p class="error hidden" data-bk-err="${esc(r.id)}">${(job && job.state === "error" && job.error) ? esc(job.error) : ""}</p>
         </div>
-        <div class="backup-file-pill" data-bk-filerow="${esc(r.id)}">
-          ${f ? `<span class="mono">${esc(f.name)}</span> · <strong style="color:#38bdf8">${fmtBytes(f.size)}</strong>` : '<span class="muted">No backup created yet</span>'}
+        <div class="bk-tools" data-bk-fileactions="${esc(r.id)}">
+          <button type="button" class="icon-btn bk-go ${busy ? "busy" : ""}" data-bk-room="${esc(r.id)}" ${busy ? "disabled aria-busy='true'" : ""} title="${busy ? "Backing up…" : (f ? "Replace backup" : "Backup now")}" aria-label="Backup now">${ico("play")}</button>
+          ${f ? `${bkDlBtn(f.name)}${bkDelBtn(f.name)}` : ""}
         </div>
-        <div class="row-actions" style="margin-top:auto">
-          <button class="btn sm primary action ${busy ? "busy" : ""}" data-bk-room="${esc(r.id)}" ${busy ? "disabled aria-busy='true'" : ""}>
-            ${busy ? (job && job.files ? `Backing up… ${job.files} files · ${fmtBytes(job.bytes || 0)}` : "Backing up…") : (f ? "Replace backup" : "Backup now")}
-          </button>
-          ${f ? `<button class="btn sm action" data-dl="${esc(f.name)}">⬇ Download</button><button class="btn sm danger action" data-del-bk="${esc(f.name)}">🗑 Delete</button>` : ""}
-        </div>
-        <p class="error hidden" data-bk-err="${esc(r.id)}">${(job && job.state === "error" && job.error) ? esc(job.error) : ""}</p>
       </div>`;
     }).join("") || '<p class="muted">No rooms yet.</p>';
+    const fullStatusTxt = busyFull ? (fullJob && fullJob.files ? `${fullJob.files} files · ${fmtBytes(fullJob.bytes || 0)}` : "Working…") : "";
 
     shell(`<div id="crumb"></div>
-      <div class="topbar">
+      <div class="bk-page">
+      <div class="topbar bk-top">
         <div>
           <h2>Backup</h2>
-          <div class="sub">/vps-manager/backup — automated archives & snapshots</div>
+          <div class="sub">/vps-manager/backup — newest only</div>
         </div>
-        <div class="actions">
-          <button class="btn sm action" id="bk-refresh-btn" title="Refresh backup status">🔄 Refresh</button>
+        <div class="actions bk-top-actions">
+          <button type="button" class="icon-btn" id="bk-refresh-btn" title="Refresh status" aria-label="Refresh status">${refreshIconHTML()}</button>
         </div>
       </div>
-      <div class="backup-hero-card">
-        <div class="backup-hero-head">
-          <div class="backup-hero-title">
-            <h3><span>📦</span> Full Host Backup (/vps-manager)</h3>
-            <p>Complete archive of all rooms, databases, configs, proxies, and environment files in <code>/vps-manager/backup/vps-manager.zip</code>.</p>
-          </div>
-          <div class="backup-hero-status">
-            <span class="file-name" data-bk-filerow="full">${full ? esc(full.name) : "No full archive"}</span>
-            <span class="file-size">${full ? fmtBytes(full.size) : "—"}</span>
-          </div>
+      <div class="bk-hero2">
+        <div class="bk-ico big" aria-hidden="true">${ico("box", 20)}</div>
+        <div class="bk-meta">
+          <div class="bk-name-row"><h3>Full Host Backup</h3></div>
+          <div class="bk-sub mono" data-bk-filerow="full">${full ? `${esc(full.name)} · ${fmtBytes(full.size)}` : "No full archive"}</div>
+          <div class="bk-hint muted">Rooms + database + configs + proxy + env files</div>
+          <div class="bk-status" data-bk-status="full">${esc(fullStatusTxt)}</div>
+          <p class="error" id="bkerr"></p>
         </div>
-        <div class="row-actions">
-          <button class="btn primary action ${busyFull ? "busy" : ""}" id="bk-full" ${busyFull ? "disabled aria-busy='true'" : ""}>
-            ${busyFull ? (fullJob && fullJob.files ? `Backing up… ${fullJob.files} files · ${fmtBytes(fullJob.bytes || 0)}` : "Backing up…") : (full ? "Replace full backup" : "Backup everything now")}
-          </button>
-          ${full ? `<button class="btn action" data-dl="${esc(full.name)}">⬇ Download zip</button><button class="btn danger action" data-del-bk="${esc(full.name)}">🗑 Delete backup</button>` : ""}
+        <div class="bk-tools" data-bk-fileactions="full">
+          <button type="button" class="icon-btn bk-go ${busyFull ? "busy" : ""}" id="bk-full" ${busyFull ? "disabled aria-busy='true'" : ""} title="${busyFull ? "Backing up…" : (full ? "Replace full backup" : "Backup everything now")}" aria-label="Full backup">${ico("play")}</button>
+          ${full ? `${bkDlBtn(full.name)}${bkDelBtn(full.name)}` : ""}
         </div>
-        <p class="error" id="bkerr"></p>
       </div>
-      <div class="panel">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+      <div class="panel bk-list-panel">
+        <div class="bk-list-head">
           <h3 style="margin:0">Per-Project Backups</h3>
-          <span class="muted" style="font-size:0.8rem">Stored inside each room's <code>backup/&lt;room_id&gt;.zip</code></span>
+          <span class="muted bk-hint">Stored in <code>backup/&lt;room_id&gt;.zip</code></span>
         </div>
-        <div class="backup-rooms-grid">${cards}</div>
+        <div class="bk-list">${cards}</div>
+      </div>
       </div>`, "backup");
 
     paintBreadcrumb(document.querySelector("#crumb"), { crumbs: [{ label: "/vps-manager", path: "/vps-manager" }, { label: "backup", path: "/vps-manager/backup" }], connect: state.cache?.sshConnect || "" });
 
     document.querySelector("#bk-refresh-btn")?.addEventListener("click", () => renderBackup(true));
 
+    const bkStatusEl = (isFull, roomId) => document.querySelector(isFull ? '[data-bk-status="full"]' : `[data-bk-status="${roomId}"]`);
     const fullBtn = document.querySelector("#bk-full");
     if (fullBtn) {
       fullBtn.addEventListener("click", async () => {
@@ -4150,18 +4346,19 @@ All commands are optimized for AI execution with clear patterns for every operat
         fullBtn.disabled = true;
         fullBtn.classList.add("busy");
         fullBtn.setAttribute("aria-busy", "true");
-        fullBtn.innerHTML = "Starting…";
+        const st = bkStatusEl(true);
+        if (st) st.textContent = "Starting…";
         try {
           try { localStorage.setItem("vpsm_bk_full", "running"); } catch {}
           await api("/api/backup/full", { method: "POST", body: "{}" });
-          toast("Full backup started — watch the button, no reload needed");
+          toast("Full backup started — watch the status line, no reload needed");
           startBkTrack("full", fullBtn, null, true);
         } catch (ex) {
           try { localStorage.removeItem("vpsm_bk_full"); } catch {}
           fullBtn.disabled = false;
           fullBtn.classList.remove("busy");
           fullBtn.removeAttribute("aria-busy");
-          fullBtn.innerHTML = full ? "Replace full backup" : "Backup everything now";
+          if (st) st.textContent = "";
           const e = document.querySelector("#bkerr");
           if (e) e.textContent = ex.message;
           else toast(ex.message || "Backup failed");
@@ -4174,22 +4371,22 @@ All commands are optimized for AI execution with clear patterns for every operat
         if (b.disabled || b.classList.contains("busy")) return;
         const roomId = b.dataset.bkRoom;
         const key = "room:" + roomId;
-        const origLabel = b.innerHTML;
         b.disabled = true;
         b.classList.add("busy");
         b.setAttribute("aria-busy", "true");
-        b.innerHTML = "Starting…";
+        const st = bkStatusEl(false, roomId);
+        if (st) st.textContent = "Starting…";
         try {
           try { localStorage.setItem("vpsm_bk_" + key, "running"); } catch {}
           await api("/api/backup/room", { method: "POST", body: JSON.stringify({ room_id: roomId }) });
-          toast("Backup started — watch the button");
+          toast("Backup started — watch the status line");
           startBkTrack(key, b, roomId, false);
         } catch (ex) {
           try { localStorage.removeItem("vpsm_bk_" + key); } catch {}
           b.disabled = false;
           b.classList.remove("busy");
           b.removeAttribute("aria-busy");
-          b.innerHTML = origLabel;
+          if (st) st.textContent = "";
           toast(ex.message || "Backup failed");
         }
       };
