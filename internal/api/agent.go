@@ -794,19 +794,31 @@ func (s *Server) deployRoomArchive(r *store.Room, updating bool, archivePath, fo
 		status := "stored"
 		note := "source stored under project/; Docker unavailable — build and run on a Docker host"
 		var built any
+		replacedProjects, replacedContainers, keepPort := 0, 0, hPort
 		if dockerOK {
+			if olds, _ := s.Store.ListProjects(roomID); len(olds) > 0 {
+				replacedProjects = len(olds)
+				if keepPort <= 0 {
+					keepPort = olds[0].HostPort
+				}
+				if cts, _ := s.Store.ListContainers(roomID); len(cts) > 0 {
+					replacedContainers = len(cts)
+				}
+			}
 			p, err := s.Projects.DeployBuild(projects.DeployBuildInput{
 				RoomID: roomID, Name: r.Name, SourceDir: stage,
-				HostPort: 0, ContainerPort: cPort, Log: io.Discard,
+				HostPort: keepPort, ContainerPort: cPort, Log: io.Discard,
+				Replace: true,
 			})
 			if err != nil {
 				return fail(fmt.Errorf("build: %w", err))
 			}
 			status = "running"
-			note = "built and started"
+			note = "built, replaced previous version, and started"
 			built = map[string]any{
 				"project_id": p.ID, "image": p.Image, "container_id": p.ContainerID,
 				"host_port": p.HostPort, "container_port": p.ContainerPort,
+				"replaced_projects": replacedProjects, "replaced_containers": replacedContainers,
 			}
 		}
 		// Promote the staged source to the canonical project/ directory.

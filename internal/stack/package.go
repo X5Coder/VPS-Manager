@@ -150,7 +150,9 @@ func (s *Service) DeployMulti(room *store.Room, archive string, log io.Writer) e
 	proj := "vr" + store.ShortRoomID(room.ID)
 	fmt.Fprintf(log, "Starting stack %s...\n", proj)
 	ctxFile := compose
-	cmd := exec.Command("docker", "compose", "-f", ctxFile, "-f", over, "-p", proj, "up", "-d", "--pull", "never")
+	// --force-recreate: an update must actually swap running containers for
+	// the new source instead of keeping stale ones.
+	cmd := exec.Command("docker", "compose", "-f", ctxFile, "-f", over, "-p", proj, "up", "-d", "--force-recreate", "--pull", "never")
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), "ENV_FILE="+envPath)
 	out, err := cmd.CombinedOutput()
@@ -161,8 +163,10 @@ func (s *Service) DeployMulti(room *store.Room, archive string, log io.Writer) e
 	list, _ := s.Docker.ListCompose(proj)
 	for _, cc := range list {
 		id, status, image := s.Docker.ContainerBrief(cc.Name)
+		// Stable record id per room+service: repeated deploys update the
+		// same row instead of piling up duplicate container copies.
 		_ = s.Store.UpsertContainer(store.Container{
-			ID: uuid.NewString(), RoomID: room.ID, Name: cc.Name, Service: cc.Service,
+			ID: stackContainerID(room.ID, cc.Name), RoomID: room.ID, Name: cc.Name, Service: cc.Service,
 			Image: image, DockerID: id, Status: status, CreatedAt: time.Now().UTC(),
 		})
 	}
@@ -173,6 +177,28 @@ func (s *Service) DeployMulti(room *store.Room, archive string, log io.Writer) e
 	}
 	fmt.Fprintf(log, "Stack running. services=%d\n", len(list))
 	return nil
+}
+
+// stackContainerID is a stable record id per room+service name so repeated
+// deploys update one row instead of duplicating container records.
+func stackContainerID(roomID, name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	var b strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('-')
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		out = "svc"
+	}
+	if len(out) > 32 {
+		out = out[:32]
+	}
+	return store.ShortRoomID(roomID) + "-" + out
 }
 
 func findPackageRoot(dir string) string {

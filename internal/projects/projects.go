@@ -51,6 +51,11 @@ type DeployBuildInput struct {
 	EnvText       string
 	SourceDir     string
 	Log           io.Writer
+	// Replace turns a deploy into a true replacement: the image is built
+	// first, and only on success are the room's current projects/containers
+	// stopped, removed, and swapped for the new one. No copies are left
+	// behind and the room kind never flips.
+	Replace bool
 }
 
 func (s *Service) List(roomID string) ([]store.Project, error) {
@@ -320,6 +325,32 @@ func (s *Service) DeployBuild(in DeployBuildInput) (*store.Project, error) {
 	}
 	if err := s.Docker.Build(context.Background(), dockerx.BuildOpts{Tag: tag, Context: pdir, Args: buildArgs}, log); err != nil {
 		return nil, err
+	}
+	if in.Replace {
+		// Build succeeded: swap out the current room contents before
+		// creating the replacement, so names/ports never collide and no
+		// stale copies survive.
+		if olds, _ := s.Store.ListProjects(in.RoomID); len(olds) > 0 {
+			for _, o := range olds {
+				if strings.TrimSpace(o.ContainerID) != "" {
+					_ = s.Docker.Stop(o.ContainerID)
+					_ = s.Docker.Remove(o.ContainerID, true)
+				}
+				_ = s.Store.DeleteProject(o.ID)
+			}
+		}
+		if cts, _ := s.Store.ListContainers(in.RoomID); len(cts) > 0 {
+			for _, c := range cts {
+				if strings.TrimSpace(c.DockerID) != "" {
+					_ = s.Docker.Stop(c.DockerID)
+					_ = s.Docker.Remove(c.DockerID, true)
+				}
+				if strings.TrimSpace(c.Name) != "" {
+					_ = s.Docker.RemoveByName(c.Name)
+				}
+				_ = s.Store.DeleteContainer(c.ID)
+			}
+		}
 	}
 	hostPort := in.HostPort
 	if hostPort <= 0 {
