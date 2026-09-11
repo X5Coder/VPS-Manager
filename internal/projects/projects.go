@@ -312,6 +312,7 @@ func (s *Service) DeployBuild(in DeployBuildInput) (*store.Project, error) {
 	// Room env doubles as Docker build args, so Dockerfiles with ARG/ENV
 	// (e.g. BOT_TOKEN) bake real values instead of empty ones.
 	buildArgs := map[string]string{}
+	oldImages := []string{}
 	if s.Rooms != nil {
 		if pairs, _ := readEnvPairs(s.Rooms.RoomEnvPath(in.RoomID)); len(pairs) > 0 {
 			for _, kv := range pairs {
@@ -332,6 +333,9 @@ func (s *Service) DeployBuild(in DeployBuildInput) (*store.Project, error) {
 		// stale copies survive.
 		if olds, _ := s.Store.ListProjects(in.RoomID); len(olds) > 0 {
 			for _, o := range olds {
+				if img := strings.TrimSpace(o.Image); img != "" {
+					oldImages = append(oldImages, img)
+				}
 				if strings.TrimSpace(o.ContainerID) != "" {
 					_ = s.Docker.Stop(o.ContainerID)
 					_ = s.Docker.Remove(o.ContainerID, true)
@@ -414,6 +418,15 @@ func (s *Service) DeployBuild(in DeployBuildInput) (*store.Project, error) {
 	if err := s.Store.CreateProject(p); err != nil {
 		_ = s.Docker.Remove(cid, true)
 		return nil, err
+	}
+	if in.Replace {
+		// Drop replaced images so updates never pile up unused layers.
+		// Docker refuses images still referenced elsewhere — safe to ignore.
+		for _, ref := range oldImages {
+			if ref != "" && ref != tag {
+				_ = s.Docker.RemoveImage(ref)
+			}
+		}
 	}
 	s.persistRoom(in.RoomID)
 	fmt.Fprintf(log, "OK project=%s\n", id)

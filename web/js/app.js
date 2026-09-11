@@ -2026,6 +2026,7 @@
       ${isMulti ? "" : `<div class="field"><label>Internal port</label><input name="internal_port" type="number" min="1" max="65535" value="${Number(port) || 80}" /></div>`}
       <div class="field full"><button class="btn primary action" type="submit">Upload &amp; update room</button></div>
     </form>
+    <p class="muted" style="font-size:.78rem">Update replaces the previous version only after the new one builds — volumes, <code>.env</code> and data are always preserved (volume deletion is a separate action).</p>
     <div class="logs-viewer" style="margin-top:12px;min-height:120px">
       <div class="logs-body" id="zip-log">${esc(state._zipLog || "(upload a ZIP to update this room — steps appear here)")}</div>
     </div>`;
