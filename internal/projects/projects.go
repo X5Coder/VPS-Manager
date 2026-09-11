@@ -338,6 +338,21 @@ func (s *Service) DeployBuild(in DeployBuildInput) (*store.Project, error) {
 				}
 				_ = s.Store.DeleteProject(o.ID)
 			}
+			// Carry persistent data forward: the new project inherits the
+			// previous data dir so state survives replacement. Only when
+			// the new dir is still fresh — never overwrite.
+			newVol := filepath.Join(s.volumesDirFor(in.RoomID), id)
+			if _, err := os.Stat(newVol); os.IsNotExist(err) {
+				for _, o := range olds {
+					oldVol := filepath.Join(s.volumesDirFor(in.RoomID), o.ID)
+					if st, err := os.Stat(oldVol); err == nil && st.IsDir() {
+						if err := os.Rename(oldVol, newVol); err == nil {
+							fmt.Fprintf(log, "kept data from previous version\n")
+						}
+						break
+					}
+				}
+			}
 		}
 		if cts, _ := s.Store.ListContainers(in.RoomID); len(cts) > 0 {
 			for _, c := range cts {
