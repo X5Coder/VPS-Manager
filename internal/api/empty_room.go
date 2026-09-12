@@ -154,11 +154,13 @@ func (s *Server) handleRoomUpload(w http.ResponseWriter, r *http.Request, id str
 	port, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("internal_port")))
 	res, err := s.deployRoomArchive(room, true, tmpName, format, port)
 	if err != nil {
+		_ = appendLog(s.Cfg.DataDir, "deploy", "UPLOAD FAIL room="+id+" err="+err.Error())
 		writeErr(w, 400, err.Error())
 		return
 	}
 	if m, ok := res.(map[string]any); ok {
 		m["kind"] = room.Kind
+		_ = appendLog(s.Cfg.DataDir, "deploy", "UPLOAD OK room="+id)
 		writeJSON(w, 200, m)
 		return
 	}

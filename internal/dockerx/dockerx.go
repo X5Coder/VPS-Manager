@@ -486,7 +486,9 @@ func (c *Client) Start(id string) error {
 }
 
 func (c *Client) Stop(id string) error {
-	return c.run(context.Background(), nil, "stop", "-t", "2", id)
+	// Generous grace period so apps exit cleanly (code 0) instead of being
+	// SIGKILLed (code 137) and misreported as crashed.
+	return c.run(context.Background(), nil, "stop", "-t", "10", id)
 }
 
 func (c *Client) Remove(id string, force bool) error {
@@ -643,15 +645,20 @@ func (c *Client) InspectStatus(id string) (string, error) {
 	if id == "" {
 		return "missing", nil
 	}
-	out, err := c.output("inspect", "-f", "{{.State.Status}}|{{.State.ExitCode}}", id)
+	out, err := c.output("inspect", "-f", "{{.State.Status}}|{{.State.ExitCode}}|{{.State.OOMKilled}}", id)
 	if err != nil {
 		return "missing", nil
 	}
-	parts := strings.SplitN(out, "|", 2)
+	parts := strings.SplitN(out, "|", 3)
 	st := strings.ToLower(strings.TrimSpace(parts[0]))
 	if st == "" {
 		return "missing", nil
 	}
+	code := "0"
+	if len(parts) > 1 {
+		code = strings.TrimSpace(parts[1])
+	}
+	oom := len(parts) > 2 && strings.TrimSpace(parts[2]) == "true"
 	switch st {
 	case "running":
 		return "running", nil
@@ -661,11 +668,13 @@ func (c *Client) InspectStatus(id string) (string, error) {
 	case "paused":
 		return "paused", nil
 	case "exited":
-		code := "0"
-		if len(parts) > 1 {
-			code = strings.TrimSpace(parts[1])
+		// 0 = clean exit, 143 = SIGTERM (asked to stop, e.g. docker stop),
+		// 137 without OOM = SIGKILL from outside (stop timeout / docker kill).
+		// OOM kills and other codes mean it really crashed.
+		if oom {
+			return "exited", nil
 		}
-		if code == "0" {
+		if code == "0" || code == "143" || code == "137" {
 			return "stopped", nil
 		}
 		return "exited", nil // crashed / exited with error

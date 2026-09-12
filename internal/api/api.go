@@ -733,41 +733,43 @@ func (s *Server) handleRooms(w http.ResponseWriter, r *http.Request) {
 				cPort = projs[0].ContainerPort
 				image = projs[0].Image
 				projectID = projs[0].ID
-				domain = projs[0].Domain
+			domain = projs[0].Domain
 				for _, p := range projs {
 					if p.Status == "running" {
 						st = "running"
 						break
 					}
 				}
-				if st == "stopped" && s.Docker != nil && projs[0].ContainerID != "" {
-					if x, err := s.Docker.InspectStatus(projs[0].ContainerID); err == nil && (x == "restarting" || x == "exited" || x == "dead") {
+				if projs[0].ContainerID != "" {
+					// Trust live docker over stale DB rows, both directions:
+					// a dead record showing running, or a stopped one showing error.
+					if ls := s.containerLiveStatus(projs[0].ContainerID, projs[0].Status); ls == "error" || ls == "restarting" {
 						st = "error"
+					} else if st == "running" && ls == "stopped" {
+						st = "stopped"
 					}
 				}
 			}
 			// A room can hold a compose stack / Docker repo with containers but no
 			// project rows (adopted or stack-deployed). It is NOT empty then.
-			if st == "empty" && len(cts) > 0 {
-				st = "stopped"
-				if s.Docker != nil {
-					for _, c := range cts {
-						ref := c.DockerID
-						if ref == "" {
-							ref = c.Name
-						}
-						if x, err := s.Docker.InspectStatus(ref); err == nil && x == "running" {
-							st = "running"
-							break
-						} else if c.Status == "running" {
-							st = "running"
-							break
-						} else if err == nil && (x == "restarting" || x == "exited" || x == "dead") {
-							st = "error"
-						}
-					}
+		if st == "empty" && len(cts) > 0 {
+			st = "stopped"
+			for _, c := range cts {
+				ref := c.DockerID
+				if ref == "" {
+					ref = c.Name
+				}
+				switch ls := s.containerLiveStatus(ref, c.Status); ls {
+				case "running":
+					st = "running"
+				case "error", "restarting":
+					st = "error"
+				}
+				if st == "running" {
+					break
 				}
 			}
+		}
 			imgs, _ := s.Store.ListImages(rm.ID)
 			vols, _ := s.Store.ListVolumes(rm.ID)
 			nC := len(cts)
@@ -1071,14 +1073,18 @@ func (s *Server) handleRoomByID(w http.ResponseWriter, r *http.Request) {
 		} else if busy == "" && (len(projs) > 0 || len(cts) > 0) {
 			roomStatus = "stopped"
 			for _, p := range projs {
-				if p.Status == "running" {
+				if s.containerLiveStatus(p.ContainerID, p.Status) == "running" {
 					roomStatus = "running"
 					break
 				}
 			}
 			if roomStatus != "running" {
 				for _, c := range cts {
-					if c.Status == "running" {
+					ref := c.DockerID
+					if ref == "" {
+						ref = c.Name
+					}
+					if s.containerLiveStatus(ref, c.Status) == "running" {
 						roomStatus = "running"
 						break
 					}
@@ -1114,18 +1120,48 @@ func (s *Server) handleRoomByID(w http.ResponseWriter, r *http.Request) {
 	writeErr(w, 405, "method")
 }
 
+// liveStatus resolves a live docker state into a panel status.
+// A user-stopped container (recorded "stopped") is never reported as an
+// error, even when docker reports a raw non-zero exit. Anything else that
+// is not running is an error; unknown states fall back to the record.
+func (s *Server) containerLiveStatus(ref, recorded string) string {
+	if s.Docker == nil || !s.Docker.Available() || strings.TrimSpace(ref) == "" {
+		return recorded
+	}
+	st, err := s.Docker.InspectStatus(ref)
+	if err != nil || st == "" || st == "missing" {
+		return recorded
+	}
+	return normalizeLiveStatus(st, recorded)
+}
+
+// normalizeLiveStatus maps raw docker states (InspectStatus output) to the
+// panel vocabulary: running | stopped | error (+restarting passthrough).
+func normalizeLiveStatus(st, recorded string) string {
+	switch st {
+	case "running":
+		return "running"
+	case "stopped":
+		return "stopped"
+	case "restarting":
+		return "restarting"
+	case "exited", "dead":
+		if recorded == "stopped" {
+			return "stopped"
+		}
+		return "error"
+	default:
+		return recorded
+	}
+}
+
 func (s *Server) roomContainersJSON(roomID string) []map[string]any {
 	list, _ := s.Store.ListContainers(roomID)
 	if len(list) == 0 {
 		projs, _ := s.Store.ListProjects(roomID)
 		out := make([]map[string]any, 0, len(projs))
 		for i, p := range projs {
-			st := p.Status
-			if s.Docker != nil && p.ContainerID != "" {
-				if x, err := s.Docker.InspectStatus(p.ContainerID); err == nil && x != "" {
-					st = x
-				}
-			}
+			st := s.containerLiveStatus(p.ContainerID, p.Status)
 			out = append(out, map[string]any{
 				"ordinal": i + 1, "id": p.ID, "name": p.Name, "service": p.Name,
 				"label": inventory.ContainerLabel(p.Name, p.Name, p.Image),
@@ -1140,14 +1176,14 @@ func (s *Server) roomContainersJSON(roomID string) []map[string]any {
 		st := c.Status
 		if s.Docker != nil {
 			ref := c.DockerID
-			if x, err := s.Docker.InspectStatus(ref); err == nil && x != "" {
+			if x, err := s.Docker.InspectStatus(ref); err == nil && x != "" && x != "missing" {
 				st = x
-			}
-			if st == "missing" && c.Name != "" {
+			} else if c.Name != "" {
 				if x, err := s.Docker.InspectStatus(c.Name); err == nil && x != "" && x != "missing" {
 					st = x
 				}
 			}
+			st = normalizeLiveStatus(st, c.Status)
 		}
 		out = append(out, map[string]any{
 			"ordinal": c.Ordinal, "id": c.ID, "name": c.Name, "service": c.Service,

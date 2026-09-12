@@ -371,12 +371,7 @@ func (s *Server) agentRoomDetail(r *store.Room) map[string]any {
 
 	containers := make([]map[string]any, 0, len(cts))
 	for _, c := range cts {
-		st := c.Status
-		if dockerOK && c.DockerID != "" {
-			if x, err := s.Docker.InspectStatus(c.DockerID); err == nil && x != "" {
-				st = x
-			}
-		}
+		st := s.containerLiveStatus(c.DockerID, c.Status)
 		containers = append(containers, map[string]any{
 			"id": c.ID, "name": c.Name, "service": c.Service, "image": c.Image,
 			"docker_id": c.DockerID, "status": st,
@@ -466,15 +461,9 @@ func (s *Server) agentRoomStatus(r *store.Room, projs []store.Project, cts []sto
 	if len(projs) == 0 && len(cts) == 0 {
 		return "empty"
 	}
-	dockerOK := s.Docker != nil && s.Docker.Available()
 	bad := false
 	check := func(ref, fallback string) string {
-		if dockerOK && ref != "" {
-			if x, err := s.Docker.InspectStatus(ref); err == nil && x != "" {
-				return x
-			}
-		}
-		return fallback
+		return s.containerLiveStatus(ref, fallback)
 	}
 	for _, p := range projs {
 		if st := check(p.ContainerID, p.Status); st == "running" {
@@ -534,14 +523,11 @@ func (s *Server) agentFindContainer(id string) (*store.Container, error) {
 // Secret values are never returned.
 func (s *Server) agentContainerDetail(c *store.Container) map[string]any {
 	dockerOK := s.Docker != nil && s.Docker.Available()
-	status := c.Status
+	status := s.containerLiveStatus(c.DockerID, c.Status)
 	health := "unknown"
 	networks := []string{}
 	image := c.Image
 	if dockerOK && c.DockerID != "" {
-		if x, err := s.Docker.InspectStatus(c.DockerID); err == nil && x != "" {
-			status = x
-		}
 		if insp := s.agentInspect(c.DockerID); insp["available"] == true {
 			if h, _ := insp["health"].(string); h != "" {
 				health = h
@@ -750,6 +736,7 @@ func (s *Server) deployRoomArchive(r *store.Room, updating bool, archivePath, fo
 	s.Projects.WriteRoomJob(roomID, projects.DeployMeta{Status: "deploying", Job: job})
 	fail := func(err error) (any, error) {
 		s.Projects.WriteRoomJob(roomID, projects.DeployMeta{Status: "error", Job: job})
+		_ = appendLog(s.Cfg.DataDir, "deploy", "AGENT "+job+" FAIL room="+roomID+" err="+err.Error())
 		return nil, err
 	}
 
@@ -851,6 +838,7 @@ func (s *Server) deployRoomArchive(r *store.Room, updating bool, archivePath, fo
 		}
 		_ = os.RemoveAll(stage)
 		s.Projects.WriteRoomJob(roomID, projects.DeployMeta{Status: status, Job: job})
+		_ = appendLog(s.Cfg.DataDir, "deploy", "AGENT "+job+" room="+roomID+" status="+status)
 		return map[string]any{
 			"room_id": roomID, "kind": r.Kind, "mode": job,
 			"stored": map[string]any{"dir": dest, "files": st.Files, "bytes": st.Bytes, "unwrapped": unwrapped},
@@ -910,6 +898,7 @@ func (s *Server) deployRoomArchive(r *store.Room, updating bool, archivePath, fo
 		}
 	}
 	s.Projects.WriteRoomJob(roomID, projects.DeployMeta{Status: status, Job: job})
+	_ = appendLog(s.Cfg.DataDir, "deploy", "AGENT "+job+" room="+roomID+" status="+status)
 	return map[string]any{
 		"room_id": roomID, "kind": r.Kind, "mode": job,
 		"stored": map[string]any{"dir": dest, "files": st.Files, "bytes": st.Bytes, "unwrapped": unwrapped},
@@ -956,15 +945,9 @@ func (s *Server) agentDeploymentStatus(r *store.Room) map[string]any {
 	cts, _ := s.Store.ListContainers(r.ID)
 	roomJob := s.Projects.ReadRoomJob(r.ID)
 	hist := s.Projects.ReadUpdateHistory(r.ID)
-	dockerOK := s.Docker != nil && s.Docker.Available()
 	items := make([]map[string]any, 0, len(projs))
 	for _, p := range projs {
-		st := p.Status
-		if dockerOK && p.ContainerID != "" {
-			if x, err := s.Docker.InspectStatus(p.ContainerID); err == nil && x != "" {
-				st = x
-			}
-		}
+		st := s.containerLiveStatus(p.ContainerID, p.Status)
 		meta := s.Projects.ReadDeployMeta(r.ID, p.ID)
 		items = append(items, map[string]any{
 			"project_id": p.ID, "name": p.Name, "status": st,

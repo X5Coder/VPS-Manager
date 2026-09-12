@@ -253,9 +253,7 @@ func (s *Server) projectView(room *store.Room, p *store.Project) map[string]any 
 					st = live
 				}
 			}
-			if st == "exited" || st == "restarting" || st == "dead" {
-				st = "error"
-			}
+			st = normalizeLiveStatus(st, p.Status)
 			staleMeta := meta.Status == "deploying" || meta.Status == "building"
 			staleProj := p.Status == "deploying" || p.Status == "building"
 			if (staleMeta || staleProj) && st != "deploying" && st != "building" && st != "" {
