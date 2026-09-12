@@ -23,6 +23,7 @@ import (
 	"github.com/x5coder/vps-rooms/internal/stack"
 	"github.com/x5coder/vps-rooms/internal/store"
 	"github.com/x5coder/vps-rooms/internal/telegram"
+	"github.com/x5coder/vps-rooms/internal/version"
 )
 
 type Server struct {
@@ -77,6 +78,7 @@ func New(cfg config.Config, st *store.Store, docker *dockerx.Client, hub *metric
 
 func (s *Server) routes() {
 	s.Mux.HandleFunc("/api/health", s.handleHealth)
+	s.Mux.HandleFunc("/api/version", s.withGate(s.handleVersion))
 	s.Mux.HandleFunc("/api/gate/status", s.handleGateStatus)
 	s.Mux.HandleFunc("/api/gate/challenge", s.handleGateChallenge)
 	s.Mux.HandleFunc("/api/gate/verify", s.handleGateVerify)
@@ -184,6 +186,10 @@ func serveIndex(w http.ResponseWriter, r *http.Request, webFS http.FileSystem) {
 	}
 	defer f.Close()
 	stat, _ := f.Stat()
+	// index.html references versioned bundles (?v=); never cache the shell
+	// itself so clients always discover the newest bundle.
+	w.Header().Set("Cache-Control", "no-store, max-age=0, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
 	http.ServeContent(w, r, "index.html", stat.ModTime(), f.(io.ReadSeeker))
 }
 
@@ -478,6 +484,14 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"docker": s.Docker != nil && s.Docker.Available(),
 		"time":   time.Now().UTC().Format(time.RFC3339),
 	})
+}
+
+func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, 405, "method")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"version": version.Version})
 }
 
 func (s *Server) handleAdminRestore(w http.ResponseWriter, r *http.Request) {
@@ -1129,8 +1143,13 @@ func (s *Server) containerLiveStatus(ref, recorded string) string {
 		return recorded
 	}
 	st, err := s.Docker.InspectStatus(ref)
-	if err != nil || st == "" || st == "missing" {
+	if err != nil || st == "" {
 		return recorded
+	}
+	if st == "missing" {
+		// A reference that used to resolve but is gone means the runtime
+		// vanished unexpectedly — that is an error, not a clean stop.
+		return "error"
 	}
 	return normalizeLiveStatus(st, recorded)
 }
@@ -1176,11 +1195,21 @@ func (s *Server) roomContainersJSON(roomID string) []map[string]any {
 		st := c.Status
 		if s.Docker != nil {
 			ref := c.DockerID
-			if x, err := s.Docker.InspectStatus(ref); err == nil && x != "" && x != "missing" {
+			if x, err := s.Docker.InspectStatus(ref); err == nil && x != "" {
 				st = x
-			} else if c.Name != "" {
-				if x, err := s.Docker.InspectStatus(c.Name); err == nil && x != "" && x != "missing" {
+			}
+			if st == "missing" && c.Name != "" {
+				if x, err := s.Docker.InspectStatus(c.Name); err == nil && x != "" {
 					st = x
+				}
+			}
+			if st == "missing" {
+				// A referenced runtime that vanished is an error — but a
+				// container that never existed yet keeps its record.
+				if strings.TrimSpace(ref) != "" {
+					st = "error"
+				} else {
+					st = c.Status
 				}
 			}
 			st = normalizeLiveStatus(st, c.Status)

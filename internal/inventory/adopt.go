@@ -154,12 +154,23 @@ func adoptRoom(st *store.Store, docker *dockerx.Client, rs *rooms.Service, runti
 		}
 		if docker != nil && p.HostPort > 0 {
 			if gid, gst, gimg := docker.BriefByPublish(p.HostPort); gst != "missing" && gid != "" {
-				p.ContainerID = gid
-				p.Status = gst
-				if gimg != "" && !strings.HasPrefix(gimg, "sha256:") {
-					p.Image = gimg
+				// Adopt the publisher only when the current binding is
+				// dead or missing — never overwrite a live binding with
+				// whatever happens to hold the port (stale/transient).
+				curAlive := false
+				if p.ContainerID != "" {
+					if _, cst, _ := docker.ContainerBrief(p.ContainerID); cst == "running" || cst == "stopped" {
+						curAlive = true
+					}
 				}
-				_ = st.UpdateProject(p)
+				if !curAlive {
+					p.ContainerID = gid
+					p.Status = gst
+					if gimg != "" && !strings.HasPrefix(gimg, "sha256:") {
+						p.Image = gimg
+					}
+					_ = st.UpdateProject(p)
+				}
 			}
 		}
 		st.SyncContainerFromProject(p)

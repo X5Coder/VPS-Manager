@@ -974,7 +974,30 @@ func (s *Service) ApplyRoomEnv(roomID string) error {
 		if composeDir == "" {
 			composeDir = pdir
 		}
+		useCompose := false
 		if dockerx.ComposeFile(composeDir) != "" {
+			useCompose = true
+			if meta.ComposeDir == "" && meta.ComposeProject == "" {
+				// Fallback dir only: a stray compose file inside
+				// image-built source must not hijack the panel container
+				// and fight it over ports. Take the compose path only
+				// when its stack is actually running (a Created/zombie
+				// leftover from a failed attempt does not count).
+				managed := false
+				if cl, _ := s.Docker.ListCompose("vr" + store.ShortRoomID(roomID)); len(cl) > 0 {
+					for _, cc := range cl {
+						if _, st, _ := s.Docker.ContainerBrief(cc.Name); st == "running" {
+							managed = true
+							break
+						}
+					}
+				}
+				if !managed {
+					useCompose = false
+				}
+			}
+		}
+		if useCompose {
 			if err := tryCompose(composeDir, meta.ComposeProject); err != nil {
 				return err
 			}
