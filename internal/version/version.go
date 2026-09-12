@@ -3,4 +3,4 @@
 package version
 
 // Version is the current panel release (sidebar footer + /api/version).
-const Version = "v6"
+const Version = "v7"

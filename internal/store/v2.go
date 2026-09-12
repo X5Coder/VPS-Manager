@@ -144,6 +144,27 @@ func (s *Store) DeleteAgentToken(id string) error {
 	return err
 }
 
+// RotateAgentToken replaces a token's secret (same id and name) and returns
+// the updated record. The old secret stops working immediately.
+func (s *Store) RotateAgentToken(id string, prefix, hash string, now time.Time) (AgentToken, error) {
+	var t AgentToken
+	_, err := s.DB.Exec(`UPDATE agent_tokens SET token_hash=?, prefix=?, created_at=?, last_used_at='' WHERE id=?`,
+		hash, prefix, now.UTC().Format(time.RFC3339), id)
+	if err != nil {
+		return t, err
+	}
+	row := s.DB.QueryRow(`SELECT id,name,prefix,created_at,last_used_at FROM agent_tokens WHERE id=?`, id)
+	var created, used string
+	if err := row.Scan(&t.ID, &t.Name, &t.Prefix, &created, &used); err != nil {
+		return t, err
+	}
+	t.CreatedAt, _ = time.Parse(time.RFC3339, created)
+	if used != "" {
+		t.LastUsedAt, _ = time.Parse(time.RFC3339, used)
+	}
+	return t, nil
+}
+
 // seedContainersFromProjects copies each existing project row into containers/images
 // once. Running Docker containers are not touched.
 func (s *Store) seedContainersFromProjects() error {

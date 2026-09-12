@@ -1604,8 +1604,22 @@ func (s *Server) handleAgentTokens(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAgentTokenByID(w http.ResponseWriter, r *http.Request) {
 	if s.requireOwner(w, r) == nil { return }
+	rest := strings.TrimPrefix(r.URL.Path, "/api/agent/tokens/")
+	if strings.HasSuffix(rest, "/rotate") && r.Method == http.MethodPost {
+		id := strings.TrimSuffix(rest, "/rotate")
+		if _, err := uuid.Parse(id); err != nil { writeErr(w, 400, "invalid token id"); return }
+		secret, err := newAgentSecret()
+		if err != nil { writeErr(w, 500, "could not generate token"); return }
+		digest := sha256.Sum256([]byte(secret))
+		token, err := s.Store.RotateAgentToken(id, secret[:15], hex.EncodeToString(digest[:]), time.Now().UTC())
+		if err != nil { writeErr(w, 500, err.Error()); return }
+		if token.ID == "" { writeErr(w, 404, "token not found"); return }
+		// Only response carrying the new secret — old one stops working now.
+		writeJSON(w, 200, map[string]any{"token": token, "secret": secret, "endpoint": s.agentEndpoint(r)})
+		return
+	}
 	if r.Method != http.MethodDelete { writeErr(w, 405, "method"); return }
-	id := strings.TrimPrefix(r.URL.Path, "/api/agent/tokens/")
+	id := rest
 	if _, err := uuid.Parse(id); err != nil { writeErr(w, 400, "invalid token id"); return }
 	if err := s.Store.DeleteAgentToken(id); err != nil { writeErr(w, 500, err.Error()); return }
 	w.WriteHeader(http.StatusNoContent)
