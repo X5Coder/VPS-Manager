@@ -1908,7 +1908,7 @@
         </div>
         <div class="panel"><h3>Access tokens</h3>
           <p class="muted" style="font-size:.8rem">Tap the copy icon to issue a new full key and copy it at once. The old key stops working immediately.</p>
-          ${tokens.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>Secret</th><th>Created</th><th>Last used</th><th></th></tr></thead><tbody>${tokens.map((t) => `<tr><td>${esc(t.name)}</td><td><span class="mono">•••••• <button type="button" class="icon-btn copy-ico" data-agent-copykey="${esc(t.id)}" title="Copy full key" aria-label="Copy full key">${ico("copy")}</button></span></td><td>${esc(new Date(t.created_at).toLocaleString())}</td><td>${t.last_used_at ? esc(new Date(t.last_used_at).toLocaleString()) : "Never"}</td><td><div class="row-actions"><button class="btn sm danger action" data-agent-revoke="${esc(t.id)}">Revoke</button></div></td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">No token has been created yet.</p>`}
+          ${tokens.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>Secret</th><th>Created</th><th>Last used</th><th></th></tr></thead><tbody>${tokens.map((t) => `<tr><td>${esc(t.name)}</td><td><span class="mono">•••••• <button type="button" class="icon-btn copy-ico tok-key-copy" data-agent-copykey="${esc(t.id)}" title="Copy full key" aria-label="Copy full key">${ico("copy")}</button></span></td><td>${esc(new Date(t.created_at).toLocaleString())}</td><td>${t.last_used_at ? esc(new Date(t.last_used_at).toLocaleString()) : "Never"}</td><td><div class="row-actions"><button class="btn sm danger action" data-agent-revoke="${esc(t.id)}">Revoke</button></div></td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">No token has been created yet.</p>`}
         </div>`;
 
       shell(`
@@ -1972,12 +1972,15 @@
       document.querySelectorAll("[data-agent-copykey]").forEach((button) => button.addEventListener("click", async (e) => {
         e.preventDefault();
         e.stopPropagation();
+        if (button.disabled || button.classList.contains("busy")) return;
+        button.disabled = true;
+        button.classList.add("busy");
         try {
           const rotated = await api(`/api/agent/tokens/${encodeURIComponent(button.dataset.agentCopykey)}/rotate`, { method: "POST", body: "{}" });
           await copyText(rotated.secret || "");
           toast("Full key copied");
-          renderAgent();
         } catch (ex) { toast(ex.message || "Could not copy key"); }
+        finally { button.disabled = false; button.classList.remove("busy"); }
       }));
     } catch (e) {
       if (alive("agent", gen)) shell(`<p class="error">${esc(e.message)}</p>`, "agent");

@@ -3367,6 +3367,9 @@ body.nav-open .mobile-toggle span:nth-child(3) {
 @keyframes bkspin { to { transform: rotate(360deg); } }
 /* copy icon morphs to a check */
 .copy-ico.copied { background: rgba(109,255,176,.16); border-color: rgba(109,255,176,.55); color: #6dffb0; animation: cpop .3s ease; }
+/* small key-copy icon inside the tokens table */
+.tok-key-copy { width: 24px; height: 24px; border-radius: 7px; }
+.tok-key-copy svg { width: 13px; height: 13px; display: block; }
 @keyframes cpop { 0% { transform: scale(.75); } 60% { transform: scale(1.12); } 100% { transform: scale(1); } }
 
 /* --- agent tab animation --- */
