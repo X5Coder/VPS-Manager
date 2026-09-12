@@ -2366,10 +2366,12 @@ ${(function () {
             <div class="mng-row">
               <div class="field mng-grow"><label>SSL status</label><input readonly value="${esc(mainProj.ssl_status || "—")}" /></div>
               <div class="mng-btns">
-                <button class="btn primary sm action" type="submit" title="Bind domain" id="bind-domain-btn">Bind</button>
-                <button class="btn sm action" type="button" id="test-domain-btn" title="Test domain connection">Test</button>
+                <button class="btn primary sm action" type="submit" title="Bind domain">Bind</button>
+                <button class="btn sm action" type="button" id="domain-https" title="Setup HTTPS certificate">HTTPS</button>
                 <button class="icon-btn danger" type="button" id="clear-domain" title="Disable domain" aria-label="Disable domain">${ico("trash", 14)}</button>
               </div>
+            </div>
+            <div id="domtest"></div>
             </div>
           </form>
           <p class="error" id="linkerr"></p>
@@ -2750,6 +2752,9 @@ ${(function () {
           const sslInput = e.target.querySelector("input[readonly]");
           if (sslInput && res.ssl_status) sslInput.value = res.ssl_status;
           paintDomTest(document.querySelector("#domain-test-result"), document.querySelector("#linkok"), document.querySelector("#linkerr"), res.test);
+          const httpsNote = res.https && res.https.note ? `<div>HTTPS: ${esc(res.https.note)}</div>` : "";
+          const testBox = document.querySelector("#domain-test-result");
+          if (testBox && httpsNote) testBox.innerHTML += httpsNote;
           toast("Domain bound");
         } catch (ex) { 
           if (linkErr) linkErr.textContent = ex.message;
@@ -2850,6 +2855,25 @@ ${(function () {
         await api(`/api/projects/${mainProj.id}/domain`, { method: "POST", body: JSON.stringify({ domain: "", enabled: false }) });
         state.showNetPanel = false;
         render();
+      });
+      bindAction(document.querySelector("#domain-https"), async () => {
+        const btn = document.querySelector("#domain-https");
+        if (btn) { btn.disabled = true; btn.textContent = "Working…"; }
+        try {
+          const res = await api(`/api/projects/${mainProj.id}/domain-ssl`, { method: "POST", body: "{}" });
+          const sslInput = document.querySelector("#domain-form input[readonly]");
+          if (sslInput && res.ssl_status) sslInput.value = res.ssl_status;
+          paintDomTest(document.querySelector("#domain-test-result"), document.querySelector("#linkok"), document.querySelector("#linkerr"), res.test);
+          const testBox = document.querySelector("#domain-test-result");
+          if (testBox && res.https && res.https.note) testBox.innerHTML += `<div>HTTPS: ${esc(res.https.note)}</div>`;
+          toast(res.https && res.https.cert ? "HTTPS enabled" : "HTTPS pending — see note");
+        } catch (ex) {
+          const linkErr2 = document.querySelector("#linkerr");
+          if (linkErr2) linkErr2.textContent = ex.message;
+          else toast(ex.message || "HTTPS failed");
+        } finally {
+          if (btn) { btn.disabled = false; btn.textContent = "HTTPS"; }
+        }
       });
       // background room exec — survives refresh, output only after done
       const roomExecForm = document.querySelector("#room-exec-form");

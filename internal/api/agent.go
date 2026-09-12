@@ -1536,8 +1536,24 @@ func (s *Server) agentConnectDomain(roomID string, in map[string]any) (any, erro
 	if v, ok := in["ssl"].(bool); ok {
 		ssl = v
 	}
+	https := map[string]any{"cert": false, "note": ""}
 	sslStatus := target.SSLStatus
-	if !ssl {
+	if ssl {
+		if certOK, note := proxy.EnsureDomainHTTPS(domain); certOK {
+			_ = s.syncProxy()
+			https["cert"] = true
+			https["note"] = note
+			if fresh, _ := s.Store.GetProject(target.ID); fresh != nil {
+				target = fresh
+			}
+			sslStatus = target.SSLStatus
+		} else {
+			target.SSLStatus = "http-only"
+			_ = s.Store.UpdateProject(*target)
+			sslStatus = "http-only"
+			https["note"] = note
+		}
+	} else {
 		target.SSLStatus = "http-only"
 		_ = s.Store.UpdateProject(*target)
 		sslStatus = "http-only"
@@ -1546,6 +1562,7 @@ func (s *Server) agentConnectDomain(roomID string, in map[string]any) (any, erro
 		"room_id": roomID, "domain": domain, "project": target.Name,
 		"container_id": agentString(in, "container_id"),
 		"host_port": target.HostPort, "ssl": ssl, "ssl_status": sslStatus,
+		"https": https,
 	}, nil
 }
 

@@ -1447,6 +1447,22 @@ func (s *Server) handleProjectByID(w http.ResponseWriter, r *http.Request) {
 		if en && strings.TrimSpace(p.Domain) != "" {
 			// Real end-to-end test right after binding (no page refresh needed).
 			res["test"] = s.testDomainResult(p.Domain)
+			// Automatic HTTPS: reuse a live cert or issue one, then rewrite
+			// the vhost WITH :443. Never fails the bind itself.
+			if certOK, note := proxy.EnsureDomainHTTPS(p.Domain); certOK {
+				_ = s.syncProxy()
+				if fresh, _ := s.Store.GetProject(p.ID); fresh != nil {
+					p = fresh
+				}
+				res["ssl_status"] = p.SSLStatus
+				res["https"] = map[string]any{"cert": true, "note": note}
+				res["test"] = s.testDomainResult(p.Domain)
+			} else {
+				p.SSLStatus = "http-only"
+				_ = s.Store.UpdateProject(*p)
+				res["ssl_status"] = p.SSLStatus
+				res["https"] = map[string]any{"cert": false, "note": note}
+			}
 		}
 		writeJSON(w, 200, res)
 	case "wipe-data":
@@ -1481,6 +1497,30 @@ func (s *Server) handleProjectByID(w http.ResponseWriter, r *http.Request) {
 		}
 		p.ExternalURL = strings.TrimSpace(body.URL)
 		writeJSON(w, 200, map[string]any{"ok": "1", "links": s.projectLinks(r, p)})
+	case "domain-ssl":
+		// Self-service HTTPS: (re)run certificate setup for the bound
+		// domain without rebinding. Never refreshes anything by itself.
+		if r.Method != http.MethodPost {
+			writeErr(w, 405, "method")
+			return
+		}
+		if strings.TrimSpace(p.Domain) == "" {
+			writeErr(w, 400, "bind a domain first")
+			return
+		}
+		certOK, note := proxy.EnsureDomainHTTPS(p.Domain)
+		if certOK {
+			_ = s.syncProxy()
+			p.SSLStatus = "active"
+		} else {
+			p.SSLStatus = "http-only"
+		}
+		_ = s.Store.UpdateProject(*p)
+		writeJSON(w, 200, map[string]any{
+			"ok": "1", "domain": p.Domain, "ssl_status": p.SSLStatus,
+			"https": map[string]any{"cert": certOK, "note": note},
+			"test":  s.testDomainResult(p.Domain),
+		})
 	case "image":
 		if r.Method != http.MethodPost {
 			writeErr(w, 405, "method")
