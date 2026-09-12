@@ -1962,20 +1962,34 @@
       const showCreatedSecret = async (secret, ep) => {
         await copyText(secret);
         shell(`<div class="agent-page"><div class="topbar"><div><h2>x5coder-agent</h2><div class="sub">Token created</div></div></div>
-          <div class="panel agent-anim" key="created"><h3>Copy this token now</h3>
+          <div class="panel agent-anim" key="created"><h3>API keys</h3>
           <p class="error">This secret will not be displayed again.</p>
-          <div class="tok-secret-row"><code class="mono copyable" id="tok-secret-val" data-copy="${esc(secret)}" title="Tap to copy">••••••••••••••••</code>
-            <button type="button" class="icon-btn" id="tok-eye" title="Reveal key" aria-label="Reveal key">${ico("eye")}</button>
-            ${copyIcoBtn(secret, "Copy secret")}
+          <div class="field full"><label>Secret key — tap the field to select it all</label>
+            <input id="tok-secret-val" class="mono tok-key-input" type="password" readonly autocomplete="off" spellcheck="false" value="${esc(secret)}" data-copy="${esc(secret)}" />
+          </div>
+          <div class="full row-actions">
+            <button type="button" class="btn primary action" id="tok-copy-full">Copy full key</button>
+            <button type="button" class="btn action" id="tok-eye">Reveal</button>
+            <button type="button" class="btn action" id="agent-back">Done</button>
           </div>
           <p class="muted">Tools URL: <span class="mono">${esc(ep)}</span></p>
-          <button class="btn primary action" id="agent-back">Done</button></div></div>`, "agent");
+          </div></div>`, "agent");
         bindCopyables();
-        let revealed = false;
-        document.querySelector("#tok-eye")?.addEventListener("click", (e) => {
-          revealed = !revealed;
-          document.querySelector("#tok-secret-val").textContent = revealed ? secret : "••••••••••••••••";
-          e.currentTarget.innerHTML = revealed ? ico("eyeOff") : ico("eye");
+        const keyInput = document.querySelector("#tok-secret-val");
+        const eyeBtn = document.querySelector("#tok-eye");
+        const paintEye = () => { if (eyeBtn) eyeBtn.textContent = keyInput && keyInput.type === "text" ? "Hide" : "Reveal"; };
+        keyInput?.addEventListener("focus", () => keyInput.select());
+        keyInput?.addEventListener("click", () => keyInput.select());
+        eyeBtn?.addEventListener("click", () => {
+          if (!keyInput) return;
+          keyInput.type = keyInput.type === "text" ? "password" : "text";
+          keyInput.select();
+          paintEye();
+        });
+        paintEye();
+        document.querySelector("#tok-copy-full")?.addEventListener("click", async () => {
+          await copyText(secret);
+          keyInput?.select();
         });
         document.querySelector("#agent-back")?.addEventListener("click", () => renderAgent());
       };

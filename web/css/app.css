@@ -3404,6 +3404,13 @@ body.nav-open .mobile-toggle span:nth-child(3) {
   padding: 10px 12px; margin: 10px 0;
 }
 .tok-secret-row code { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .85rem; }
+/* dedicated API-key field: full value, never truncated, tap selects all */
+.tok-key-input {
+  width: 100%; box-sizing: border-box;
+  background: #0a0a0a; border: 1px solid var(--line); border-radius: 10px;
+  color: var(--text); padding: 12px; font-size: .85rem;
+  overflow-x: auto;
+}
 /* agent modal: centered with transform animation (same show/hide language as other modals) */
 .agent-modal-card { width: min(440px, 100%); }
 
