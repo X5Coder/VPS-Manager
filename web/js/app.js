@@ -1936,8 +1936,8 @@
           <div class="json-wrap">${copyIcoBtn(rawToolsJSON, "Copy tools JSON", "json-copy")}<div class="json-scroll"><pre class="json-colored mono">${toolsJSON}</pre></div></div>
         </div>
         <div class="panel"><h3>Access tokens</h3>
-          ${tokens.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>Prefix</th><th>Created</th><th>Last used</th><th></th></tr></thead><tbody>${tokens.map((t) => `<tr><td>${esc(t.name)}</td><td class="mono"><span class="tok-prefix">${esc(t.prefix)}… ${copyIcoBtn(t.prefix, "Copy prefix")}</span></td><td>${esc(new Date(t.created_at).toLocaleString())}</td><td>${t.last_used_at ? esc(new Date(t.last_used_at).toLocaleString()) : "Never"}</td><td><button class="btn sm danger action" data-agent-revoke="${esc(t.id)}">Revoke</button></td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">No token has been created yet.</p>`}
           ${apiBulletsHTML}
+          ${tokens.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>Prefix</th><th>Created</th><th>Last used</th><th></th></tr></thead><tbody>${tokens.map((t) => `<tr><td>${esc(t.name)}</td><td class="mono"><span class="tok-prefix">${esc(t.prefix)}… ${copyIcoBtn(t.prefix, "Copy prefix")}</span></td><td>${esc(new Date(t.created_at).toLocaleString())}</td><td>${t.last_used_at ? esc(new Date(t.last_used_at).toLocaleString()) : "Never"}</td><td><button class="btn sm danger action" data-agent-revoke="${esc(t.id)}">Revoke</button></td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">No token has been created yet.</p>`}
         </div>`;
 
       shell(`
