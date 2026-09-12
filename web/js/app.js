@@ -1857,7 +1857,6 @@
     try {
       const data = await api("/api/agent/tokens");
       if (!alive("agent", gen)) return;
-      state.agentSecrets = state.agentSecrets || {};
       const tokens = data.tokens || [];
       const tools = (data.tools && data.tools.length ? data.tools : [{ name: "get_vps_overview", description: "Get the overall VPS status including CPU, RAM, disk, network, Docker, storage usage, and resource usage.", input_schema: { type: "object", properties: {}, required: [] } }]);
       const toolCount = tools.length;
@@ -1908,14 +1907,8 @@
           <div class="json-wrap">${copyIcoBtn(rawToolsJSON, "Copy tools JSON", "json-copy")}<div class="json-scroll"><pre class="json-colored mono">${toolsJSON}</pre></div></div>
         </div>
         <div class="panel"><h3>Access tokens</h3>
-          <p class="muted" style="font-size:.8rem">A new key is shown once — tap its copy icon to save the full key.</p>
-          ${tokens.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>Secret</th><th>Prefix</th><th>Created</th><th>Last used</th><th></th></tr></thead><tbody>${tokens.map((t) => {
-            const known = state.agentSecrets[t.id] || "";
-            const secretCell = known
-              ? `<span class="mono">•••••• ${copyIcoBtn(known, "Copy full key")}</span>`
-              : `<span class="mono muted" title="Shown once at creation — rotate to get a new full key">••••••</span>`;
-            return `<tr><td>${esc(t.name)}</td><td>${secretCell}</td><td class="mono"><span class="tok-prefix">${esc(t.prefix)}… ${copyIcoBtn(t.prefix, "Copy prefix")}</span></td><td>${esc(new Date(t.created_at).toLocaleString())}</td><td>${t.last_used_at ? esc(new Date(t.last_used_at).toLocaleString()) : "Never"}</td><td><div class="row-actions"><button class="btn sm action" data-agent-rotate="${esc(t.id)}">Rotate</button><button class="btn sm danger action" data-agent-revoke="${esc(t.id)}">Revoke</button></div></td></tr>`;
-          }).join("")}</tbody></table></div>` : `<p class="muted">No token has been created yet.</p>`}
+          <p class="muted" style="font-size:.8rem">Tap the copy icon to issue a new full key and copy it at once. The old key stops working immediately.</p>
+          ${tokens.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>Secret</th><th>Created</th><th>Last used</th><th></th></tr></thead><tbody>${tokens.map((t) => `<tr><td>${esc(t.name)}</td><td><span class="mono">•••••• <button type="button" class="icon-btn copy-ico" data-agent-copykey="${esc(t.id)}" title="Copy full key" aria-label="Copy full key">${ico("copy")}</button></span></td><td>${esc(new Date(t.created_at).toLocaleString())}</td><td>${t.last_used_at ? esc(new Date(t.last_used_at).toLocaleString()) : "Never"}</td><td><div class="row-actions"><button class="btn sm danger action" data-agent-revoke="${esc(t.id)}">Revoke</button></div></td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">No token has been created yet.</p>`}
         </div>`;
 
       shell(`
@@ -1957,11 +1950,8 @@
             const fd = new FormData(e.currentTarget);
             const created = await api("/api/agent/tokens", { method: "POST", body: JSON.stringify({ name: fd.get("name") }) });
             done(false);
-            if (created && created.token && created.token.id && created.secret) {
-              state.agentSecrets[created.token.id] = created.secret;
-            }
             await copyText(created.secret || "");
-            toast("Token created — tap its copy icon to save the full key");
+            toast("Token created — use its copy icon anytime for a fresh full key");
             renderAgent();
           } catch (ex) { if (error) error.textContent = ex.message || "Could not create token"; }
         });
@@ -1979,17 +1969,15 @@
         try { await api(`/api/agent/tokens/${encodeURIComponent(button.dataset.agentRevoke)}`, { method: "DELETE" }); toast("Token revoked"); renderAgent(); }
         catch (ex) { toast(ex.message || "Could not revoke token"); }
       }));
-      document.querySelectorAll("[data-agent-rotate]").forEach((button) => button.addEventListener("click", async () => {
-        if (!confirm("Rotate this token? A new full key is issued and the old one stops working immediately.")) return;
+      document.querySelectorAll("[data-agent-copykey]").forEach((button) => button.addEventListener("click", async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
         try {
-          const rotated = await api(`/api/agent/tokens/${encodeURIComponent(button.dataset.agentRotate)}/rotate`, { method: "POST", body: "{}" });
-          if (rotated && rotated.token && rotated.token.id && rotated.secret) {
-            state.agentSecrets[rotated.token.id] = rotated.secret;
-          }
+          const rotated = await api(`/api/agent/tokens/${encodeURIComponent(button.dataset.agentCopykey)}/rotate`, { method: "POST", body: "{}" });
           await copyText(rotated.secret || "");
-          toast("Rotated — tap its copy icon to save the new full key");
+          toast("Full key copied");
           renderAgent();
-        } catch (ex) { toast(ex.message || "Could not rotate token"); }
+        } catch (ex) { toast(ex.message || "Could not copy key"); }
       }));
     } catch (e) {
       if (alive("agent", gen)) shell(`<p class="error">${esc(e.message)}</p>`, "agent");
