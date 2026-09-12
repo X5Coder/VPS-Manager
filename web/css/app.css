@@ -3380,6 +3380,9 @@ body.nav-open .mobile-toggle span:nth-child(3) {
 .agent-sub { margin: 14px 0 8px; font-size: .86rem; color: #fff; }
 .cmd-row { display: flex; align-items: flex-start; gap: 8px; }
 .cmd-row pre { flex: 1 1 auto; min-width: 0; overflow-x: auto; }
+/* API bullets: full text always, never truncated — copy takes everything */
+.api-points { list-style: disc inside; margin: 10px 0 0; padding-inline-start: 18px; display: flex; flex-direction: column; gap: 10px; font-size: .84rem; line-height: 1.65; }
+.api-points pre { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
 .cmd-row .icon-btn { margin-top: 2px; }
 .ai-ctx { max-height: 120px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
 /* colorized HTTP snippets in Docs */

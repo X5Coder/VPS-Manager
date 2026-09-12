@@ -1862,6 +1862,35 @@
       const toolCount = tools.length;
       const toolLabel = toolCount === 1 ? "1 controlled VPS tool" : toolCount + " controlled VPS tools";
       const endpoint = data.endpoint || "";
+      const apiExampleBody = (t) => {
+        const schema = t.input_schema || {};
+        const req = schema.required || [];
+        if (!req.length) return "{}";
+        const props = schema.properties || {};
+        const o = {};
+        req.forEach((k) => {
+          const ty = (props[k] && props[k].type) || "string";
+          if (ty === "number" || ty === "integer") o[k] = 5;
+          else if (ty === "boolean") o[k] = true;
+          else if (ty === "object") o[k] = {};
+          else if (props[k] && props[k].enum && props[k].enum.length) o[k] = props[k].enum[0];
+          else o[k] = "<" + k + ">";
+        });
+        return JSON.stringify(o);
+      };
+      const apiBullets = [
+        { label: "List all tools — public, no key needed", text: "GET " + endpoint },
+        { label: "Auth header for every call", text: "Authorization: Bearer <secret>" },
+        ...tools.map((t) => {
+          const body = apiExampleBody(t);
+          return {
+            label: t.name + " — POST, key required",
+            text: "curl -s -X POST " + endpoint + "/" + t.name + ' -H "Authorization: Bearer <secret>" -H "Content-Type: application/json" -d \'' + body + "'",
+          };
+        }),
+      ];
+      const apiBulletsHTML = `<h4 class="agent-sub">API</h4>
+        <ul class="fact-list api-points">${apiBullets.map((b) => `<li><strong>${esc(b.label)}</strong><div class="cmd-card cmd-row"><pre class="mono">${esc(b.text)}</pre>${copyIcoBtn(b.text, "Copy: " + b.label)}</div></li>`).join("")}</ul>`;
       const tab = state.agentTab || "tools";
       const toolsJSON = highlightAgentJSON(tools);
       const rawToolsJSON = JSON.stringify(tools, null, 2);
@@ -1908,6 +1937,7 @@
         </div>
         <div class="panel"><h3>Access tokens</h3>
           ${tokens.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>Prefix</th><th>Created</th><th>Last used</th><th></th></tr></thead><tbody>${tokens.map((t) => `<tr><td>${esc(t.name)}</td><td class="mono"><span class="tok-prefix">${esc(t.prefix)}… ${copyIcoBtn(t.prefix, "Copy prefix")}</span></td><td>${esc(new Date(t.created_at).toLocaleString())}</td><td>${t.last_used_at ? esc(new Date(t.last_used_at).toLocaleString()) : "Never"}</td><td><button class="btn sm danger action" data-agent-revoke="${esc(t.id)}">Revoke</button></td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">No token has been created yet.</p>`}
+          ${apiBulletsHTML}
         </div>`;
 
       shell(`
