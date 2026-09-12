@@ -2366,12 +2366,15 @@ ${(function () {
             <div class="mng-row">
               <div class="field mng-grow"><label>SSL status</label><input readonly value="${esc(mainProj.ssl_status || "—")}" /></div>
               <div class="mng-btns">
-                <button class="btn primary sm action" type="submit" title="Bind domain">Bind</button>
+                <button class="btn primary sm action" type="submit" title="Bind domain" id="bind-domain-btn">Bind</button>
+                <button class="btn sm action" type="button" id="test-domain-btn" title="Test domain connection">Test</button>
                 <button class="icon-btn danger" type="button" id="clear-domain" title="Disable domain" aria-label="Disable domain">${ico("trash", 14)}</button>
               </div>
             </div>
           </form>
           <p class="error" id="linkerr"></p>
+          <p class="ok-text hidden" id="linkok"></p>
+          <p class="muted mng-note" id="domain-test-result"></p>
           <p class="muted mng-note">Applied via nginx proxy on this VPS.</p>
         </section>`;
         })()}
@@ -2714,13 +2717,134 @@ ${(function () {
         state.showNetPanel = false;
         render();
       });
+      const paintDomTest = (box, okBox, errBox, t) => {
+        if (!box || !t) return;
+        const row = (label, ok, detail) => `<div>${ok ? "✓" : "✗"} <strong>${esc(label)}:</strong> ${esc(detail)}</div>`;
+        const lh = t.local_http || {}, dh = t.public_http || {}, ds = t.public_https || {};
+        let h = row("Nginx on this server", !!lh.ok, lh.ok ? ("HTTP " + lh.code) : (lh.error || "failed"));
+        h += row("Public HTTP", !!dh.ok, dh.ok ? ("HTTP " + dh.code) : (dh.error || "unreachable"));
+        h += row("Public HTTPS", !!ds.ok, ds.ok ? ("HTTPS " + ds.code) : (ds.error || "unreachable"));
+        const ips = (t.ips || []).join(", ");
+        h += `<div>DNS: ${esc(ips || "no records")}${t.points_to_server ? " (points here)" : " (CDN/proxy — ok if public answers)"}</div>`;
+        box.innerHTML = `<span style="color:${t.reachable ? "green" : "orange"}">${t.reachable ? "✓" : "⚠"} ${esc(t.message || "")}</span>` + h;
+        if (okBox && t.reachable) { okBox.textContent = "Domain bound and verified"; okBox.classList.remove("hidden"); }
+        if (errBox && !t.reachable) errBox.textContent = t.message || "";
+      };
       document.querySelector("#domain-form")?.addEventListener("submit", async (e) => {
         e.preventDefault();
+        const bindBtn = document.querySelector("#bind-domain-btn");
+        const domainInput = document.querySelector("#domain-form input[name='domain']");
+        const domain = domainInput?.value?.trim() || "";
+        
+        if (!domain) {
+          if (linkErr) linkErr.textContent = "Domain is required";
+          return;
+        }
+
         try {
-          await api(`/api/projects/${mainProj.id}/domain`, { method: "POST", body: JSON.stringify({ domain: new FormData(e.target).get("domain"), enabled: true }) });
-          state.showNetPanel = true;
-          render();
-        } catch (ex) { if (linkErr) linkErr.textContent = ex.message; }
+          bindBtn.disabled = true;
+          bindBtn.textContent = "Binding...";
+          bindBtn.setAttribute("aria-busy", "true");
+          
+          const res = await api(`/api/projects/${mainProj.id}/domain`, { method: "POST", body: JSON.stringify({ domain: domain, enabled: true }) });
+          const sslInput = e.target.querySelector("input[readonly]");
+          if (sslInput && res.ssl_status) sslInput.value = res.ssl_status;
+          paintDomTest(document.querySelector("#domain-test-result"), document.querySelector("#linkok"), document.querySelector("#linkerr"), res.test);
+          toast("Domain bound");
+        } catch (ex) { 
+          if (linkErr) linkErr.textContent = ex.message;
+        } finally {
+          bindBtn.disabled = false;
+          bindBtn.textContent = "Bind";
+          bindBtn.removeAttribute("aria-busy");
+        }
+      });
+
+      // Test domain connection
+      document.querySelector("#test-domain-btn")?.addEventListener("click", async () => {
+        const testBtn = document.querySelector("#test-domain-btn");
+        const domainInput = document.querySelector("#domain-form input[name='domain']");
+        const domain = domainInput?.value?.trim() || "";
+        const testResult = document.querySelector("#domain-test-result");
+        const linkOk = document.querySelector("#linkok");
+        
+        if (!domain) {
+          if (linkErr) linkErr.textContent = "Enter a domain to test";
+          return;
+        }
+
+        try {
+          testBtn.disabled = true;
+          testBtn.textContent = "Testing...";
+          testBtn.setAttribute("aria-busy", "true");
+          if (testResult) testResult.textContent = "Testing domain connection...";
+          if (linkOk) linkOk.classList.add("hidden");
+          if (linkErr) linkErr.textContent = "";
+
+          // Test domain by trying to fetch from it
+          const testUrl = mainProj.ssl_status === "active" ? `https://${domain}` : `http://${domain}`;
+          
+          try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+            
+            const response = await fetch(testUrl, {
+              method: 'HEAD',
+              mode: 'no-cors',
+              signal: controller.signal
+            });
+            
+            clearTimeout(timeoutId);
+            
+            // In no-cors mode we can't read the response, but if it doesn't throw, the domain is reachable
+            if (testResult) {
+              testResult.innerHTML = `<span style="color: green">✓ Domain ${domain} is reachable and responding</span>`;
+            }
+            if (linkOk) {
+              linkOk.textContent = "Domain test passed - connection successful";
+              linkOk.classList.remove("hidden");
+            }
+          } catch (fetchError) {
+            // Even with no-cors, CORS errors might occur, but the domain might still be valid
+            // Let's try a different approach - check DNS resolution via the server
+            try {
+              const dnsResult = await api(`/api/proxy/test-domain`, { 
+                method: "POST", 
+                body: JSON.stringify({ domain: domain }) 
+              });
+              
+              if (dnsResult.reachable) {
+                if (testResult) {
+                  testResult.innerHTML = `<span style="color: green">✓ Domain ${domain} DNS resolution successful - ${dnsResult.ip || 'resolved'}</span>`;
+                }
+                if (linkOk) {
+                  linkOk.textContent = "Domain DNS test passed - can be bound";
+                  linkOk.classList.remove("hidden");
+                }
+              } else {
+                if (testResult) {
+                  testResult.innerHTML = `<span style="color: orange">⚠ Domain ${domain} exists but may not point to this server</span>`;
+                }
+                if (linkErr) linkErr.textContent = "Domain exists but check DNS settings";
+              }
+            } catch (apiError) {
+              // If API endpoint doesn't exist, provide basic feedback
+              if (testResult) {
+                testResult.innerHTML = `<span style="color: orange">⚠ Could not verify domain - ensure DNS points to this server IP</span>`;
+              }
+              if (linkErr) linkErr.textContent = "Domain verification failed - check DNS configuration";
+            }
+          }
+        } catch (ex) {
+          if (testResult) {
+            testResult.innerHTML = `<span style="color: red">✗ Domain test failed: ${ex.message}</span>`;
+          }
+          if (linkErr) linkErr.textContent = ex.message;
+        } finally {
+          testBtn.disabled = false;
+          testBtn.textContent = "Test";
+          testBtn.removeAttribute("aria-busy");
+        }
       });
       bindAction(document.querySelector("#clear-domain"), async () => {
         await api(`/api/projects/${mainProj.id}/domain`, { method: "POST", body: JSON.stringify({ domain: "", enabled: false }) });

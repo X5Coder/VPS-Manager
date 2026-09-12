@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 func (s *Server) routesProxyDomain() {
 	s.Mux.HandleFunc("/api/proxy/status", s.withGate(s.handleProxyStatus))
 	s.Mux.HandleFunc("/api/proxy/sync", s.withGate(s.handleProxySync))
+	s.Mux.HandleFunc("/api/proxy/test-domain", s.withGate(s.handleTestDomain))
 }
 
 func (s *Server) publicHost(r *http.Request) string {
@@ -208,6 +210,144 @@ func (s *Server) handleProxySync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]string{"ok": "1"})
+}
+
+func (s *Server) handleTestDomain(w http.ResponseWriter, r *http.Request) {
+	if s.requireOwner(w, r) == nil {
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeErr(w, 405, "method")
+		return
+	}
+	
+	var req struct {
+		Domain string `json:"domain"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, "invalid request body")
+		return
+	}
+	
+	domain := strings.ToLower(strings.TrimSpace(req.Domain))
+	domain = strings.TrimPrefix(domain, "https://")
+	domain = strings.TrimPrefix(domain, "http://")
+	domain = strings.Split(domain, "/")[0]
+	
+	if domain == "" {
+		writeErr(w, 400, "domain is required")
+		return
+	}
+	
+	writeJSON(w, 200, s.testDomainResult(domain))
+}
+
+// testDomainResult runs the real end-to-end domain test, shared by the
+// test endpoint and the post-bind check.
+func (s *Server) testDomainResult(domain string) map[string]any {
+	result := map[string]any{
+		"domain":    domain,
+		"reachable": false,
+		"ip":        "",
+		"error":     "",
+	}
+	// Real end-to-end test (Cloudflare/CDN-aware):
+	// 1. DNS resolves at all (edge IPs are fine — no origin match required).
+	// 2. Local nginx routing serves the domain.
+	// 3. The public URL answers through whatever sits in front.
+	// Reachable = local routing works AND the public URL answers.
+	local := s.testDomainLocal(domain)
+	pubHTTP := s.testDomainPublic("http://" + domain)
+	pubHTTPS := s.testDomainPublic("https://" + domain)
+	ips := []string{}
+	if addrs, err := net.LookupIP(domain); err == nil {
+		for _, a := range addrs {
+			ips = append(ips, a.String())
+		}
+	}
+	points := false
+	if my := detectPublicIP(); my != "" {
+		for _, ip := range ips {
+			if ip == my {
+				points = true
+				break
+			}
+		}
+	}
+	result["ips"] = ips
+	result["points_to_server"] = points
+	result["local_http"] = local
+	result["public_http"] = pubHTTP
+	result["public_https"] = pubHTTPS
+	localOK, _ := local["ok"].(bool)
+	pubOK := false
+	if v, _ := pubHTTP["ok"].(bool); v {
+		pubOK = true
+	}
+	if v, _ := pubHTTPS["ok"].(bool); v {
+		pubOK = true
+	}
+	if localOK && pubOK {
+		result["reachable"] = true
+		result["message"] = "Domain works end-to-end (nginx + public URL answer)"
+	} else if localOK {
+		result["reachable"] = false
+		result["message"] = "Nginx routing works, but the public URL does not answer yet — check DNS/proxy (Cloudflare orange cloud is fine once it serves)"
+		result["error"] = "public URL unreachable"
+	} else {
+		result["reachable"] = false
+		result["message"] = "Nginx on this server does not serve the domain — rebind it"
+		result["error"] = "local routing failed"
+	}
+
+	return result
+}
+
+// testDomainLocal checks nginx routing on this host via Host header.
+func (s *Server) testDomainLocal(domain string) map[string]any {
+	out := map[string]any{"ok": false}
+	req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1/", nil)
+	if err != nil {
+		out["error"] = err.Error()
+		return out
+	}
+	req.Host = domain
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		out["error"] = err.Error()
+		return out
+	}
+	defer resp.Body.Close()
+	out["ok"] = true
+	out["code"] = resp.StatusCode
+	return out
+}
+
+// testDomainPublic checks the public URL (through Cloudflare/CDN if any).
+// Any HTTP response counts — even redirects mean the chain works.
+func (s *Server) testDomainPublic(rawurl string) map[string]any {
+	out := map[string]any{"ok": false}
+	client := &http.Client{
+		Timeout: 12 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Get(rawurl)
+	if err != nil {
+		out["error"] = err.Error()
+		return out
+	}
+	defer resp.Body.Close()
+	out["ok"] = true
+	out["code"] = resp.StatusCode
+	return out
 }
 
 // helpers used by project handlers

@@ -1443,7 +1443,12 @@ func (s *Server) handleProjectByID(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, err.Error())
 			return
 		}
-		writeJSON(w, 200, map[string]any{"ok": "1", "domain": p.Domain, "links": s.projectLinks(r, p)})
+		res := map[string]any{"ok": "1", "domain": p.Domain, "ssl_status": p.SSLStatus, "links": s.projectLinks(r, p)}
+		if en && strings.TrimSpace(p.Domain) != "" {
+			// Real end-to-end test right after binding (no page refresh needed).
+			res["test"] = s.testDomainResult(p.Domain)
+		}
+		writeJSON(w, 200, res)
 	case "wipe-data":
 		if r.Method != http.MethodPost {
 			writeErr(w, 405, "method")
