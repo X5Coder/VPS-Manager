@@ -897,7 +897,7 @@
             <nav class="nav" id="nav"></nav>
           </div>
           <div class="sidebar-foot">
-            <div class="meta">Panel :9090</div>
+            <div class="meta">Panel :9090 · <span id="panel-version">…</span></div>
             <button class="btn ghost sidebar-out" id="logout">Sign out</button>
           </div>
         </aside>
@@ -1014,6 +1014,7 @@
     root.querySelector("#sidebar").classList.toggle("open", state.sidebarOpen);
     root.querySelector("#backdrop").classList.toggle("show", state.sidebarOpen);
     document.body.classList.toggle("nav-open", state.sidebarOpen);
+    refreshPanelVersion();
     return root.querySelector("#main");
   }
 
@@ -2230,9 +2231,21 @@
     });
   }
 
+  let panelVersionPromise = null;
+  function refreshPanelVersion() {
+    const el = document.querySelector("#panel-version");
+    if (!el) return;
+    if (!panelVersionPromise) {
+      panelVersionPromise = api("/api/version").then((v) => (v && v.version) || "").catch(() => "");
+    }
+    panelVersionPromise.then((v) => {
+      const cur = document.querySelector("#panel-version");
+      if (cur && v) cur.textContent = v;
+    });
+  }
+
   async function renderRoom() {
-    const gen = state._gen;
-    const id = state.roomId || state.me?.room?.id;
+    const gen = state._gen;    const id = state.roomId || state.me?.room?.id;
     if (!id) { setView("rooms"); return; }
     shell(`<div class="topbar"><div><h2>Project</h2><div class="sub">Loading…</div></div></div>${skel(4)}`, "room");
     let room;
