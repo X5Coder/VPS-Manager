@@ -382,6 +382,11 @@ func (s *Service) volumesRootFor(roomID string) string {
 	return s.paths(roomID).VolumesDir
 }
 
+// fileDiskUsage reports real disk consumption (allocated blocks), not the
+// logical size. Loop-back quota images (<id>.img) are sparse files whose
+// logical size equals the whole quota — counting Size() made every room
+// look full (6.1/6.1 GB) while real use was ~0.1 GB.
+// OS-specific implementation lives in diskusage_*.go.
 func dirSize(root string) int64 {
 	var total int64
 	_ = filepath.Walk(root, func(_ string, info os.FileInfo, err error) error {
@@ -389,7 +394,7 @@ func dirSize(root string) int64 {
 			return nil
 		}
 		if info.Mode().IsRegular() {
-			total += info.Size()
+			total += fileDiskUsage(info)
 		}
 		return nil
 	})
@@ -421,7 +426,7 @@ func (s *Service) volumeBytes(roomID string) int64 {
 			total += dirSize(p)
 			return
 		}
-		total += st.Size()
+		total += fileDiskUsage(st)
 	}
 	if root != "" {
 		for _, p := range projs {

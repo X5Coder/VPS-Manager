@@ -2366,13 +2366,13 @@ ${(function () {
             <div class="mng-row">
               <div class="field mng-grow"><label>SSL status</label><input readonly value="${esc(mainProj.ssl_status || "—")}" /></div>
               <div class="mng-btns">
-                <button class="btn primary sm action" type="submit" title="Bind domain">Bind</button>
+                <button class="btn primary sm action" type="submit" id="bind-domain-btn" title="Bind domain">Bind</button>
                 <button class="btn sm action" type="button" id="domain-https" title="Setup HTTPS certificate">HTTPS</button>
+                <button class="btn sm danger action" type="button" id="unbind-domain" title="Unbind domain from this room">Unbind</button>
                 <button class="icon-btn danger" type="button" id="clear-domain" title="Disable domain" aria-label="Disable domain">${ico("trash", 14)}</button>
               </div>
             </div>
             <div id="domtest"></div>
-            </div>
           </form>
           <p class="error" id="linkerr"></p>
           <p class="ok-text hidden" id="linkok"></p>
@@ -2395,7 +2395,15 @@ ${(function () {
             <form id="quota" class="mng-col" style="margin-top:12px">
               <div class="field">${quotaSliderHTML({ name: "quota_gb", maxGB: maxQ, valueGB: cur, required: true })}</div>
               <p class="muted mng-note" style="margin:0">Cap applies now. Max <strong>${maxQ.toFixed(1)} GB</strong>.</p>
-              <div><button class="btn primary sm action" type="submit">Save disk</button></div>
+              <div class="mng-row" style="align-items:center">
+                <div class="mng-btns" role="group" aria-label="Quick increase">
+                  <button class="btn sm action" type="button" data-qadd="1" title="Add 1 GB">+1G</button>
+                  <button class="btn sm action" type="button" data-qadd="2" title="Add 2 GB">+2G</button>
+                  <button class="btn sm action" type="button" data-qadd="5" title="Add 5 GB">+5G</button>
+                </div>
+                <div class="mng-grow"></div>
+                <div><button class="btn primary sm action" type="submit">Save disk</button></div>
+              </div>
             </form>`;
           })()}
           <p class="ok-text hidden" id="rok">Saved.</p>
@@ -2680,9 +2688,32 @@ ${(function () {
           if (btn) { btn.disabled = true; btn.textContent = "Applying…"; }
           await api(`/api/rooms/${id}/quota`, { method: "POST", body: JSON.stringify({ quota_gb: Number(new FormData(e.target).get("quota_gb") || 0) }) });
           flashOk();
+          toast("Disk space updated");
           render();
         } catch (ex) { document.querySelector("#rerr").textContent = ex.message; }
         finally { if (btn) { btn.disabled = false; btn.textContent = "Save disk"; } }
+      });
+      // Quick increase: +1/+2/+5 GB bumps the slider (capped at max) and saves at once.
+      document.querySelectorAll("[data-qadd]").forEach((b) => {
+        if (b.dataset.qaddBound) return;
+        b.dataset.qaddBound = "1";
+        b.addEventListener("click", async () => {
+          const form = document.querySelector("#quota");
+          const range = form?.querySelector("[data-quota-range]");
+          const input = form?.querySelector("[data-quota-input]");
+          const label = form?.querySelector("[data-quota-label]");
+          if (!form || !range || !input) return;
+          const max = Number(range.max) || 0;
+          let cur = Number(range.value) || 0;
+          let next = Math.round((cur + Number(b.dataset.qadd || 0)) * 10) / 10;
+          if (next > max) next = Math.round(max * 10) / 10;
+          if (!(next > cur)) { toast(`Already at max ${max.toFixed(1)} GB — free VPS disk first`); return; }
+          range.value = String(next);
+          input.value = String(next);
+          if (label) label.textContent = `${next.toFixed(1)} GB`;
+          if (form.requestSubmit) form.requestSubmit();
+          else form.dispatchEvent(new Event("submit", { cancelable: true }));
+        });
       });
       document.querySelector("#rpass")?.addEventListener("submit", async (e) => {
         e.preventDefault();
@@ -2744,10 +2775,9 @@ ${(function () {
         }
 
         try {
-          bindBtn.disabled = true;
-          bindBtn.textContent = "Binding...";
-          bindBtn.setAttribute("aria-busy", "true");
-          
+          if (bindBtn) { bindBtn.disabled = true; bindBtn.textContent = "Binding..."; bindBtn.setAttribute("aria-busy", "true"); }
+          if (linkErr) linkErr.textContent = "";
+
           const res = await api(`/api/projects/${mainProj.id}/domain`, { method: "POST", body: JSON.stringify({ domain: domain, enabled: true }) });
           const sslInput = e.target.querySelector("input[readonly]");
           if (sslInput && res.ssl_status) sslInput.value = res.ssl_status;
@@ -2756,12 +2786,12 @@ ${(function () {
           const testBox = document.querySelector("#domain-test-result");
           if (testBox && httpsNote) testBox.innerHTML += httpsNote;
           toast("Domain bound");
-        } catch (ex) { 
+          state.showNetPanel = true;
+          render();
+        } catch (ex) {
           if (linkErr) linkErr.textContent = ex.message;
         } finally {
-          bindBtn.disabled = false;
-          bindBtn.textContent = "Bind";
-          bindBtn.removeAttribute("aria-busy");
+          if (bindBtn) { bindBtn.disabled = false; bindBtn.textContent = "Bind"; bindBtn.removeAttribute("aria-busy"); }
         }
       });
 
@@ -2779,9 +2809,7 @@ ${(function () {
         }
 
         try {
-          testBtn.disabled = true;
-          testBtn.textContent = "Testing...";
-          testBtn.setAttribute("aria-busy", "true");
+          if (testBtn) { testBtn.disabled = true; testBtn.textContent = "Testing..."; testBtn.setAttribute("aria-busy", "true"); }
           if (testResult) testResult.textContent = "Testing domain connection...";
           if (linkOk) linkOk.classList.add("hidden");
           if (linkErr) linkErr.textContent = "";
@@ -2846,16 +2874,19 @@ ${(function () {
           }
           if (linkErr) linkErr.textContent = ex.message;
         } finally {
-          testBtn.disabled = false;
-          testBtn.textContent = "Test";
-          testBtn.removeAttribute("aria-busy");
+          if (testBtn) { testBtn.disabled = false; testBtn.textContent = "Test"; testBtn.removeAttribute("aria-busy"); }
         }
       });
-      bindAction(document.querySelector("#clear-domain"), async () => {
+      const doUnbind = async () => {
+        const ok = await confirmAction({ title: "Unbind domain?", body: "The domain will stop pointing to this room (nginx vhost removed). You can bind it again later.", ok: "Unbind", danger: true });
+        if (!ok) return;
         await api(`/api/projects/${mainProj.id}/domain`, { method: "POST", body: JSON.stringify({ domain: "", enabled: false }) });
-        state.showNetPanel = false;
+        toast("Domain unbound");
+        state.showNetPanel = true;
         render();
-      });
+      };
+      bindAction(document.querySelector("#clear-domain"), doUnbind);
+      bindAction(document.querySelector("#unbind-domain"), doUnbind);
       bindAction(document.querySelector("#domain-https"), async () => {
         const btn = document.querySelector("#domain-https");
         if (btn) { btn.disabled = true; btn.textContent = "Working…"; }

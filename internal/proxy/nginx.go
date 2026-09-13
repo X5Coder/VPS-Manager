@@ -164,6 +164,64 @@ func resolveCerts(domain, existingBody string) (cert, key string) {
 	return "", ""
 }
 
+// RemoveNginxVhost deletes a panel-managed vhost so an unbound domain stops
+// serving immediately. Custom/combined files are never touched.
+func RemoveNginxVhost(domain string) error {
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	if domain == "" || !NginxInstalled() {
+		return nil
+	}
+	avail := filepath.Join(NginxAvailableDir, domain)
+	if b, err := os.ReadFile(avail); err == nil {
+		if !strings.Contains(string(b), nginxMarker) {
+			// Not ours — leave custom files alone, just drop the symlink.
+			_ = os.Remove(filepath.Join(NginxEnabledDir, domain))
+			return nginxReload()
+		}
+	}
+	_ = os.Remove(avail)
+	_ = os.Remove(filepath.Join(NginxEnabledDir, domain))
+	_ = disableSingleNameLeftovers(domain)
+	return nginxReload()
+}
+
+// pruneOrphanManagedVhosts removes panel-managed vhost files whose domain is
+// no longer bound in the DB. This repairs rooms where the DB row lost the
+// domain (old update bug) but nginx still serves it -> "opens page but not
+// shown in panel". Custom files (no marker) are never deleted.
+func pruneOrphanManagedVhosts(keep map[string]struct{}) {
+	ents, err := os.ReadDir(NginxAvailableDir)
+	if err != nil {
+		return
+	}
+	changed := false
+	for _, e := range ents {
+		if e.IsDir() {
+			continue
+		}
+		name := strings.ToLower(e.Name())
+		if _, ok := keep[name]; ok {
+			continue
+		}
+		if name == "default" {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(NginxAvailableDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		if !strings.Contains(string(b), nginxMarker) {
+			continue
+		}
+		_ = os.Remove(filepath.Join(NginxAvailableDir, e.Name()))
+		_ = os.Remove(filepath.Join(NginxEnabledDir, e.Name()))
+		changed = true
+	}
+	if changed {
+		_ = nginxReload()
+	}
+}
+
 // SyncNginx overwrites the per-domain vhost every time. Combined custom
 // files (several server_name values) are left alone so OAuth splits stay intact.
 func SyncNginx(sites []Site) error {
@@ -212,6 +270,13 @@ func SyncNginx(sites []Site) error {
 		}
 		_ = disableSingleNameLeftovers(d)
 	}
+	keep := map[string]struct{}{}
+	for _, s := range sites {
+		if d := strings.ToLower(strings.TrimSpace(s.Domain)); d != "" && s.Enabled {
+			keep[d] = struct{}{}
+		}
+	}
+	pruneOrphanManagedVhosts(keep)
 	return nginxReload()
 }
 
@@ -347,6 +412,46 @@ func parseUpstreamPort(up string) int {
 		return n
 	}
 	return 0
+}
+
+// ManagedVhost is a panel-written vhost file (has the marker).
+type ManagedVhost struct {
+	Domain string
+	Port   int
+}
+
+// ListManagedVhosts scans sites-available for panel-written vhosts.
+func ListManagedVhosts() []ManagedVhost {
+	ents, err := os.ReadDir(NginxAvailableDir)
+	if err != nil {
+		return nil
+	}
+	var out []ManagedVhost
+	for _, e := range ents {
+		if e.IsDir() {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(NginxAvailableDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		if !strings.Contains(string(b), nginxMarker) {
+			continue
+		}
+		names := uniqueNames(parseServerNames(string(b)))
+		port := 0
+		if m := proxyPassRe.FindStringSubmatch(string(b)); len(m) > 1 {
+			_, _ = fmt.Sscanf(m[1], "%d", &port)
+		}
+		for _, n := range names {
+			out = append(out, ManagedVhost{Domain: n, Port: port})
+		}
+		// File named exactly the domain but no server_name parsed (edge).
+		if len(names) == 0 {
+			out = append(out, ManagedVhost{Domain: strings.ToLower(e.Name()), Port: port})
+		}
+	}
+	return out
 }
 
 func nginxReload() error {

@@ -85,11 +85,20 @@ func (s *Server) applyDomain(p *store.Project, domain string, enabled bool) erro
 	domain = strings.TrimPrefix(domain, "https://")
 	domain = strings.TrimPrefix(domain, "http://")
 	domain = strings.Split(domain, "/")[0]
+	oldDomain := strings.ToLower(strings.TrimSpace(p.Domain))
 	p.Domain = domain
 	p.DomainEnabled = enabled && domain != ""
 	if !p.DomainEnabled {
 		p.SSLStatus = "disabled"
 		_ = s.Store.UpdateProject(*p)
+		// Remove the old nginx vhost so the domain STOPS opening the page
+		// after unbind (previously the file stayed -> "bound but not in panel").
+		if oldDomain != "" && oldDomain != domain {
+			_ = proxy.RemoveNginxVhost(oldDomain)
+		}
+		if domain != "" && domain != oldDomain {
+			_ = proxy.RemoveNginxVhost(domain)
+		}
 		return s.syncProxy()
 	}
 	if p.HostPort <= 0 {
@@ -154,6 +163,50 @@ func (s *Server) syncProxy() error {
 	projs, err := s.Store.ListAllProjects()
 	if err != nil {
 		return err
+	}
+	// Self-heal: a managed nginx vhost whose domain was lost from the DB
+	// (pre-v12 update bug) is re-attached to the project serving the same
+	// host port, so the panel shows the domain again instead of requiring
+	// a manual re-bind while the page still opens.
+	if proxy.NginxInstalled() {
+		bound := map[string]struct{}{}
+		for i := range projs {
+			if d := strings.ToLower(strings.TrimSpace(projs[i].Domain)); d != "" && projs[i].DomainEnabled {
+				bound[d] = struct{}{}
+			}
+		}
+		for _, mv := range proxy.ListManagedVhosts() {
+			if mv.Domain == "" || mv.Port <= 0 {
+				continue
+			}
+			if _, ok := bound[mv.Domain]; ok {
+				continue
+			}
+			for j := range projs {
+				pj := &projs[j]
+				if strings.TrimSpace(pj.Domain) != "" {
+					continue
+				}
+				port := pj.HostPort
+				if s.Docker != nil && pj.ContainerID != "" {
+					if live := s.Docker.PublishedHostPort(pj.ContainerID); live > 0 {
+						port = live
+					}
+				}
+				if port == mv.Port {
+					pj.Domain = mv.Domain
+					pj.DomainEnabled = true
+					if strings.TrimSpace(pj.SSLStatus) == "" || pj.SSLStatus == "disabled" {
+						pj.SSLStatus = "active"
+					}
+					if err := s.Store.UpdateProject(*pj); err == nil {
+						bound[mv.Domain] = struct{}{}
+						projs[j] = *pj
+					}
+					break
+				}
+			}
+		}
 	}
 	var sites []proxy.Site
 	seen := map[string]struct{}{}

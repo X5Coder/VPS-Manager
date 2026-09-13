@@ -1013,11 +1013,12 @@ func (s *Server) handleRoomByID(w http.ResponseWriter, r *http.Request) {
 		}
 		room, _ := s.Store.GetRoom(id)
 		projs, _ := s.Store.ListProjects(id)
-		if s.Proxy != nil {
-			for _, p := range projs {
-				if strings.TrimSpace(p.Domain) != "" {
+		for _, p := range projs {
+			if strings.TrimSpace(p.Domain) != "" {
+				if s.Proxy != nil {
 					_ = s.Proxy.Remove(p.Domain)
 				}
+				_ = proxy.RemoveNginxVhost(p.Domain)
 			}
 		}
 		name := id

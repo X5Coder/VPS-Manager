@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -313,6 +314,25 @@ func (s *Service) DeployBuild(in DeployBuildInput) (*store.Project, error) {
 	// (e.g. BOT_TOKEN) bake real values instead of empty ones.
 	buildArgs := map[string]string{}
 	oldImages := []string{}
+	// Preserve domain binding across replacement: the new project row gets a
+	// fresh UUID, so without this the domain/SSL/port mapping is lost on
+	// every room update (ZIP upload) while the old nginx vhost keeps serving
+	// -> "bound but not shown in panel".
+	keepDomain, keepDomainEnabled, keepSSL, keepExtURL := "", false, "", ""
+	if in.Replace {
+		if olds, _ := s.Store.ListProjects(in.RoomID); len(olds) > 0 {
+			keepDomain = strings.TrimSpace(olds[0].Domain)
+			keepDomainEnabled = olds[0].DomainEnabled
+			keepSSL = olds[0].SSLStatus
+			keepExtURL = olds[0].ExternalURL
+			if in.HostPort <= 0 && olds[0].HostPort > 0 {
+				in.HostPort = olds[0].HostPort
+			}
+			if in.ContainerPort <= 0 && olds[0].ContainerPort > 0 {
+				in.ContainerPort = olds[0].ContainerPort
+			}
+		}
+	}
 	if s.Rooms != nil {
 		if pairs, _ := readEnvPairs(s.Rooms.RoomEnvPath(in.RoomID)); len(pairs) > 0 {
 			for _, kv := range pairs {
@@ -414,6 +434,14 @@ func (s *Service) DeployBuild(in DeployBuildInput) (*store.Project, error) {
 		ContainerPort: cPort,
 		Status:        "running",
 		CreatedAt:     time.Now().UTC(),
+		Domain:        keepDomain,
+		DomainEnabled: keepDomainEnabled,
+		SSLStatus:     keepSSL,
+		ExternalURL:   keepExtURL,
+	}
+	if keepDomain != "" && !keepDomainEnabled {
+		// Domain text kept for re-bind, but disabled stays disabled.
+		p.DomainEnabled = false
 	}
 	if err := s.Store.CreateProject(p); err != nil {
 		_ = s.Docker.Remove(cid, true)
@@ -427,10 +455,115 @@ func (s *Service) DeployBuild(in DeployBuildInput) (*store.Project, error) {
 				_ = s.Docker.RemoveImage(ref)
 			}
 		}
+		// Drop stale per-project volume artifacts (<oldID>/, <oldID>.img)
+		// left by previous versions — otherwise orphan quota images pile
+		// up in volumes/ on every update.
+		s.pruneStaleRoomVolumes(in.RoomID, id, log)
 	}
 	s.persistRoom(in.RoomID)
+	s.touchProxy()
 	fmt.Fprintf(log, "OK project=%s\n", id)
 	return &p, nil
+}
+
+// pruneStaleRoomVolumes removes per-project volume artifacts whose project
+// no longer exists (stale <id>/ dirs, <id>.img loop quota images,
+// <id>.staging leftovers). Anything still referenced by a project or
+// container record is kept. Loop mounts are unmounted first.
+func (s *Service) pruneStaleRoomVolumes(roomID, keepID string, log io.Writer) {
+	volRoot := s.volumesDirFor(roomID)
+	if volRoot == "" {
+		return
+	}
+	keep := map[string]struct{}{}
+	if keepID != "" {
+		keep[keepID] = struct{}{}
+	}
+	if projs, _ := s.Store.ListProjects(roomID); projs != nil {
+		for _, p := range projs {
+			if p.ID != "" {
+				keep[p.ID] = struct{}{}
+			}
+		}
+	}
+	if cts, _ := s.Store.ListContainers(roomID); cts != nil {
+		for _, c := range cts {
+			if c.ID != "" {
+				keep[c.ID] = struct{}{}
+			}
+		}
+	}
+	ents, err := os.ReadDir(volRoot)
+	if err != nil {
+		return
+	}
+	for _, e := range ents {
+		name := e.Name()
+		base := name
+		isImg := strings.HasSuffix(name, ".img")
+		isStaging := strings.HasSuffix(name, ".staging")
+		if isImg {
+			base = strings.TrimSuffix(name, ".img")
+		} else if isStaging {
+			base = strings.TrimSuffix(name, ".staging")
+		} else if !e.IsDir() {
+			continue
+		}
+		if base == "" {
+			continue
+		}
+		if _, ok := keep[base]; ok {
+			continue
+		}
+		// Only touch UUID-like per-project artifacts — never anything else.
+		if !isProjectArtifactName(base) {
+			continue
+		}
+		full := filepath.Join(volRoot, name)
+		dir := filepath.Join(volRoot, base)
+		_ = exec.Command("umount", dir).Run()
+		if isImg || isStaging {
+			_ = os.Remove(full)
+		} else {
+			_ = os.RemoveAll(full)
+		}
+		if log != nil {
+			fmt.Fprintf(log, "removed stale volume %s\n", name)
+		}
+	}
+}
+
+func isProjectArtifactName(s string) bool {
+	// Project/container IDs are UUIDs (8-4-4-4-12 hex) or 8+ hex prefixes.
+	if len(s) == 36 {
+		ok := true
+		for i, r := range s {
+			switch {
+			case i == 8 || i == 13 || i == 18 || i == 23:
+				if r != '-' {
+					ok = false
+				}
+			case (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F'):
+			default:
+				ok = false
+			}
+			if !ok {
+				break
+			}
+		}
+		if ok {
+			return true
+		}
+	}
+	if len(s) >= 8 && len(s) <= 64 {
+		for _, r := range s {
+			if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') || r == '-' || r == '_') {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 func (s *Service) Start(id string) error {
