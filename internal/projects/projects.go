@@ -303,6 +303,26 @@ func (s *Service) DeployBuild(in DeployBuildInput) (*store.Project, error) {
 		if err := writeEnv(envPath, in.EnvText); err != nil {
 			return nil, err
 		}
+		// Explicit env wins: mirror it to the room-level .env so future
+		// updates preserve it instead of reverting to the old room values.
+		if s.Rooms != nil {
+			roomEnv := s.Rooms.RoomEnvPath(in.RoomID)
+			_ = os.MkdirAll(filepath.Dir(roomEnv), 0o700)
+			_ = writeEnv(roomEnv, in.EnvText)
+		}
+	} else if s.Rooms != nil {
+		// Architectural rule: room config/.env is authoritative. The staged
+		// source (ZIP) must never wipe runtime secrets on update — restore
+		// the preserved room env over whatever the archive shipped.
+		if b, err := os.ReadFile(s.Rooms.RoomEnvPath(in.RoomID)); err == nil && strings.TrimSpace(string(b)) != "" {
+			_ = writeEnv(envPath, string(b))
+		} else if b, err := os.ReadFile(envPath); err == nil && strings.TrimSpace(string(b)) != "" {
+			// First deploy: promote the shipped .env to the room level so
+			// the next update has something to preserve.
+			roomEnv := s.Rooms.RoomEnvPath(in.RoomID)
+			_ = os.MkdirAll(filepath.Dir(roomEnv), 0o700)
+			_ = writeEnv(roomEnv, string(b))
+		}
 	}
 	log := in.Log
 	if log == nil {

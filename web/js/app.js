@@ -1907,8 +1907,8 @@
           <div class="json-wrap">${copyIcoBtn(rawToolsJSON, "Copy tools JSON", "json-copy")}<div class="json-scroll"><pre class="json-colored mono">${toolsJSON}</pre></div></div>
         </div>
         <div class="panel"><h3>Access tokens</h3>
-          <p class="muted" style="font-size:.8rem">Tap the copy icon to issue a new full key and copy it at once. The old key stops working immediately.</p>
-          ${tokens.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>Secret</th><th>Created</th><th>Last used</th><th></th></tr></thead><tbody>${tokens.map((t) => `<tr><td>${esc(t.name)}</td><td><span class="mono">•••••• <button type="button" class="icon-btn copy-ico tok-key-copy" data-agent-copykey="${esc(t.id)}" title="Copy full key" aria-label="Copy full key">${ico("copy")}</button></span></td><td>${esc(new Date(t.created_at).toLocaleString())}</td><td>${t.last_used_at ? esc(new Date(t.last_used_at).toLocaleString()) : "Never"}</td><td><div class="row-actions"><button class="btn sm danger action" data-agent-revoke="${esc(t.id)}">Revoke</button></div></td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">No token has been created yet.</p>`}
+          <p class="muted" style="font-size:.8rem">Secret is shown once on creation — keep it. The copy icon rotates and copies a NEW key, and the old key stops working immediately. Only tap it when you really want to replace the key.</p>
+          ${tokens.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>Secret</th><th>Created</th><th>Last used</th><th></th></tr></thead><tbody>${tokens.map((t) => `<tr><td>${esc(t.name)}</td><td><span class="mono">•••••• <button type="button" class="icon-btn copy-ico tok-key-copy" data-agent-copykey="${esc(t.id)}" title="Rotate and copy NEW key (old stops working)" aria-label="Rotate and copy NEW key">${ico("copy")}</button></span></td><td>${esc(new Date(t.created_at).toLocaleString())}</td><td>${t.last_used_at ? esc(new Date(t.last_used_at).toLocaleString()) : "Never"}</td><td><div class="row-actions"><button class="btn sm danger action" data-agent-revoke="${esc(t.id)}">Revoke</button></div></td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">No token has been created yet.</p>`}
         </div>`;
 
       shell(`
@@ -1973,6 +1973,7 @@
         e.preventDefault();
         e.stopPropagation();
         if (button.disabled || button.classList.contains("busy")) return;
+        if (!confirm("Rotate this token and copy the NEW key? The old key will stop working immediately on all agents using it.")) return;
         button.disabled = true;
         button.classList.add("busy");
         try {
