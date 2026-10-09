@@ -95,6 +95,27 @@ func main() {
 		}
 	}()
 
+	// Safe disk janitor: reclaims dangling images, stale build cache,
+	// oversized container logs, journal and apt cache. Never deletes
+	// containers, referenced images, volumes, or project source.
+	go func() {
+		if docker != nil {
+			log.Printf("janitor: initial run: %s", docker.RunSafeJanitor())
+		}
+		t := time.NewTicker(6 * time.Hour)
+		defer t.Stop()
+		for range t.C {
+			api.PruneLogsDir(cfg.DataDir, 256*1024)
+			api.SweepStaleUploads(24 * time.Hour)
+			if docker != nil {
+				log.Printf("janitor: periodic run: %s", docker.RunSafeJanitor())
+			} else {
+				dockerx.VacuumHostJournal("200M")
+				dockerx.AptClean()
+			}
+		}
+	}()
+
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 	<-ch

@@ -415,7 +415,11 @@ func storageOpt(n int64) string {
 }
 
 func (c *Client) runContainer(opts RunOpts, withSize bool) (string, error) {
-	args := []string{"run", "-d", "--name", opts.Name, "--label", "vps-rooms=1", "--restart", "unless-stopped", "--shm-size=1g"}
+	// Bounded json-file logs: prevents unbounded *-json.log growth (seen 8GB+
+	// on kong/supavisor stacks). Only applies to newly created containers;
+	// existing containers are handled by the periodic janitor truncate.
+	args := []string{"run", "-d", "--name", opts.Name, "--label", "vps-rooms=1", "--restart", "unless-stopped", "--shm-size=1g",
+		"--log-driver", "json-file", "--log-opt", "max-size=50m", "--log-opt", "max-file=3"}
 	if withSize {
 		if opt := storageOpt(opts.StorageBytes); opt != "" {
 			args = append(args, "--storage-opt", opt)

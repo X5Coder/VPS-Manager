@@ -390,12 +390,59 @@ func agentApplyExampleEnv(envPath, root string) (addedExample, addedReal []strin
 	return addedExample, addedReal, nil
 }
 
+// agentEnsureDockerignore writes a safe .dockerignore when missing so future
+// builds don't bake node_modules, git history, uploads, or logs into layers.
+// Never overwrites an existing file and never excludes the Dockerfile itself,
+// package.json, or requirements.txt.
+func agentEnsureDockerignore(dest string) {
+	p := filepath.Join(dest, ".dockerignore")
+	if st, err := os.Stat(p); err == nil && !st.IsDir() {
+		return
+	}
+	content := `.git
+.github
+.gitignore
+node_modules
+npm-debug.log
+__pycache__
+*.pyc
+*.pyo
+.venv
+venv
+.pytest_cache
+data
+volumes
+output
+outputs
+media
+uploads
+tmp
+temp
+*.db
+*.sqlite
+*.log
+.env
+*.env
+README.md
+docs
+tests
+test
+__tests__
+coverage
+.vscode
+.idea
+.DS_Store
+`
+	_ = os.WriteFile(p, []byte(content), 0o640)
+}
+
 // agentEnsureDockerfile generates a Dockerfile when the source has none,
 // detecting Node.js (package.json) or Python (requirements.txt) stacks.
 // Never overwrites an existing Dockerfile.
 func agentEnsureDockerfile(dest string, port int) (bool, error) {
 	for _, n := range []string{"Dockerfile", "dockerfile"} {
 		if st, err := os.Stat(filepath.Join(dest, n)); err == nil && !st.IsDir() {
+			agentEnsureDockerignore(dest)
 			return false, nil
 		}
 	}
@@ -404,12 +451,15 @@ func agentEnsureDockerfile(dest string, port int) (bool, error) {
 	}
 	if st, err := os.Stat(filepath.Join(dest, "package.json")); err == nil && !st.IsDir() {
 		main := agentNodeMain(dest)
-		content := "FROM node:20-alpine\nWORKDIR /app\nCOPY package*.json ./\n" +
-			"RUN npm install --omit=dev\nCOPY . .\nEXPOSE " + strconv.Itoa(port) + "\n" +
+		content := "FROM node:20-alpine\nWORKDIR /app\nCOPY package.json package-lock.json* ./\n" +
+			"RUN if [ -f package-lock.json ]; then npm ci --omit=dev --no-audit --no-fund; " +
+			"else npm install --omit=dev --no-audit --no-fund; fi && npm cache clean --force && rm -rf /root/.npm /tmp/*\n" +
+			"COPY . .\nEXPOSE " + strconv.Itoa(port) + "\n" +
 			"CMD [\"node\", \"" + main + "\"]\n"
 		if err := os.WriteFile(filepath.Join(dest, "Dockerfile"), []byte(content), 0o640); err != nil {
 			return false, err
 		}
+		agentEnsureDockerignore(dest)
 		return true, nil
 	}
 	if st, err := os.Stat(filepath.Join(dest, "requirements.txt")); err == nil && !st.IsDir() {
@@ -420,12 +470,14 @@ func agentEnsureDockerfile(dest string, port int) (bool, error) {
 				break
 			}
 		}
-		content := "FROM python:3.12-slim\nWORKDIR /app\nCOPY requirements.txt ./\n" +
-			"RUN pip install --no-cache-dir -r requirements.txt\nCOPY . .\nEXPOSE " +
+		content := "FROM python:3.12-slim\nENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1\nWORKDIR /app\nCOPY requirements.txt ./\n" +
+			"RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir -r requirements.txt && rm -rf /root/.cache /tmp/*\n" +
+			"COPY . .\nEXPOSE " +
 			strconv.Itoa(port) + "\nCMD [\"python\", \"" + entry + "\"]\n"
 		if err := os.WriteFile(filepath.Join(dest, "Dockerfile"), []byte(content), 0o640); err != nil {
 			return false, err
 		}
+		agentEnsureDockerignore(dest)
 		return true, nil
 	}
 	return false, fmt.Errorf("no Dockerfile found and stack not detected (need a Dockerfile, package.json, or requirements.txt)")
