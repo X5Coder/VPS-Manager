@@ -1932,7 +1932,12 @@
 
       shell(`
         <div class="agent-page">
-        <div class="topbar"><div><h2>x5coder-agent</h2><div class="sub">Controlled HTTPS access to VPS Manager tools</div></div><div class="actions"><button class="btn action" id="agent-tools-list" title="Show the full tools catalog" style="display:inline-flex;align-items:center;gap:6px">${ico("logs", 14)}<span>Tools list</span></button><button class="btn action" id="agent-copy-docs" title="Copy the whole doc with the current API key" style="display:inline-flex;align-items:center;gap:6px">${ico("copy", 14)}<span>Copy full docs</span></button><button class="btn primary action" id="agent-regen-key" title="Issue a new key (old stops working)" style="display:inline-flex;align-items:center;gap:6px">${ico("key", 14)}<span>${tokens.length ? "Regenerate key" : "Generate key"}</span></button></div></div>
+        <div class="topbar"><div><h2>x5coder-agent</h2><div class="sub">Controlled HTTPS access to VPS Manager tools</div></div><div class="actions" style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn sm action" id="agent-tools-list" title="Show the full tools catalog" style="display:inline-flex;align-items:center;gap:6px">${ico("file", 13)}<span>Tools list</span></button><button class="btn sm action" id="agent-copy-docs" title="Copy the whole doc with the current API key" style="display:inline-flex;align-items:center;gap:6px">${ico("copy", 13)}<span>Copy full docs</span></button><button class="btn sm primary action" id="agent-regen-key" title="Issue a new key (old stops working)" style="display:inline-flex;align-items:center;gap:6px">${ico("key", 13)}<span>${tokens.length ? "Regenerate key" : "Generate key"}</span></button></div></div>
+        <div class="panel agent-tools-card" id="agent-tools-panel" style="display:none">
+          <div class="head-row"><h3>Tools · ${esc(toolLabel)}</h3><button type="button" class="icon-btn copy-ico" id="agent-tools-copy" title="Copy tools JSON" aria-label="Copy tools JSON">${ico("copy")}</button></div>
+          <p class="muted" style="font-size:.8rem">Single template — JSON only. Scroll inside the box.</p>
+          <div class="json-wrap"><div class="json-scroll"><pre class="json-colored mono">${toolsJSON}</pre></div></div>
+        </div>
         ${docsHTML}
         ${keyHTML}
         </div>`, "agent");
@@ -1983,44 +1988,19 @@
         if (k && k.secret) return k.secret;
         throw new Error("empty");
       };
-      const openToolsDialog = () => {
-        // Fail-open: the dialog skeleton must appear even if the JSON
-        // injection fails (then raw text is shown and the error toasted).
-        try {
-          closeAgentModal(true);
-          // Skeleton first, JSON injected after: keeps template parsing tiny
-          // no matter how large the catalog grows.
-          const modal = el(`<div class="modal-back logout-modal agent-modal" id="agent-modal">
-            <div class="modal-card logout-card agent-modal-card">
-              <div class="head-row"><h3>Tools · ${esc(toolLabel)}</h3><button type="button" class="icon-btn copy-ico" id="agent-tools-copy" title="Copy tools JSON" aria-label="Copy tools JSON">${ico("copy")}</button></div>
-              <p class="muted" style="font-size:.8rem">Single template — JSON only. Scroll inside the box.</p>
-              <div class="json-wrap"><div class="json-scroll"><pre class="json-colored mono" id="agent-tools-pre"></pre></div></div>
-              <div class="full row-actions" style="margin-top:12px"><button class="btn primary action" type="button" id="agent-tools-done">Done</button></div>
-            </div>
-          </div>`);
-          const pre = modal.querySelector("#agent-tools-pre");
-          try {
-            pre.innerHTML = toolsJSON;
-          } catch (ex2) {
-            pre.textContent = rawToolsJSON;
-            toast("Tools shown as plain text");
-          }
-          const done = (instant) => {
-            modal.classList.remove("show");
-            modal.classList.add("hide");
-            setTimeout(() => modal.remove(), instant ? 0 : 220);
-          };
-          modal._close = done;
-          modal.addEventListener("click", (e) => { if (e.target === modal) done(false); });
-          modal.querySelector("#agent-tools-done").onclick = () => done(false);
-          modal.querySelector("#agent-tools-copy").onclick = async () => { await copyText(rawToolsJSON); };
-          document.body.appendChild(modal);
-          requestAnimationFrame(() => requestAnimationFrame(() => modal.classList.add("show")));
-        } catch (ex) {
-          toast("Tools dialog failed: " + ((ex && ex.message) || "unknown error"));
-        }
-      };
-      document.querySelector("#agent-tools-list")?.addEventListener("click", openToolsDialog);
+      // Inline expandable panel (same JSON the page rendered before): the
+      // overlay dialog refused to appear on some screens, this always does.
+      const toolsBtn = document.querySelector("#agent-tools-list");
+      toolsBtn?.addEventListener("click", () => {
+        const p = document.querySelector("#agent-tools-panel");
+        if (!p) { toast("Tools panel missing"); return; }
+        const open = p.style.display === "none";
+        p.style.display = open ? "" : "none";
+        const label = toolsBtn.querySelector("span");
+        if (label) label.textContent = open ? "Hide tools" : "Tools list";
+        if (open) p.scrollIntoView({ block: "nearest" });
+      });
+      document.querySelector("#agent-tools-copy")?.addEventListener("click", async () => { await copyText(rawToolsJSON); });
       document.querySelector("#agent-copy-docs")?.addEventListener("click", async () => {
         try {
           await copyText(buildFullDocs(await fetchAgentSecret()));
