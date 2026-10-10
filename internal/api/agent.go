@@ -1599,21 +1599,29 @@ func (s *Server) handleAgentTokens(w http.ResponseWriter, r *http.Request) {
 		if err != nil { writeErr(w, 500, err.Error()); return }
 		writeJSON(w, 200, map[string]any{"tokens": tokens, "endpoint": s.agentEndpoint(r), "tools": agentToolCatalog})
 	case http.MethodPost:
+		// Single-key model: regenerating replaces the one API key. Any
+		// previous key stops working the instant the new one is stored.
+		// There is no expiry — a key stays valid until regenerated.
 		var body struct { Name string `json:"name"` }
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil { writeErr(w, 400, "invalid JSON body"); return }
 		name := strings.TrimSpace(body.Name)
-		if !agentTokenName.MatchString(name) { writeErr(w, 400, "name must be 2–64 letters, numbers, spaces, dots, underscores, or hyphens"); return }
+		if name == "" {
+			name = "Agent key"
+		} else if !agentTokenName.MatchString(name) {
+			writeErr(w, 400, "name must be 2–64 letters, numbers, spaces, dots, underscores, or hyphens")
+			return
+		}
 		secret, err := newAgentSecret()
 		if err != nil { writeErr(w, 500, "could not generate token"); return }
 		digest := sha256.Sum256([]byte(secret))
 		token := store.AgentToken{ID: uuid.NewString(), Name: name, Prefix: secret[:15], CreatedAt: time.Now().UTC()}
-		if err := s.Store.CreateAgentToken(token, hex.EncodeToString(digest[:])); err != nil {
-			if strings.Contains(strings.ToLower(err.Error()), "unique") { writeErr(w, 409, "a token with this name already exists"); return }
-			writeErr(w, 500, err.Error()); return
+		if err := s.Store.ReplaceAgentToken(token, hex.EncodeToString(digest[:])); err != nil {
+			writeErr(w, 500, err.Error())
+			return
 		}
 		// This is the only response that contains the secret. The database stores
 		// its SHA-256 digest, so it cannot be recovered later.
-		writeJSON(w, http.StatusCreated, map[string]any{"token": token, "secret": secret, "endpoint": s.agentEndpoint(r)})
+		writeJSON(w, 200, map[string]any{"token": token, "secret": secret, "endpoint": s.agentEndpoint(r)})
 	default:
 		writeErr(w, 405, "method")
 	}

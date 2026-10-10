@@ -1888,8 +1888,8 @@
           </ul>
           <h4 class="agent-sub">1 · Discover tools (public, no key)</h4>
           <div class="cmd-card cmd-row"><pre class="mono http-colored">${highlightHttpBlock("GET " + endpoint)}</pre>${copyIcoBtn("GET " + endpoint, "Copy discovery request")}</div>
-          <h4 class="agent-sub">2 · Create a token (shown once)</h4>
-          <p class="muted" style="margin:0 0 8px;font-size:.82rem">Press <strong>Create token</strong> above, name it, and store the secret. It is never shown again — use the eye icon to reveal it before leaving.</p>
+          <h4 class="agent-sub">2 · Regenerate the key (shown once)</h4>
+          <p class="muted" style="margin:0 0 8px;font-size:.82rem">Press <strong>Regenerate key</strong> above. The new secret is shown once — copy it right away. The old key stops working immediately. The key never expires.</p>
           <h4 class="agent-sub">3 · Invoke a tool (key required)</h4>
           <div class="cmd-card cmd-row"><pre class="mono http-colored">${highlightHttpBlock("POST " + endpoint + "/<tool_name>\nAuthorization: Bearer <secret>\nContent-Type: application/json\n\n{\n  \"room_id\": \"<id>\",\n  \"command\": \"ls -la\"\n}")}</pre>${copyIcoBtn("POST " + endpoint + "/<tool_name>\nAuthorization: Bearer <secret>\nContent-Type: application/json\n\n{\n  \"room_id\": \"<id>\",\n  \"command\": \"ls -la\"\n}", "Copy invoke template")}</div>
           <h4 class="agent-sub">Paste this to your AI</h4>
@@ -1906,14 +1906,14 @@
           <p class="muted" style="font-size:.8rem">Single template — JSON only. Scroll inside the box.</p>
           <div class="json-wrap">${copyIcoBtn(rawToolsJSON, "Copy tools JSON", "json-copy")}<div class="json-scroll"><pre class="json-colored mono">${toolsJSON}</pre></div></div>
         </div>
-        <div class="panel"><h3>Access tokens</h3>
-          <p class="muted" style="font-size:.8rem">Secret is shown once on creation — keep it. The copy icon rotates and copies a NEW key, and the old key stops working immediately. Only tap it when you really want to replace the key.</p>
-          ${tokens.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>Secret</th><th>Created</th><th>Last used</th><th></th></tr></thead><tbody>${tokens.map((t) => `<tr><td>${esc(t.name)}</td><td><span class="mono">•••••• <button type="button" class="icon-btn copy-ico tok-key-copy" data-agent-copykey="${esc(t.id)}" title="Rotate and copy NEW key (old stops working)" aria-label="Rotate and copy NEW key">${ico("copy")}</button></span></td><td>${esc(new Date(t.created_at).toLocaleString())}</td><td>${t.last_used_at ? esc(new Date(t.last_used_at).toLocaleString()) : "Never"}</td><td><div class="row-actions"><button class="btn sm danger action" data-agent-revoke="${esc(t.id)}">Revoke</button></div></td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">No token has been created yet.</p>`}
+        <div class="panel"><h3>API key</h3>
+          <p class="muted" style="font-size:.8rem">One key for all agents · no expiry. Regenerating creates a NEW key and the old one stops working immediately. The secret is shown once — copy it right away.</p>
+          ${tokens.length > 1 ? `<p class="muted" style="font-size:.8rem">${tokens.length} legacy keys still exist. Regenerate to collapse to a single key.</p><div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>Secret</th><th>Created</th><th>Last used</th><th></th></tr></thead><tbody>${tokens.map((t) => `<tr><td>${esc(t.name)}</td><td><span class="mono">•••••• <button type="button" class="icon-btn copy-ico tok-key-copy" data-agent-copykey="${esc(t.id)}" title="Rotate and copy NEW key (old stops working)" aria-label="Rotate and copy NEW key">${ico("copy")}</button></span></td><td>${esc(new Date(t.created_at).toLocaleString())}</td><td>${t.last_used_at ? esc(new Date(t.last_used_at).toLocaleString()) : "Never"}</td><td><div class="row-actions"><button class="btn sm danger action" data-agent-revoke="${esc(t.id)}">Revoke</button></div></td></tr>`).join("")}</tbody></table></div>` : tokens.length === 1 ? `<div class="fact-row"><span>Key</span><strong class="mono">•••••• ${esc(tokens[0].prefix || "")}…</strong></div><div class="fact-row"><span>Created</span><strong>${esc(new Date(tokens[0].created_at).toLocaleString())}</strong></div><div class="fact-row"><span>Last used</span><strong>${tokens[0].last_used_at ? esc(new Date(tokens[0].last_used_at).toLocaleString()) : "Never"}</strong></div>` : `<p class="muted">No key yet — generate the first one.</p>`}
         </div>`;
 
       shell(`
         <div class="agent-page">
-        <div class="topbar"><div><h2>x5coder-agent</h2><div class="sub">Controlled HTTPS access to VPS Manager tools</div></div><div class="actions"><button class="btn primary action" id="agent-create-token">Create token</button></div></div>
+        <div class="topbar"><div><h2>x5coder-agent</h2><div class="sub">Controlled HTTPS access to VPS Manager tools</div></div><div class="actions"><button class="btn primary action" id="agent-regen-key">${tokens.length ? "Regenerate key" : "Generate key"}</button></div></div>
         <div class="tabs agent-tabs">
           <button data-atab="tools" class="${tab === "tools" ? "active" : ""}">Tools</button>
           <button data-atab="docs" class="${tab === "docs" ? "active" : ""}">Docs</button>
@@ -1922,16 +1922,15 @@
         </div>`, "agent");
       bindCopyables();
       document.querySelectorAll("[data-atab]").forEach((b) => b.onclick = () => { state.agentTab = b.dataset.atab; state._gen++; renderAgent(); });
-      const openAgentModal = () => {
+      const showAgentSecretModal = (secret) => {
         closeAgentModal(true);
         const modal = el(`<div class="modal-back logout-modal agent-modal" id="agent-modal">
           <div class="modal-card logout-card agent-modal-card">
-            <h3>Create x5coder-agent token</h3>
-            <form id="agent-token-form" class="form-grid">
-              <div class="field full"><label>Token name</label><input name="name" required minlength="2" maxlength="64" placeholder="e.g. Production AI agent" autofocus /></div>
-              <p class="error full" id="agent-token-error"></p>
-              <div class="full row-actions"><button class="btn action" type="button" id="agent-modal-cancel">Cancel</button><button class="btn primary action" type="submit">Create token</button></div>
-            </form>
+            <h3>New API key — copy it now</h3>
+            <p class="muted" style="font-size:.82rem">Shown once. It is never displayed again, and the old key has stopped working.</p>
+            <div class="cmd-card cmd-row"><pre class="mono">${esc(secret)}</pre></div>
+            <p class="error full" id="agent-secret-error"></p>
+            <div class="full row-actions"><button class="btn primary action" type="button" id="agent-secret-copy">Copy key</button><button class="btn action" type="button" id="agent-secret-done">Done</button></div>
           </div>
         </div>`);
         const done = (instant) => {
@@ -1941,20 +1940,11 @@
         };
         modal._close = done;
         modal.addEventListener("click", (e) => { if (e.target === modal) done(false); });
-        modal.querySelector("#agent-modal-cancel").onclick = () => done(false);
-        modal.querySelector("#agent-token-form").addEventListener("submit", async (e) => {
-          e.preventDefault();
-          const error = modal.querySelector("#agent-token-error");
-          if (error) error.textContent = "";
-          try {
-            const fd = new FormData(e.currentTarget);
-            const created = await api("/api/agent/tokens", { method: "POST", body: JSON.stringify({ name: fd.get("name") }) });
-            done(false);
-            await copyText(created.secret || "");
-            toast("Token created — use its copy icon anytime for a fresh full key");
-            renderAgent();
-          } catch (ex) { if (error) error.textContent = ex.message || "Could not create token"; }
-        });
+        modal.querySelector("#agent-secret-done").onclick = () => done(false);
+        modal.querySelector("#agent-secret-copy").onclick = async () => {
+          try { await copyText(secret); toast("Key copied"); }
+          catch (ex) { modal.querySelector("#agent-secret-error").textContent = ex.message || "Could not copy key"; }
+        };
         document.body.appendChild(modal);
         requestAnimationFrame(() => requestAnimationFrame(() => modal.classList.add("show")));
       };
@@ -1963,7 +1953,14 @@
         if (m && m._close) m._close(instant);
         else if (m) m.remove();
       };
-      document.querySelector("#agent-create-token")?.addEventListener("click", openAgentModal);
+      document.querySelector("#agent-regen-key")?.addEventListener("click", async () => {
+        if (!confirm(tokens.length ? "Regenerate the API key? The old key stops working immediately on all agents using it." : "Generate the API key?")) return;
+        try {
+          const created = await api("/api/agent/tokens", { method: "POST", body: "{}" });
+          renderAgent();
+          showAgentSecretModal(created.secret || "");
+        } catch (ex) { toast(ex.message || "Could not regenerate key"); }
+      });
       document.querySelectorAll("[data-agent-revoke]").forEach((button) => button.addEventListener("click", async () => {
         if (!confirm("Revoke this token? Any agent using it will lose access immediately.")) return;
         try { await api(`/api/agent/tokens/${encodeURIComponent(button.dataset.agentRevoke)}`, { method: "DELETE" }); toast("Token revoked"); renderAgent(); }

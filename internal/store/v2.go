@@ -165,6 +165,27 @@ func (s *Store) RotateAgentToken(id string, prefix, hash string, now time.Time) 
 	return t, nil
 }
 
+// ReplaceAgentToken collapses the agent credentials to exactly one key:
+// every existing token is deleted and the new one inserted in a single
+// transaction, so the old secret stops working the instant it commits and
+// there is never a moment with zero keys.
+func (s *Store) ReplaceAgentToken(token AgentToken, hash string) error {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM agent_tokens`); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO agent_tokens(id,name,token_hash,prefix,created_at,last_used_at) VALUES(?,?,?,?,?,?)`,
+		token.ID, token.Name, hash, token.Prefix, token.CreatedAt.UTC().Format(time.RFC3339), ""); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
 // seedContainersFromProjects copies each existing project row into containers/images
 // once. Running Docker containers are not touched.
 func (s *Store) seedContainersFromProjects() error {

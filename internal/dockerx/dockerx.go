@@ -145,9 +145,13 @@ func (c *Client) PruneDanglingImages() {
 	_ = exec.CommandContext(ctx, c.bin, "image", "prune", "-f").Run()
 }
 
-// PruneUnusedLocalImages drops leftover vps-ci / restore tags whose layers
-// are not used by any container (running or stopped). Public registry images
-// and vpsrooms/* tags are left alone.
+// PruneUnusedLocalImages drops leftover manager-built tags whose layers are
+// not used by any container (running or stopped): vpsrooms/* (every deploy
+// builds vpsrooms/<newid>:latest, so superseded tags would pile up forever),
+// vps-ci / restore tags. Public registry images and anything referenced by a
+// container are left alone. A tag removal only untags — layers shared with
+// another tag survive — and docker refuses tags still in use, so this is safe
+// to run automatically after every deploy and on the janitor schedule.
 func (c *Client) PruneUnusedLocalImages() {
 	if c == nil {
 		return
@@ -166,6 +170,7 @@ func (c *Client) PruneUnusedLocalImages() {
 		ref, id := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
 		low := strings.ToLower(ref)
 		if !strings.HasPrefix(low, "vps-ci:") &&
+			!strings.HasPrefix(low, "vpsrooms/") &&
 			!strings.HasPrefix(low, "vpsrooms-bak/") &&
 			!strings.HasPrefix(low, "vpsrooms-restore/") {
 			continue

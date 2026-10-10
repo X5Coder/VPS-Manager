@@ -14,6 +14,7 @@ import (
 // Safe disk janitor: NEVER removes containers, images in use, volumes,
 // projects, DB data, or .env files. Only reclaims:
 //   - dangling images (untagged, unreferenced)
+//   - superseded manager-built tags (vpsrooms/*, vps-ci) no container uses
 //   - build cache older than keepUnused (default 24h)
 //   - oversized container json logs via truncate (container keeps running)
 //   - stale /tmp upload leftovers is handled by api.SweepStaleUploads
@@ -120,6 +121,11 @@ func (c *Client) RunSafeJanitor() string {
 	if c != nil && c.Available() {
 		c.PruneDanglingImages()
 		parts = append(parts, "dangling-pruned")
+		// Sweep superseded manager-built tags (vpsrooms/*, vps-ci) that no
+		// container references — this is what stops deploy leftovers from
+		// piling up between deploys.
+		c.PruneUnusedLocalImages()
+		parts = append(parts, "local-tags-pruned")
 		c.PruneBuilderCacheFiltered(24 * time.Hour)
 		parts = append(parts, "builder-pruned")
 		if freed, n := c.TruncateBigContainerLogs(200 << 20); n > 0 {

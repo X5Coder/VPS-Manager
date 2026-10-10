@@ -475,6 +475,10 @@ func (s *Service) DeployBuild(in DeployBuildInput) (*store.Project, error) {
 				_ = s.Docker.RemoveImage(ref)
 			}
 		}
+		// Immediate sweep of any other superseded manager-built tags
+		// (double-tagged or failed-deploy leftovers) so disk never
+		// accumulates between janitor runs. Best-effort, container-safe.
+		s.Docker.PruneUnusedLocalImages()
 		// Drop stale per-project volume artifacts (<oldID>/, <oldID>.img)
 		// left by previous versions — otherwise orphan quota images pile
 		// up in volumes/ on every update.
