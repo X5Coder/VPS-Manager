@@ -1879,8 +1879,7 @@
         "VPS Manager — x5coder-agent API.",
         `Tools catalog (public, no key): GET ${endpoint}`,
         `Call a tool: POST ${endpoint}/<tool_name> + header "Authorization: Bearer <secret>" + JSON body ({} when no input).`,
-        `Current key: ${keyRef}`,
-        secret ? `Full secret (current — keep it safe):\n${secret}` : "Full secret: press Regenerate key once, then copy again.",
+        secret ? `Current key: ${secret}` : `Current key: ${keyRef} (Full secret: press Regenerate key once, then copy again.)`,
         "Replies: 200 {success:true, data:{…}} | 400 bad input / operation failed | 401 bad or missing key | 404 unknown tool | 405 wrong method.",
         "Rules: most tools are scoped by room_id (list rooms with get_projects); delete_* tools require \"confirm\": true or they refuse; deploy_project / update_project take a base64 ZIP (max 64MB) and preserve ports, domains, .env and data; secret VALUES are never returned, only variable names; get_* tools are read-only and safe anytime; the key never expires; regenerating kills the old key instantly on every agent using it.",
         `Tools (${toolCount}):`,
@@ -1985,40 +1984,52 @@
         throw new Error("empty");
       };
       const openToolsDialog = () => {
-        closeAgentModal(true);
-        // Skeleton first, JSON injected after: keeps template parsing tiny
-        // no matter how large the catalog grows.
-        const modal = el(`<div class="modal-back logout-modal agent-modal" id="agent-modal">
-          <div class="modal-card logout-card agent-modal-card">
-            <div class="head-row"><h3>Tools · ${esc(toolLabel)}</h3><button type="button" class="icon-btn copy-ico" id="agent-tools-copy" title="Copy tools JSON" aria-label="Copy tools JSON">${ico("copy")}</button></div>
-            <p class="muted" style="font-size:.8rem">Single template — JSON only. Scroll inside the box.</p>
-            <div class="json-wrap"><div class="json-scroll"><pre class="json-colored mono" id="agent-tools-pre"></pre></div></div>
-            <div class="full row-actions" style="margin-top:12px"><button class="btn primary action" type="button" id="agent-tools-done">Done</button></div>
-          </div>
-        </div>`);
-        modal.querySelector("#agent-tools-pre").innerHTML = toolsJSON;
-        const done = (instant) => {
-          modal.classList.remove("show");
-          modal.classList.add("hide");
-          setTimeout(() => modal.remove(), instant ? 0 : 220);
-        };
-        modal._close = done;
-        modal.addEventListener("click", (e) => { if (e.target === modal) done(false); });
-        modal.querySelector("#agent-tools-done").onclick = () => done(false);
-        modal.querySelector("#agent-tools-copy").onclick = async () => { await copyText(rawToolsJSON); };
-        document.body.appendChild(modal);
-        requestAnimationFrame(() => requestAnimationFrame(() => modal.classList.add("show")));
+        // Fail-open: the dialog skeleton must appear even if the JSON
+        // injection fails (then raw text is shown and the error toasted).
+        try {
+          closeAgentModal(true);
+          // Skeleton first, JSON injected after: keeps template parsing tiny
+          // no matter how large the catalog grows.
+          const modal = el(`<div class="modal-back logout-modal agent-modal" id="agent-modal">
+            <div class="modal-card logout-card agent-modal-card">
+              <div class="head-row"><h3>Tools · ${esc(toolLabel)}</h3><button type="button" class="icon-btn copy-ico" id="agent-tools-copy" title="Copy tools JSON" aria-label="Copy tools JSON">${ico("copy")}</button></div>
+              <p class="muted" style="font-size:.8rem">Single template — JSON only. Scroll inside the box.</p>
+              <div class="json-wrap"><div class="json-scroll"><pre class="json-colored mono" id="agent-tools-pre"></pre></div></div>
+              <div class="full row-actions" style="margin-top:12px"><button class="btn primary action" type="button" id="agent-tools-done">Done</button></div>
+            </div>
+          </div>`);
+          const pre = modal.querySelector("#agent-tools-pre");
+          try {
+            pre.innerHTML = toolsJSON;
+          } catch (ex2) {
+            pre.textContent = rawToolsJSON;
+            toast("Tools shown as plain text");
+          }
+          const done = (instant) => {
+            modal.classList.remove("show");
+            modal.classList.add("hide");
+            setTimeout(() => modal.remove(), instant ? 0 : 220);
+          };
+          modal._close = done;
+          modal.addEventListener("click", (e) => { if (e.target === modal) done(false); });
+          modal.querySelector("#agent-tools-done").onclick = () => done(false);
+          modal.querySelector("#agent-tools-copy").onclick = async () => { await copyText(rawToolsJSON); };
+          document.body.appendChild(modal);
+          requestAnimationFrame(() => requestAnimationFrame(() => modal.classList.add("show")));
+        } catch (ex) {
+          toast("Tools dialog failed: " + ((ex && ex.message) || "unknown error"));
+        }
       };
       document.querySelector("#agent-tools-list")?.addEventListener("click", openToolsDialog);
       document.querySelector("#agent-copy-docs")?.addEventListener("click", async () => {
         try {
           await copyText(buildFullDocs(await fetchAgentSecret()));
-        } catch (ex) { toast("Stored key unavailable — press Regenerate key once, then copy again"); }
+        } catch (ex) { toast((ex && ex.message) || "Could not copy docs"); }
       });
       document.querySelector("#agent-key-copy")?.addEventListener("click", async () => {
         try {
           await copyText(await fetchAgentSecret());
-        } catch (ex) { toast("Stored key unavailable — press Regenerate key once, then copy works"); }
+        } catch (ex) { toast((ex && ex.message) || "Could not copy key"); }
       });
       document.querySelectorAll("[data-agent-revoke]").forEach((button) => button.addEventListener("click", async () => {
         if (!confirm("Revoke this token? Any agent using it will lose access immediately.")) return;
