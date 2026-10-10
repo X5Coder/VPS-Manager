@@ -31,6 +31,7 @@ var agentTokenName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 _.-]{1,63}$`)
 func (s *Server) routesAgent() {
 	s.Mux.HandleFunc("/api/agent/tokens", s.withGate(s.handleAgentTokens))
 	s.Mux.HandleFunc("/api/agent/tokens/", s.withGate(s.handleAgentTokenByID))
+	s.Mux.HandleFunc("/api/agent/key", s.withGate(s.handleAgentKey))
 	s.Mux.HandleFunc("/x5coder-agent/v1/tools", s.handleAgentTools)
 	s.Mux.HandleFunc("/x5coder-agent/v1/tools/", s.handleAgentInvoke)
 }
@@ -1615,7 +1616,15 @@ func (s *Server) handleAgentTokens(w http.ResponseWriter, r *http.Request) {
 		if err != nil { writeErr(w, 500, "could not generate token"); return }
 		digest := sha256.Sum256([]byte(secret))
 		token := store.AgentToken{ID: uuid.NewString(), Name: name, Prefix: secret[:15], CreatedAt: time.Now().UTC()}
+		// Store the recoverable copy first: if the database swap then
+		// fails we roll the file back, so reveal can never serve a key
+		// that is not the active one.
+		if err := saveAgentKeySecret(s.Cfg.DataDir, secret); err != nil {
+			writeErr(w, 500, "could not store key")
+			return
+		}
 		if err := s.Store.ReplaceAgentToken(token, hex.EncodeToString(digest[:])); err != nil {
+			removeAgentKeySecret(s.Cfg.DataDir)
 			writeErr(w, 500, err.Error())
 			return
 		}
@@ -1639,6 +1648,11 @@ func (s *Server) handleAgentTokenByID(w http.ResponseWriter, r *http.Request) {
 		token, err := s.Store.RotateAgentToken(id, secret[:15], hex.EncodeToString(digest[:]), time.Now().UTC())
 		if err != nil { writeErr(w, 500, err.Error()); return }
 		if token.ID == "" { writeErr(w, 404, "token not found"); return }
+		// Keep the reveal copy in sync: a stale file would serve the wrong
+		// key, so persist or drop it — never leave it disagreeing.
+		if err := saveAgentKeySecret(s.Cfg.DataDir, secret); err != nil {
+			removeAgentKeySecret(s.Cfg.DataDir)
+		}
 		// Only response carrying the new secret — old one stops working now.
 		writeJSON(w, 200, map[string]any{"token": token, "secret": secret, "endpoint": s.agentEndpoint(r)})
 		return
@@ -1647,6 +1661,9 @@ func (s *Server) handleAgentTokenByID(w http.ResponseWriter, r *http.Request) {
 	id := rest
 	if _, err := uuid.Parse(id); err != nil { writeErr(w, 400, "invalid token id"); return }
 	if err := s.Store.DeleteAgentToken(id); err != nil { writeErr(w, 500, err.Error()); return }
+	if tokens, _ := s.Store.ListAgentTokens(); len(tokens) == 0 {
+		removeAgentKeySecret(s.Cfg.DataDir)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

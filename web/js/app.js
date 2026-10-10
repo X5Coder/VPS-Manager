@@ -1871,17 +1871,16 @@
       };
       const toolsJSON = highlightAgentJSON(tools);
       const rawToolsJSON = JSON.stringify(tools, null, 2);
-      const keyRef = single ? `•••••• ${single.prefix || ""}… (created ${fmtAgentDate(single.created_at)})` : (tokens.length > 1 ? `${tokens.length} legacy keys — regenerate to collapse to one` : "no key yet");
-      const freshSecret = state._agentSecretFresh || "";
-      // One plain-text bundle: the whole doc + the current API merged in.
-      // The real secret is embedded only when it was just generated in this
-      // session (it is never stored — only its hash lives in the database).
-      const fullDocs = [
+      const keyRef = single ? `•••••• ${single.prefix || ""}…` : (tokens.length > 1 ? `${tokens.length} legacy keys — regenerate to collapse to one` : "no key yet");
+      // Plain-text bundle: the whole doc + the current API merged in.
+      // The caller passes the real secret (fetched on demand from the
+      // owner-only endpoint); without it the masked reference is embedded.
+      const buildFullDocs = (secret) => [
         "VPS Manager — x5coder-agent API.",
         `Tools catalog (public, no key): GET ${endpoint}`,
         `Call a tool: POST ${endpoint}/<tool_name> + header "Authorization: Bearer <secret>" + JSON body ({} when no input).`,
         `Current key: ${keyRef}`,
-        freshSecret ? `Full secret (generated just now — store it, it is never shown again):\n${freshSecret}` : "Full secret: shown once at generation — press Regenerate key in the panel for a new one.",
+        secret ? `Full secret (current — keep it safe):\n${secret}` : "Full secret: press Regenerate key once, then copy again.",
         "Replies: 200 {success:true, data:{…}} | 400 bad input / operation failed | 401 bad or missing key | 404 unknown tool | 405 wrong method.",
         "Rules: most tools are scoped by room_id (list rooms with get_projects); delete_* tools require \"confirm\": true or they refuse; deploy_project / update_project take a base64 ZIP (max 64MB) and preserve ports, domains, .env and data; secret VALUES are never returned, only variable names; get_* tools are read-only and safe anytime; the key never expires; regenerating kills the old key instantly on every agent using it.",
         `Tools (${toolCount}):`,
@@ -1898,7 +1897,7 @@
           <h4 class="agent-sub">1 · Concepts in 30 seconds</h4>
           <ul class="fact-list">
             <li><strong>Endpoint:</strong> <code class="mono">GET ${esc(endpoint)}</code> is public — it returns the tools catalog, no key needed.</li>
-            <li><strong>Key:</strong> a single Bearer key for all agents · never expires · shown once. Every action call needs the header <code class="mono">Authorization: Bearer &lt;secret&gt;</code>.</li>
+            <li><strong>Key:</strong> a single Bearer key for all agents · never expires · click it below to copy the full secret anytime. Every action call needs the header <code class="mono">Authorization: Bearer &lt;secret&gt;</code>.</li>
             <li><strong>Call shape:</strong> <code class="mono">POST ${esc(endpoint)}/&lt;tool_name&gt;</code> with a JSON body (<code class="mono">{}</code> when the tool needs no input).</li>
             <li><strong>Reply shape:</strong> <code class="mono">200 {success:true, data:{…}}</code>, otherwise <code class="mono">{success:false, error:{code, message}}</code>.</li>
           </ul>
@@ -1928,13 +1927,13 @@
 
       const keyHTML = `
         <div class="panel"><h3>API key</h3>
-          <p class="muted" style="font-size:.8rem">One key for all agents · no expiry. Regenerating creates a NEW key and the old one stops working immediately. The secret is shown once — copy it right away. Click the key to copy it.</p>
+          <p class="muted" style="font-size:.8rem">One key for all agents · no expiry · always visible below. Regenerating creates a NEW key and the old one stops working immediately. Click the key to copy the full secret.</p>
           ${tokens.length > 1 ? `<p class="muted" style="font-size:.8rem">${tokens.length} legacy keys still exist. Regenerate to collapse to a single key.</p><div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>Secret</th><th>Created</th><th>Last used</th><th></th></tr></thead><tbody>${tokens.map((t) => `<tr><td>${esc(t.name)}</td><td><span class="mono">•••••• <button type="button" class="icon-btn copy-ico tok-key-copy" data-agent-copykey="${esc(t.id)}" title="Rotate and copy NEW key (old stops working)" aria-label="Rotate and copy NEW key">${ico("copy")}</button></span></td><td>${esc(fmtAgentDate(t.created_at))}</td><td>${esc(fmtAgentDate(t.last_used_at))}</td><td><div class="row-actions"><button class="btn sm danger action" data-agent-revoke="${esc(t.id)}">Revoke</button></div></td></tr>`).join("")}</tbody></table></div>` : single ? `<div class="fact-row" id="agent-key-copy" title="Click to copy the key" style="cursor:pointer"><span>Key</span><strong class="mono">•••••• ${esc(single.prefix || "")}…</strong></div><div class="fact-row"><span>Created</span><strong>${esc(fmtAgentDate(single.created_at))}</strong></div><div class="fact-row"><span>Last used</span><strong>${esc(fmtAgentDate(single.last_used_at))}</strong></div>` : `<p class="muted">No key yet — generate the first one.</p>`}
         </div>`;
 
       shell(`
         <div class="agent-page">
-        <div class="topbar"><div><h2>x5coder-agent</h2><div class="sub">Controlled HTTPS access to VPS Manager tools</div></div><div class="actions"><button class="btn action" id="agent-tools-list">Tools list</button><button class="btn action" id="agent-copy-docs">Copy full docs</button><button class="btn primary action" id="agent-regen-key">${tokens.length ? "Regenerate key" : "Generate key"}</button></div></div>
+        <div class="topbar"><div><h2>x5coder-agent</h2><div class="sub">Controlled HTTPS access to VPS Manager tools</div></div><div class="actions"><button class="btn action" id="agent-tools-list" title="Show the full tools catalog" style="display:inline-flex;align-items:center;gap:6px">${ico("logs", 14)}<span>Tools list</span></button><button class="btn action" id="agent-copy-docs" title="Copy the whole doc with the current API key" style="display:inline-flex;align-items:center;gap:6px">${ico("copy", 14)}<span>Copy full docs</span></button><button class="btn primary action" id="agent-regen-key" title="Issue a new key (old stops working)" style="display:inline-flex;align-items:center;gap:6px">${ico("key", 14)}<span>${tokens.length ? "Regenerate key" : "Generate key"}</span></button></div></div>
         ${docsHTML}
         ${keyHTML}
         </div>`, "agent");
@@ -1944,7 +1943,7 @@
         const modal = el(`<div class="modal-back logout-modal agent-modal" id="agent-modal">
           <div class="modal-card logout-card agent-modal-card">
             <h3>New API key — copy it now</h3>
-            <p class="muted" style="font-size:.82rem">Shown once. It is never displayed again, and the old key has stopped working.</p>
+            <p class="muted" style="font-size:.82rem">The old key has stopped working. You can also copy this key again anytime by clicking it in the API key panel.</p>
             <div class="cmd-card cmd-row"><pre class="mono">${esc(secret)}</pre></div>
             <p class="error full" id="agent-secret-error"></p>
             <div class="full row-actions"><button class="btn primary action" type="button" id="agent-secret-copy">Copy key</button><button class="btn action" type="button" id="agent-secret-done">Done</button></div>
@@ -1974,23 +1973,30 @@
         if (!confirm(tokens.length ? "Regenerate the API key? The old key stops working immediately on all agents using it." : "Generate the API key?")) return;
         try {
           const created = await api("/api/agent/tokens", { method: "POST", body: "{}" });
-          // Kept in memory only (never stored): lets key-click and
-          // copy-full-docs embed the real secret until the page reloads.
-          state._agentSecretFresh = created.secret || "";
           renderAgent();
           showAgentSecretModal(created.secret || "");
         } catch (ex) { toast(ex.message || "Could not regenerate key"); }
       });
+      // Reads the real secret from the owner-only endpoint (the database
+      // keeps only its hash). Throws when no stored copy exists yet.
+      const fetchAgentSecret = async () => {
+        const k = await api("/api/agent/key");
+        if (k && k.secret) return k.secret;
+        throw new Error("empty");
+      };
       const openToolsDialog = () => {
         closeAgentModal(true);
+        // Skeleton first, JSON injected after: keeps template parsing tiny
+        // no matter how large the catalog grows.
         const modal = el(`<div class="modal-back logout-modal agent-modal" id="agent-modal">
           <div class="modal-card logout-card agent-modal-card">
-            <div class="head-row"><h3>Tools · ${esc(toolLabel)}</h3>${copyIcoBtn(rawToolsJSON, "Copy tools JSON", "json-copy")}</div>
+            <div class="head-row"><h3>Tools · ${esc(toolLabel)}</h3><button type="button" class="icon-btn copy-ico" id="agent-tools-copy" title="Copy tools JSON" aria-label="Copy tools JSON">${ico("copy")}</button></div>
             <p class="muted" style="font-size:.8rem">Single template — JSON only. Scroll inside the box.</p>
-            <div class="json-wrap"><div class="json-scroll"><pre class="json-colored mono">${toolsJSON}</pre></div></div>
+            <div class="json-wrap"><div class="json-scroll"><pre class="json-colored mono" id="agent-tools-pre"></pre></div></div>
             <div class="full row-actions" style="margin-top:12px"><button class="btn primary action" type="button" id="agent-tools-done">Done</button></div>
           </div>
         </div>`);
+        modal.querySelector("#agent-tools-pre").innerHTML = toolsJSON;
         const done = (instant) => {
           modal.classList.remove("show");
           modal.classList.add("hide");
@@ -1999,14 +2005,20 @@
         modal._close = done;
         modal.addEventListener("click", (e) => { if (e.target === modal) done(false); });
         modal.querySelector("#agent-tools-done").onclick = () => done(false);
+        modal.querySelector("#agent-tools-copy").onclick = async () => { await copyText(rawToolsJSON); };
         document.body.appendChild(modal);
         requestAnimationFrame(() => requestAnimationFrame(() => modal.classList.add("show")));
       };
       document.querySelector("#agent-tools-list")?.addEventListener("click", openToolsDialog);
-      document.querySelector("#agent-copy-docs")?.addEventListener("click", async () => { await copyText(fullDocs); });
+      document.querySelector("#agent-copy-docs")?.addEventListener("click", async () => {
+        try {
+          await copyText(buildFullDocs(await fetchAgentSecret()));
+        } catch (ex) { toast("Stored key unavailable — press Regenerate key once, then copy again"); }
+      });
       document.querySelector("#agent-key-copy")?.addEventListener("click", async () => {
-        if (state._agentSecretFresh) { await copyText(state._agentSecretFresh); return; }
-        toast("Full secret was shown once at generation — press Regenerate key for a new one");
+        try {
+          await copyText(await fetchAgentSecret());
+        } catch (ex) { toast("Stored key unavailable — press Regenerate key once, then copy works"); }
       });
       document.querySelectorAll("[data-agent-revoke]").forEach((button) => button.addEventListener("click", async () => {
         if (!confirm("Revoke this token? Any agent using it will lose access immediately.")) return;
